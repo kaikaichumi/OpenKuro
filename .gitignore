@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment variables (secrets)
+.env
+.claude
+.pytest_cache
+docs/
+
+# test
+tests/
+
+# Kuro runtime data
+*.db
+action_logs/
+memory/vector_store/
+
+# OS
+Thumbs.db
+.DS_Store
+nul
+
+# Poetry
+poetry.lock
+
+# Logs
+*.log
+logs/

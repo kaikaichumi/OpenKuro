@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kuro 暗</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header id="header">
+        <div class="header-left">
+            <h1 class="logo">Kuro <span class="logo-kanji">暗</span></h1>
+        </div>
+        <div class="header-center">
+            <span id="model-badge" class="badge" title="Current model">---</span>
+            <span id="trust-badge" class="badge badge-trust" title="Trust level">LOW</span>
+        </div>
+        <div class="header-right">
+            <button id="btn-settings" class="icon-btn" title="Settings">&#9881;</button>
+            <button id="btn-audit" class="icon-btn" title="Audit Log">&#128220;</button>
+        </div>
+    </header>
+
+    <main id="chat-container">
+        <div id="messages"></div>
+    </main>
+
+    <footer id="input-area">
+        <div class="input-wrapper">
+            <textarea id="user-input" placeholder="Type a message..." rows="1" autofocus></textarea>
+            <button id="btn-send" title="Send (Enter)">&#10148;</button>
+        </div>
+        <div id="connection-status" class="status-bar">
+            <span id="status-dot" class="dot dot-disconnected"></span>
+            <span id="status-text">Connecting...</span>
+        </div>
+    </footer>
+
+    <!-- Approval Modal -->
+    <div id="approval-modal" class="modal-overlay hidden">
+        <div class="modal">
+            <h2>Tool Approval</h2>
+            <div id="approval-tool" class="approval-field"></div>
+            <div id="approval-risk" class="approval-field"></div>
+            <pre id="approval-params" class="approval-params"></pre>
+            <div class="approval-actions">
+                <button id="btn-approve" class="btn btn-approve">Approve</button>
+                <button id="btn-deny" class="btn btn-deny">Deny</button>
+                <button id="btn-trust" class="btn btn-trust">Trust Session</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Panel -->
+    <div id="settings-panel" class="side-panel hidden">
+        <div class="panel-header">
+            <h2>Settings</h2>
+            <button class="icon-btn panel-close" data-panel="settings-panel">&times;</button>
+        </div>
+        <div class="panel-body">
+            <label for="model-select">Model</label>
+            <select id="model-select"></select>
+
+            <label for="trust-select">Trust Level</label>
+            <select id="trust-select">
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+            </select>
+
+            <button id="btn-clear" class="btn btn-danger">Clear Conversation</button>
+        </div>
+    </div>
+
+    <!-- Audit Panel -->
+    <div id="audit-panel" class="side-panel hidden">
+        <div class="panel-header">
+            <h2>Audit Log</h2>
+            <button class="icon-btn panel-close" data-panel="audit-panel">&times;</button>
+        </div>
+        <div class="panel-body">
+            <button id="btn-refresh-audit" class="btn">Refresh</button>
+            <div id="audit-entries"></div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
