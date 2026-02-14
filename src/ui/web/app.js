@@ -115,6 +115,9 @@
                 break;
             case "approval_result":
                 break;
+            case "skills_list":
+                renderSkillsList(data.skills || []);
+                break;
             case "error":
                 addSystemMessage("Error: " + data.message);
                 break;
@@ -282,13 +285,30 @@
                 opt.value = "";
                 opt.textContent = "Default (" + (data.default || "").split("/").pop() + ")";
                 modelSelect.appendChild(opt);
-                // Add available models
-                (data.available || []).forEach(function (m) {
-                    var o = document.createElement("option");
-                    o.value = m;
-                    o.textContent = m;
-                    modelSelect.appendChild(o);
-                });
+                // Grouped by provider (preferred)
+                var groups = data.groups || {};
+                var hasGroups = Object.keys(groups).length > 0;
+                if (hasGroups) {
+                    Object.keys(groups).forEach(function (provider) {
+                        var optgroup = document.createElement("optgroup");
+                        optgroup.label = provider.charAt(0).toUpperCase() + provider.slice(1);
+                        groups[provider].forEach(function (m) {
+                            var o = document.createElement("option");
+                            o.value = m;
+                            o.textContent = m.split("/").pop();
+                            optgroup.appendChild(o);
+                        });
+                        modelSelect.appendChild(optgroup);
+                    });
+                } else {
+                    // Fallback: flat list
+                    (data.available || []).forEach(function (m) {
+                        var o = document.createElement("option");
+                        o.value = m;
+                        o.textContent = m;
+                        modelSelect.appendChild(o);
+                    });
+                }
             })
             .catch(function () {});
     }
@@ -323,6 +343,41 @@
         return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
 
+    // === Skills Panel ===
+
+    function loadSkills() {
+        fetch("/api/skills")
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                renderSkillsList(data.skills || []);
+            })
+            .catch(function () {});
+    }
+
+    function renderSkillsList(skills) {
+        var container = document.getElementById("skills-list");
+        if (!container) return;
+        container.innerHTML = "";
+        if (skills.length === 0) {
+            container.innerHTML = '<div class="skill-item" style="opacity:0.5">No skills found. Place SKILL.md in ~/.kuro/skills/&lt;name&gt;/</div>';
+            return;
+        }
+        skills.forEach(function (s) {
+            var div = document.createElement("div");
+            div.className = "skill-item";
+            var dot = s.active ? "\u25cf" : "\u25cb";
+            var cls = s.active ? "skill-active" : "skill-inactive";
+            div.innerHTML = '<span class="' + cls + '">' + dot + "</span> " +
+                '<span class="skill-name">' + escapeHtml(s.name) + "</span>" +
+                '<span class="skill-desc"> \u2014 ' + escapeHtml(s.description) + "</span>";
+            div.style.cursor = "pointer";
+            div.addEventListener("click", function () {
+                send({ type: "command", command: "skill", args: s.name });
+            });
+            container.appendChild(div);
+        });
+    }
+
     // === Event Listeners ===
 
     // Send
@@ -344,7 +399,10 @@
     document.getElementById("btn-settings").addEventListener("click", function () {
         settingsPanel.classList.toggle("hidden");
         auditPanel.classList.add("hidden");
-        if (!settingsPanel.classList.contains("hidden")) loadModels();
+        if (!settingsPanel.classList.contains("hidden")) {
+            loadModels();
+            loadSkills();
+        }
     });
 
     // Audit panel

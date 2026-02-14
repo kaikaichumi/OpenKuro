@@ -40,6 +40,12 @@ class ModelRouter:
             if provider_cfg.base_url and provider_name == "ollama":
                 os.environ.setdefault("OLLAMA_API_BASE", provider_cfg.base_url)
 
+            # LiteLLM reads Gemini key from GEMINI_API_KEY
+            if provider_name == "gemini" and provider_cfg.api_key_env:
+                key = provider_cfg.get_api_key()
+                if key:
+                    os.environ.setdefault("GEMINI_API_KEY", key)
+
     @property
     def default_model(self) -> str:
         return self.config.models.default
@@ -181,10 +187,19 @@ class ModelRouter:
             finish_reason=getattr(choice, "finish_reason", ""),
         )
 
-    async def list_models(self) -> list[str]:
-        """List available models based on configured providers."""
-        models = []
+    async def list_models_grouped(self) -> dict[str, list[str]]:
+        """List available models grouped by provider.
+
+        Returns a dict like {"gemini": ["gemini/gemini-2.5-flash", ...], "ollama": [...]}.
+        Cloud providers show their known_models if an API key is configured.
+        Local providers (Ollama, OpenAI-compatible) are dynamically queried.
+        """
+        groups: dict[str, list[str]] = {}
+
         for name, cfg in self.config.models.providers.items():
+            provider_models: list[str] = []
+
+            # --- Dynamic discovery for local providers ---
             if name == "ollama":
                 try:
                     import httpx
@@ -195,13 +210,45 @@ class ModelRouter:
                         if resp.status_code == 200:
                             data = resp.json()
                             for m in data.get("models", []):
-                                models.append(f"ollama/{m['name']}")
+                                provider_models.append(f"ollama/{m['name']}")
                 except Exception:
                     pass
-            else:
-                if cfg.get_api_key():
-                    models.append(f"{name}/...")
 
-        # Always include the configured defaults
-        models.insert(0, self.config.models.default)
-        return list(dict.fromkeys(models))  # Deduplicate preserving order
+            elif cfg.base_url:
+                # OpenAI-compatible local server (e.g. llama.cpp, vLLM)
+                try:
+                    import httpx
+
+                    base = cfg.base_url.rstrip("/")
+                    url = f"{base}/models" if base.endswith("/v1") else f"{base}/v1/models"
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.get(url, timeout=5)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            for m in data.get("data", []):
+                                model_id = m.get("id", "")
+                                if model_id:
+                                    provider_models.append(f"openai/{model_id}")
+                except Exception:
+                    pass
+
+            # --- Static known_models for cloud providers (requires API key) ---
+            if cfg.known_models and (cfg.get_api_key() or cfg.base_url):
+                for km in cfg.known_models:
+                    if km not in provider_models:
+                        provider_models.append(km)
+
+            if provider_models:
+                groups[name] = provider_models
+
+        return groups
+
+    async def list_models(self) -> list[str]:
+        """List available models as a flat list (for CLI and backward compat)."""
+        groups = await self.list_models_grouped()
+        models: list[str] = [self.default_model]
+        for provider_models in groups.values():
+            for m in provider_models:
+                if m not in models:
+                    models.append(m)
+        return models

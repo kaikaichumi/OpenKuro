@@ -26,8 +26,8 @@ from src.tools.base import RiskLevel, ToolContext, ToolResult
 
 logger = structlog.get_logger()
 
-# Maximum number of tool call rounds to prevent infinite loops
-MAX_TOOL_ROUNDS = 10
+# Default maximum number of tool call rounds (overridable via config.max_tool_rounds)
+_DEFAULT_MAX_TOOL_ROUNDS = 10
 
 
 class ApprovalCallback:
@@ -60,6 +60,7 @@ class Engine:
         approval_callback: ApprovalCallback | None = None,
         audit_log: AuditLog | None = None,
         memory_manager: MemoryManager | None = None,
+        skills_manager: "SkillsManager | None" = None,
     ) -> None:
         self.config = config
         self.model = model_router
@@ -67,6 +68,7 @@ class Engine:
         self.action_log = action_logger
         self.approval_cb = approval_callback or ApprovalCallback()
         self.memory = memory_manager or MemoryManager()
+        self.skills = skills_manager
 
         # Security components
         self.approval_policy = ApprovalPolicy(config.security)
@@ -98,12 +100,14 @@ class Engine:
         # Log conversation if in full mode
         await self.action_log.log_conversation(session.id, "user", user_text)
 
-        # Build context with memory system (core_prompt + system_prompt + MEMORY.md + RAG + conversation)
+        # Build context with memory system (core_prompt + system_prompt + skills + MEMORY.md + RAG + conversation)
+        active_skills = self.skills.get_active_skills() if self.skills else []
         try:
             context_messages = await self.memory.build_context(
                 session,
                 self.config.system_prompt,
                 core_prompt=self.config.core_prompt,
+                active_skills=active_skills,
             )
         except Exception as e:
             logger.warning("memory_context_failed", error=str(e))
@@ -113,7 +117,8 @@ class Engine:
             context_messages = session.messages
 
         # Agent loop: call LLM -> handle tool calls -> repeat
-        for round_num in range(MAX_TOOL_ROUNDS):
+        max_rounds = getattr(self.config, "max_tool_rounds", _DEFAULT_MAX_TOOL_ROUNDS)
+        for round_num in range(max_rounds):
             messages = [m.to_litellm() for m in context_messages]
             tools = self.tools.registry.get_openai_tools() or None
 
@@ -131,6 +136,7 @@ class Engine:
                     tool_calls=response.tool_calls,
                 )
                 session.add_message(assistant_msg)
+                context_messages.append(assistant_msg)
 
                 for tc in response.tool_calls:
                     result = await self._handle_tool_call(tc, session)
@@ -156,6 +162,7 @@ class Engine:
                         tool_call_id=tc.id,
                     )
                     session.add_message(tool_msg)
+                    context_messages.append(tool_msg)
             else:
                 # No tool calls - we have the final response
                 content = response.content or ""
@@ -174,10 +181,23 @@ class Engine:
 
                 return content
 
-        # If we exhausted all rounds
-        fallback = "I've reached the maximum number of tool call rounds. Please try a simpler request."
-        session.add_message(Message(role=Role.ASSISTANT, content=fallback))
-        return fallback
+        # Exhausted all tool rounds — force a final answer without tools
+        # Use updated context_messages which now includes all tool results
+        logger.warning("tool_rounds_exhausted", rounds=max_rounds)
+        try:
+            messages = [m.to_litellm() for m in context_messages]
+            final = await self.model.complete(
+                messages=messages, model=model, tools=None,
+            )
+            content = final.content or ""
+        except Exception:
+            content = ""
+
+        if not content:
+            content = "I've reached the maximum number of tool call rounds. Please try a simpler request."
+
+        session.add_message(Message(role=Role.ASSISTANT, content=content))
+        return content
 
     async def stream_message(
         self,

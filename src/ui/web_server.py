@@ -42,10 +42,11 @@ class ConnectionState:
 class WebApprovalCallback(ApprovalCallback):
     """Tool approval via WebSocket + asyncio.Future."""
 
-    def __init__(self, timeout: int = 60) -> None:
+    def __init__(self, timeout: int = 60, approval_policy=None) -> None:
         self._pending: dict[str, asyncio.Future[str]] = {}
         self._websockets: dict[str, WebSocket] = {}
         self._timeout = timeout
+        self.approval_policy = approval_policy
 
     def register_websocket(self, session_id: str, ws: WebSocket) -> None:
         self._websockets[session_id] = ws
@@ -99,7 +100,9 @@ class WebApprovalCallback(ApprovalCallback):
             self._pending.pop(approval_id, None)
 
         if action == "trust":
-            session.trust_level = "high"
+            session.trust_level = risk_level.value
+            if self.approval_policy:
+                self.approval_policy.elevate_session_trust(session.id, risk_level)
 
         return action in ("approve", "trust")
 
@@ -118,10 +121,9 @@ class WebServer:
         self.engine = engine
         self.config = config
         self.approval_cb = WebApprovalCallback(
-            timeout=config.web_ui.port  # reuse port field... no, use 60s default
+            timeout=60,
+            approval_policy=engine.approval_policy,
         )
-        # Fix: use a sensible timeout
-        self.approval_cb._timeout = 60
         self.engine.approval_cb = self.approval_cb
         self._connections: dict[str, ConnectionState] = {}
         self.app = self._create_app()
@@ -142,10 +144,12 @@ class WebServer:
 
         @app.get("/api/models")
         async def get_models():
-            models = await self.engine.model.list_models()
+            groups = await self.engine.model.list_models_grouped()
+            flat = await self.engine.model.list_models()
             return {
                 "default": self.engine.model.default_model,
-                "available": models,
+                "groups": groups,
+                "available": flat,  # backward compat
             }
 
         @app.get("/api/audit")
@@ -165,6 +169,28 @@ class WebServer:
                 "active_connections": len(self._connections),
                 "default_model": self.engine.model.default_model,
             }
+
+        @app.get("/api/skills")
+        async def get_skills():
+            sm = self.engine.skills
+            skills = sm.list_skills() if sm else []
+            active = sm._active if sm else set()
+            return {
+                "skills": [
+                    {
+                        "name": s.name,
+                        "description": s.description,
+                        "active": s.name in active,
+                        "source": s.source,
+                    }
+                    for s in skills
+                ]
+            }
+
+        @app.get("/api/plugins")
+        async def get_plugins():
+            names = self.engine.tools.registry.get_names()
+            return {"tools": sorted(names), "count": len(names)}
 
         @app.websocket("/ws")
         async def websocket_endpoint(ws: WebSocket):
@@ -302,14 +328,49 @@ class WebServer:
             })
 
         elif command == "trust":
-            level = args if args in ("low", "medium", "high") else "low"
+            level = args if args in ("low", "medium", "high", "critical") else "low"
             conn.session.trust_level = level
+            level_map = {"low": RiskLevel.LOW, "medium": RiskLevel.MEDIUM,
+                         "high": RiskLevel.HIGH, "critical": RiskLevel.CRITICAL}
+            self.engine.approval_policy.elevate_session_trust(
+                conn.session.id, level_map[level])
             await ws.send_json({
                 "type": "status",
                 "model": conn.model_override or self.engine.model.default_model,
                 "trust_level": conn.session.trust_level,
                 "session_id": conn.session.id,
             })
+
+        elif command == "skills":
+            sm = self.engine.skills
+            skills = sm.list_skills() if sm else []
+            active = sm._active if sm else set()
+            await ws.send_json({
+                "type": "skills_list",
+                "skills": [
+                    {"name": s.name, "description": s.description, "active": s.name in active}
+                    for s in skills
+                ],
+            })
+
+        elif command == "skill":
+            sm = self.engine.skills
+            if sm and args:
+                if args in sm._active:
+                    sm.deactivate(args)
+                    toggled = False
+                else:
+                    toggled = sm.activate(args)
+                active = sm._active
+                await ws.send_json({
+                    "type": "skills_list",
+                    "skills": [
+                        {"name": s.name, "description": s.description, "active": s.name in active}
+                        for s in sm.list_skills()
+                    ],
+                })
+            else:
+                await ws.send_json({"type": "error", "message": "Usage: skill <name>"})
 
         else:
             await ws.send_json({

@@ -6,6 +6,7 @@ Usage:
     python -m src.main --init                   # Initialize default config
     python -m src.main --web                    # Start Web GUI (localhost:7860)
     python -m src.main --telegram               # Start Telegram adapter
+    python -m src.main --discord                # Start Discord adapter
     python -m src.main --adapters               # Start all enabled adapters
     python -m src.main --encrypt-prompt         # Encrypt system prompt (interactive)
     python -m src.main --encrypt-prompt --prompt-file my_prompt.txt
@@ -28,6 +29,8 @@ from src.core.model_router import ModelRouter
 from src.core.security.audit import AuditLog
 from src.core.tool_system import ToolSystem
 from src.tools.memory_tools.search import set_memory_manager
+
+logger = structlog.get_logger()
 
 
 def setup_logging() -> None:
@@ -58,6 +61,8 @@ def ensure_kuro_home() -> Path:
         home / "action_logs",
         home / "memory",
         home / "memory" / "facts",
+        home / "skills",
+        home / "plugins",
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
@@ -110,8 +115,27 @@ def build_engine(
     # Wire memory tools to the memory manager
     set_memory_manager(memory_manager)
 
-    # Discover tools
+    # Discover built-in tools
     tool_system.discover_tools()
+
+    # Load external plugins
+    plugin_loader = None
+    if config.plugins.enabled:
+        from src.core.plugin_loader import PluginLoader
+
+        plugin_loader = PluginLoader(config.plugins)
+        count = plugin_loader.load_plugins(tool_system.registry)
+        if count:
+            logger.info("loaded_plugin_tools", count=count)
+
+    # Initialize skills manager
+    from src.core.skills import SkillsManager
+
+    skills_manager = SkillsManager(config.skills)
+    if config.skills.enabled:
+        skills_manager.discover_skills()
+        for name in config.skills.auto_activate:
+            skills_manager.activate(name)
 
     # Build engine
     engine = Engine(
@@ -122,6 +146,7 @@ def build_engine(
         approval_callback=approval_callback or ApprovalCallback(),
         audit_log=audit_log,
         memory_manager=memory_manager,
+        skills_manager=skills_manager,
     )
 
     return engine
@@ -131,8 +156,9 @@ def build_app(config: KuroConfig) -> tuple[Engine, "CLI"]:
     """Build the CLI application (backward-compatible)."""
     from src.ui.cli import CLI, CLIApprovalCallback
 
-    approval = CLIApprovalCallback()
-    engine = build_engine(config, approval_callback=approval)
+    engine = build_engine(config)
+    approval = CLIApprovalCallback(approval_policy=engine.approval_policy)
+    engine.approval_cb = approval
     cli = CLI(engine=engine, config=config)
     return engine, cli
 
@@ -271,6 +297,11 @@ def main() -> None:
         help="Start the Telegram adapter",
     )
     parser.add_argument(
+        "--discord",
+        action="store_true",
+        help="Start the Discord adapter",
+    )
+    parser.add_argument(
         "--adapters",
         action="store_true",
         help="Start all enabled adapters (from config)",
@@ -315,6 +346,9 @@ def main() -> None:
         elif args.telegram:
             # Telegram-only mode
             asyncio.run(async_adapter_main(config, ["telegram"]))
+        elif args.discord:
+            # Discord-only mode
+            asyncio.run(async_adapter_main(config, ["discord"]))
         elif args.adapters:
             # All enabled adapters mode
             asyncio.run(async_adapter_main(config, adapter_names=None))

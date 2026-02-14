@@ -120,7 +120,8 @@ class AdapterManager:
             adapters = []
             if config.adapters.telegram.enabled:
                 adapters.append("telegram")
-            # Future: check discord/line configs
+            if config.adapters.discord.enabled:
+                adapters.append("discord")
 
         for name in adapters:
             if name == "telegram":

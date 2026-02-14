@@ -30,11 +30,14 @@ class ProviderConfig(BaseModel):
     api_key_env: str | None = None  # Environment variable name for API key
     api_key: str | None = None  # Direct API key (not recommended)
     base_url: str | None = None  # Custom base URL (e.g., for Ollama)
+    known_models: list[str] = Field(default_factory=list)  # Predefined model list for UI
 
     def get_api_key(self) -> str | None:
-        """Resolve API key from env var or direct value."""
+        """Resolve API key: env var first, then direct value as fallback."""
         if self.api_key_env:
-            return os.environ.get(self.api_key_env)
+            key = os.environ.get(self.api_key_env)
+            if key:
+                return key
         return self.api_key
 
 
@@ -48,9 +51,28 @@ class ModelsConfig(BaseModel):
         "ollama/llama3.1",
     ])
     providers: dict[str, ProviderConfig] = Field(default_factory=lambda: {
-        "anthropic": ProviderConfig(api_key_env="ANTHROPIC_API_KEY"),
-        "openai": ProviderConfig(api_key_env="OPENAI_API_KEY"),
-        "google": ProviderConfig(api_key_env="GOOGLE_API_KEY"),
+        "gemini": ProviderConfig(
+            api_key_env="GEMINI_API_KEY",
+            known_models=[
+                "gemini/gemini-2.5-flash",
+                "gemini/gemini-2.5-pro",
+                "gemini/gemini-2.0-flash",
+            ],
+        ),
+        "anthropic": ProviderConfig(
+            api_key_env="ANTHROPIC_API_KEY",
+            known_models=[
+                "anthropic/claude-sonnet-4-20250514",
+                "anthropic/claude-haiku-4-20250414",
+            ],
+        ),
+        "openai": ProviderConfig(
+            api_key_env="OPENAI_API_KEY",
+            known_models=[
+                "openai/gpt-4o",
+                "openai/gpt-4o-mini",
+            ],
+        ),
         "ollama": ProviderConfig(base_url="http://localhost:11434"),
     })
     temperature: float = 0.7
@@ -111,11 +133,27 @@ class TelegramConfig(BaseModel):
         return os.environ.get(self.bot_token_env)
 
 
+class DiscordConfig(BaseModel):
+    """Discord adapter configuration."""
+
+    enabled: bool = False
+    bot_token_env: str = "KURO_DISCORD_TOKEN"  # Environment variable name for bot token
+    allowed_user_ids: list[int] = Field(default_factory=list)  # Empty = allow all
+    allowed_channel_ids: list[int] = Field(default_factory=list)  # Empty = allow all
+    command_prefix: str = "!"  # Prefix for bot commands
+    max_message_length: int = 2000  # Discord's limit
+    approval_timeout: int = 60  # seconds to wait for approval response
+
+    def get_bot_token(self) -> str | None:
+        """Resolve bot token from environment variable."""
+        return os.environ.get(self.bot_token_env)
+
+
 class AdaptersConfig(BaseModel):
     """Messaging adapter configuration."""
 
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
-    discord: dict[str, Any] = Field(default_factory=dict)
+    discord: DiscordConfig = Field(default_factory=DiscordConfig)
     line: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -127,6 +165,21 @@ class WebUIConfig(BaseModel):
     port: int = 7860
 
 
+class SkillsConfig(BaseModel):
+    """Skills system configuration."""
+
+    enabled: bool = True
+    skills_dirs: list[str] = Field(default_factory=lambda: ["~/.kuro/skills"])
+    auto_activate: list[str] = Field(default_factory=list)  # Skills to auto-activate on startup
+
+
+class PluginsConfig(BaseModel):
+    """Plugin loader configuration."""
+
+    enabled: bool = True
+    plugins_dir: str = "~/.kuro/plugins"
+
+
 class KuroConfig(BaseModel):
     """Root configuration for Kuro assistant."""
 
@@ -136,17 +189,28 @@ class KuroConfig(BaseModel):
     action_log: ActionLogConfig = Field(default_factory=ActionLogConfig)
     adapters: AdaptersConfig = Field(default_factory=AdaptersConfig)
     web_ui: WebUIConfig = Field(default_factory=WebUIConfig)
+    skills: SkillsConfig = Field(default_factory=SkillsConfig)
+    plugins: PluginsConfig = Field(default_factory=PluginsConfig)
 
     # Core prompt: encrypted, always present as the first SYSTEM message.
     # Loaded from ~/.kuro/system_prompt.enc at startup. Not user-editable via config.
     core_prompt: str = ""
+
+    # Agent loop: max tool call rounds before forcing a text response
+    max_tool_rounds: int = 10
 
     # User-configurable system prompt (supplement to core prompt)
     system_prompt: str = (
         "You are Kuro, a personal AI assistant. You are helpful, concise, and "
         "security-conscious. You have access to tools for file operations, shell "
         "commands, screenshots, calendar, and web browsing. Always explain what "
-        "you are about to do before using a tool. Respond in the user's language."
+        "you are about to do before using a tool. Respond in the user's language.\n\n"
+        "## Tool Usage Rules\n"
+        "- Call each tool ONCE per step and wait for its result before deciding the next action.\n"
+        "- After receiving a tool result, summarize the outcome to the user in natural language.\n"
+        "- NEVER call the same tool with the same arguments more than once.\n"
+        "- If a tool returns an error, explain the error to the user instead of retrying blindly.\n"
+        "- When you have all the information needed, respond directly WITHOUT calling more tools."
     )
 
 

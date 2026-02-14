@@ -40,9 +40,13 @@ BANNER = r"""
 HELP_TEXT = """
 **Slash Commands:**
 - `/help` - Show this help message
-- `/model <name>` - Switch model (e.g., `/model ollama/llama3.1`)
+- `/models` - List all available models (grouped by provider)
+- `/model <name>` - Switch model (e.g., `/model gemini/gemini-2.5-flash`)
 - `/model` - Show current model
 - `/trust <level>` - Set session trust level (low/medium/high)
+- `/skills` - List all available skills
+- `/skill <name>` - Activate/deactivate a skill (toggle)
+- `/plugins` - List loaded plugins and their tools
 - `/history` - Show conversation history
 - `/clear` - Clear conversation history
 - `/quit` or `/exit` - Exit Kuro
@@ -51,6 +55,9 @@ HELP_TEXT = """
 
 class CLIApprovalCallback(ApprovalCallback):
     """CLI-based approval that prompts the user in the terminal."""
+
+    def __init__(self, approval_policy=None):
+        self.approval_policy = approval_policy
 
     async def request_approval(
         self,
@@ -95,6 +102,8 @@ class CLIApprovalCallback(ApprovalCallback):
         if response == "trust":
             # Trust this risk level for the session
             session.trust_level = risk_level.value
+            if self.approval_policy:
+                self.approval_policy.elevate_session_trust(session.id, risk_level)
             console.print(
                 f"  [green]✓ Trusted {risk_level.value.upper()} actions for this session[/green]"
             )
@@ -200,6 +209,18 @@ class CLI:
         elif cmd == "/help":
             console.print(Markdown(HELP_TEXT))
 
+        elif cmd == "/models":
+            groups = await self.engine.model.list_models_grouped()
+            if not groups:
+                console.print("[dim]No models available[/dim]")
+            else:
+                console.print("[bold]Available models:[/bold]")
+                for provider, models in groups.items():
+                    console.print(f"  [cyan]{provider.capitalize()}:[/cyan]")
+                    for m in models:
+                        marker = " [green](active)[/green]" if m == (self.current_model or self.config.models.default) else ""
+                        console.print(f"    - {m}{marker}")
+
         elif cmd == "/model":
             if arg:
                 self.current_model = arg
@@ -210,13 +231,50 @@ class CLI:
 
         elif cmd == "/trust":
             if arg in ("low", "medium", "high", "critical"):
+                from src.tools.base import RiskLevel
+                level_map = {"low": RiskLevel.LOW, "medium": RiskLevel.MEDIUM,
+                             "high": RiskLevel.HIGH, "critical": RiskLevel.CRITICAL}
                 self.session.trust_level = arg
+                self.engine.approval_policy.elevate_session_trust(
+                    self.session.id, level_map[arg])
                 console.print(f"[green]Session trust level set to: {arg.upper()}[/green]")
             else:
                 console.print(
                     f"[blue]Current trust level: {self.session.trust_level.upper()}[/blue]\n"
                     f"[dim]Usage: /trust low|medium|high|critical[/dim]"
                 )
+
+        elif cmd == "/skills":
+            skills = self.engine.skills.list_skills() if self.engine.skills else []
+            if not skills:
+                console.print("[dim]No skills found. Place SKILL.md files in ~/.kuro/skills/<name>/[/dim]")
+            else:
+                active = self.engine.skills._active if self.engine.skills else set()
+                for s in skills:
+                    marker = "[green]\u25cf[/green]" if s.name in active else "[dim]\u25cb[/dim]"
+                    console.print(f"  {marker} {s.name} \u2014 {s.description}")
+
+        elif cmd == "/skill":
+            if not arg:
+                console.print("[yellow]Usage: /skill <name>[/yellow]")
+            elif self.engine.skills:
+                if arg in self.engine.skills._active:
+                    self.engine.skills.deactivate(arg)
+                    console.print(f"[dim]Deactivated skill: {arg}[/dim]")
+                else:
+                    if self.engine.skills.activate(arg):
+                        console.print(f"[green]Activated skill: {arg}[/green]")
+                    else:
+                        console.print(f"[red]Skill not found: {arg}[/red]")
+            else:
+                console.print("[dim]Skills system not initialized[/dim]")
+
+        elif cmd == "/plugins":
+            tool_names = self.engine.tools.registry.get_names()
+            # Show count of built-in vs total tools
+            console.print(f"[bold]Loaded tools ({len(tool_names)}):[/bold]")
+            for name in sorted(tool_names):
+                console.print(f"  - {name}")
 
         elif cmd == "/history":
             if not self.session.messages:

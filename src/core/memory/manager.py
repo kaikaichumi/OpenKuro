@@ -38,15 +38,17 @@ class MemoryManager:
         session: Session,
         system_prompt: str,
         core_prompt: str = "",
+        active_skills: list | None = None,
     ) -> list[Message]:
         """Build the full context for an LLM call.
 
         Combines:
         0. Core prompt (encrypted, mandatory base layer — if non-empty)
         1. System prompt (user-configurable supplement)
-        2. MEMORY.md preferences (injected as system context)
-        3. Relevant long-term memories via RAG search
-        4. Recent conversation messages (working memory window)
+        2. Active skills (on-demand, injected between system prompt and memory)
+        3. MEMORY.md preferences (injected as system context)
+        4. Relevant long-term memories via RAG search
+        5. Recent conversation messages (working memory window)
         """
         context: list[Message] = []
 
@@ -57,7 +59,15 @@ class MemoryManager:
         # 1. System prompt (user-configurable supplement)
         context.append(Message(role=Role.SYSTEM, content=system_prompt))
 
-        # 2. Load MEMORY.md preferences
+        # 2. Active skills (instructions injected on-demand)
+        if active_skills:
+            for skill in active_skills:
+                context.append(Message(
+                    role=Role.SYSTEM,
+                    content=f"[Skill: {skill.name}]\n{skill.content}",
+                ))
+
+        # 3. Load MEMORY.md preferences
         memory_md = self.longterm.read_memory_md()
         if memory_md.strip():
             context.append(Message(
@@ -65,7 +75,7 @@ class MemoryManager:
                 content=f"[User Preferences & Memory]\n{memory_md}",
             ))
 
-        # 3. RAG: search for relevant long-term memories
+        # 4. RAG: search for relevant long-term memories
         recent_user_msgs = [
             m.content for m in session.messages
             if m.role == Role.USER and m.content
@@ -87,7 +97,7 @@ class MemoryManager:
             except Exception as e:
                 logger.debug("rag_search_failed", error=str(e))
 
-        # 4. Working memory: trim conversation to fit
+        # 5. Working memory: trim conversation to fit
         conversation = [
             m for m in session.messages
             if m.role != Role.SYSTEM

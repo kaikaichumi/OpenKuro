@@ -38,11 +38,12 @@ class TelegramApprovalCallback(ApprovalCallback):
     Future that the engine is awaiting.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, approval_policy=None) -> None:
         self._pending: dict[str, asyncio.Future[bool]] = {}
         self._bot = None  # Set by TelegramAdapter after Application is built
         self._chat_ids: dict[str, int] = {}  # session_id -> chat_id
         self._timeout: int = DEFAULT_APPROVAL_TIMEOUT
+        self.approval_policy = approval_policy
 
     def set_bot(self, bot) -> None:
         """Set the bot instance (called by TelegramAdapter)."""
@@ -168,12 +169,18 @@ class TelegramApprovalCallback(ApprovalCallback):
             return "\u274c Denied"
         elif action == "trust" and len(parts) >= 3:
             # Trust escalation
-            risk_level = parts[2]
+            risk_level_str = parts[2]
             session = self._pending.get(f"session:{approval_id}")
             if session and hasattr(session, "trust_level"):
-                session.trust_level = risk_level
+                session.trust_level = risk_level_str
+                if self.approval_policy:
+                    level_map = {"low": RiskLevel.LOW, "medium": RiskLevel.MEDIUM,
+                                 "high": RiskLevel.HIGH, "critical": RiskLevel.CRITICAL}
+                    rl = level_map.get(risk_level_str)
+                    if rl:
+                        self.approval_policy.elevate_session_trust(session.id, rl)
             future.set_result(True)
-            return f"\U0001f513 Trusted {risk_level.upper()} actions for this session"
+            return f"\U0001f513 Trusted {risk_level_str.upper()} actions for this session"
 
         return None
 
@@ -191,7 +198,9 @@ class TelegramAdapter(BaseAdapter):
         super().__init__(engine, config)
 
         self._app = None
-        self._approval_cb = TelegramApprovalCallback()
+        self._approval_cb = TelegramApprovalCallback(
+            approval_policy=engine.approval_policy,
+        )
         self._approval_cb._timeout = config.adapters.telegram.approval_timeout
 
         # Replace the engine's approval callback with Telegram's
@@ -351,6 +360,10 @@ class TelegramAdapter(BaseAdapter):
         args = context.args
         if args and args[0] in ("low", "medium", "high", "critical"):
             session.trust_level = args[0]
+            level_map = {"low": RiskLevel.LOW, "medium": RiskLevel.MEDIUM,
+                         "high": RiskLevel.HIGH, "critical": RiskLevel.CRITICAL}
+            self.engine.approval_policy.elevate_session_trust(
+                session.id, level_map[args[0]])
             await update.message.reply_text(
                 f"\U0001f513 Trust level set to: *{args[0].upper()}*",
                 parse_mode="Markdown",

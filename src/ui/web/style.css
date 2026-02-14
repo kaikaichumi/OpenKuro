@@ -443,6 +443,45 @@ header {
     font-weight: 600;
 }
 
+/* Skills list */
+
+#skills-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.skill-item {
+    padding: 0.4rem 0.5rem;
+    background: var(--bg-input);
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    transition: background var(--transition);
+}
+
+.skill-item:hover {
+    background: var(--border);
+}
+
+.skill-active {
+    color: var(--success);
+}
+
+.skill-inactive {
+    color: var(--text-muted);
+}
+
+.skill-name {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.skill-desc {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
 /* Hidden utility */
 
 .hidden {
