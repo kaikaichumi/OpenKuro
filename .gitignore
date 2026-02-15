@@ -23,7 +23,6 @@ env/
 .env
 .claude
 .pytest_cache
-docs/
 
 # test
 tests/
