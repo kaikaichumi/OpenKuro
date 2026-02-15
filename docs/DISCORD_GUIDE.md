@@ -159,6 +159,8 @@ Commands:
 !model — Show current model
 !model <name> — Switch AI model
 !models — List available models
+!agents — List available sub-agents
+!delegate <agent> <task> — Delegate task to a sub-agent
 !clear — Clear conversation history
 !trust — Show/set trust level
 
@@ -233,6 +235,107 @@ Usage:
   `ollama/qwen3-coder`
   `ollama/llama3.3:70b`
 ```
+
+---
+
+### Sub-Agent 管理
+
+#### `!agents`
+列出所有已註冊的 sub-agents（子代理），顯示它們的模型、工具限制等資訊。
+
+```
+!agents
+```
+
+**回應範例**：
+```
+🤖 **Available Sub-Agents:**
+
+  **fast**
+    Model: `ollama/qwen3:32b`
+    Rounds: 3
+
+  **coder**
+    Model: `ollama/qwen3-coder`
+    Rounds: 5
+    Tools: file_read, file_write, file_search, shell_execute
+
+  **cloud**
+    Model: `anthropic/claude-sonnet-4.5`
+    Rounds: 10
+
+⚡ Running: 0
+
+**Usage:** `!delegate <agent_name> <task>`
+```
+
+**說明**：
+- **Rounds**：agent 最多可執行幾輪工具呼叫
+- **Tools**：agent 可使用的工具（空白表示可用全部工具）
+- **Running**：目前正在執行的 agent 數量
+
+#### `!delegate <agent> <task>`
+直接將任務委派給指定的 sub-agent 執行，**繞過主 LLM，保證使用指定模型**。
+
+```
+!delegate <agent_name> <task_description>
+```
+
+**範例**：
+```
+!delegate coder 幫我寫一個快速排序函數
+
+⚡ Delegating to **coder** (model: `ollama/qwen3-coder`)...
+
+📨 **coder** responded:
+
+這是一個 Python 快速排序實作：
+
+​```python
+def quicksort(arr):
+    if len(arr) <= 1:
+        return arr
+    pivot = arr[len(arr) // 2]
+    left = [x for x in arr if x < pivot]
+    middle = [x for x in arr if x == pivot]
+    right = [x for x in arr if x > pivot]
+    return quicksort(left) + middle + quicksort(right)
+​```
+
+時間複雜度：平均 O(n log n)，最差 O(n²)
+```
+
+**為什麼使用 `!delegate`？**
+1. **保證模型執行**：不依賴主 LLM 判斷，直接用指定模型
+2. **更快回應**：跳過主 LLM 的「思考」階段
+3. **明確控制**：你確切知道哪個模型在處理任務
+4. **GPU 驗證**：本地模型（如 `ollama/qwen3-coder`）會真正在 GPU 上跑
+
+**與主 LLM 委派的差異**：
+```
+# 方法 1: 主 LLM 自動委派（可能會假裝）
+@Kuro 請 coder 幫我寫排序函數
+→ 主 LLM 決定是否呼叫 delegate_to_agent 工具
+→ 有時會假裝委派，實際自己回答
+
+# 方法 2: !delegate 直接委派（保證執行）✅
+!delegate coder 幫我寫排序函數
+→ 100% 使用 ollama/qwen3-coder 模型
+→ GPU 會跑，可用 nvidia-smi 或 ollama ps 驗證
+```
+
+**檢查 GPU 是否在跑**：
+```bash
+# Terminal 1: 啟動 Discord bot
+poetry run kuro --discord
+
+# Terminal 2: 監控 GPU
+nvidia-smi -l 1      # NVIDIA GPU（每秒刷新）
+# 或
+ollama ps             # 查看 Ollama 正在執行的模型
+```
+
+當你執行 `!delegate coder ...` 時，應該會看到 `qwen3-coder` 模型出現在 GPU 上。
 
 ---
 
@@ -383,7 +486,47 @@ User: @Kuro 重構這段程式碼...
 Bot: [使用 GPT-5.3-Codex 優化...]
 ```
 
-### 場景 5: 本地模型（完全離線）
+### 場景 5: Sub-Agent 委派（保證使用指定模型）
+
+**問題：主 LLM 假裝委派**
+```
+User: @Kuro 請 coder 幫我寫一個排序函數
+
+Bot: 好的，我請 Kuro-Coder 為您處理...
+
+     這是排序函數：
+     [主 agent 自己回答，coder 根本沒跑]
+```
+❌ GPU 沒在跑，因為主 agent 只是假裝委派
+
+**解決方案：使用 `!delegate` 直接委派**
+```
+User: !delegate coder 寫一個快速排序函數
+
+Bot: ⚡ Delegating to **coder** (model: `ollama/qwen3-coder`)...
+
+     📨 **coder** responded:
+
+     ​```python
+     def quicksort(arr):
+         if len(arr) <= 1:
+             return arr
+         pivot = arr[len(arr) // 2]
+         ...
+     ​```
+```
+✅ **保證** `ollama/qwen3-coder` 在 GPU 上執行
+
+**驗證模型真的在跑**：
+```bash
+# 另開終端
+ollama ps
+
+NAME              ID         SIZE    PROCESSOR    UNTIL
+qwen3-coder:latest a1b2c3d4   4.7 GB  100% GPU     4 minutes from now
+```
+
+### 場景 6: 本地模型（完全離線）
 
 ```
 !model ollama/qwen3:32b
@@ -457,6 +600,60 @@ adapters:
 ```
 
 超過時間未回應，自動拒絕操作。
+
+### 預定義 Sub-Agents
+
+在 config.yaml 中預先定義 sub-agents，重啟後立即可用：
+
+```yaml
+# config.yaml
+agents:
+  enabled: true
+  max_concurrent_agents: 5
+  predefined:
+    # 快速本地 agent（處理簡單任務）
+    - name: fast
+      model: ollama/qwen3:32b
+      system_prompt: "You are a fast assistant. Be extremely concise."
+      max_tool_rounds: 3
+
+    # 程式碼專用 agent
+    - name: coder
+      model: ollama/qwen3-coder
+      system_prompt: "You are a coding specialist. Focus on clean, efficient code."
+      allowed_tools:
+        - file_read
+        - file_write
+        - file_search
+        - shell_execute
+      max_tool_rounds: 5
+
+    # 雲端推理 agent（複雜任務）
+    - name: thinker
+      model: anthropic/claude-sonnet-4.5
+      system_prompt: "You handle complex reasoning and analysis."
+      max_tool_rounds: 10
+```
+
+**重啟 bot 後**：
+```
+!agents
+
+🤖 **Available Sub-Agents:**
+
+  **fast**
+    Model: `ollama/qwen3:32b`
+    Rounds: 3
+
+  **coder**
+    Model: `ollama/qwen3-coder`
+    Rounds: 5
+    Tools: file_read, file_write, file_search, shell_execute
+
+  **thinker**
+    Model: `anthropic/claude-sonnet-4.5`
+    Rounds: 10
+```
 
 ---
 
@@ -593,6 +790,58 @@ poetry run kuro --discord
 allowed_channel_ids:
   - 111222333  # 伺服器 A 的 #ai 頻道
   - 444555666  # 伺服器 B 的 #bot 頻道
+```
+
+### Q: 為什麼 `@Kuro 請 coder 處理` 沒有用本地模型？
+
+**問題**：主 LLM 會「假裝」委派，實際上自己回答。
+
+**原因**：
+- 主 LLM 看到「請 coder 處理」這樣的文字
+- 它理解意圖，但可能選擇不呼叫 `delegate_to_agent` 工具
+- 而是假裝說「好的，coder 回覆如下...」然後自己答
+
+**解決方案**：
+```
+# ❌ 不可靠（主 LLM 可能假裝）
+@Kuro 請 coder 幫我寫程式
+
+# ✅ 100% 可靠（直接委派）
+!delegate coder 幫我寫程式
+```
+
+### Q: 如何確認 GPU 正在執行本地模型？
+
+**方法 1: nvidia-smi（NVIDIA GPU）**
+```bash
+# 開另一個終端，持續監控
+nvidia-smi -l 1
+
+# 執行委派後應該看到
++-----------------------------------------------------------------------------+
+| Processes:                                                                  |
+|  GPU   GI   CI        PID   Type   Process name                  GPU Memory |
+|        ID   ID                                                   Usage      |
+|=============================================================================|
+|    0   N/A  N/A      12345    C   ...ollama                        4567MiB |
++-----------------------------------------------------------------------------+
+```
+
+**方法 2: ollama ps（Ollama）**
+```bash
+ollama ps
+
+NAME              ID         SIZE    PROCESSOR    UNTIL
+qwen3-coder:latest a1b2c3d4   4.7 GB  100% GPU     4 minutes from now
+```
+
+如果看到模型出現，GPU 就是在跑！
+
+**方法 3: 檢查回應時間**
+```
+本地 7B 模型（GPU）：2-4 秒
+雲端 API（網路）：1-3 秒（通常更快，但有網路延遲）
+本地模型（CPU only）：10-30 秒（非常慢）
 ```
 
 ### Q: 本地模型速度太慢怎麼辦？
