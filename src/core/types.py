@@ -106,6 +106,21 @@ class Session:
 
 
 @dataclass
+class AgentDefinition:
+    """Runtime definition for a sub-agent."""
+
+    name: str
+    model: str
+    system_prompt: str = ""
+    allowed_tools: list[str] = field(default_factory=list)
+    denied_tools: list[str] = field(default_factory=list)
+    max_tool_rounds: int = 5
+    temperature: float | None = None
+    max_tokens: int | None = None
+    created_by: str = "user"  # "user" | "config"
+
+
+@dataclass
 class ModelResponse:
     """Response from an LLM model call."""
 

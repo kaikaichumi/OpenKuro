@@ -47,6 +47,11 @@ HELP_TEXT = """
 - `/skills` - List all available skills
 - `/skill <name>` - Activate/deactivate a skill (toggle)
 - `/plugins` - List loaded plugins and their tools
+- `/agents` - List all registered sub-agents
+- `/agent create` - Create a new sub-agent (interactive model selection)
+- `/agent delete <name>` - Delete a sub-agent
+- `/agent info <name>` - Show agent details
+- `/agent run <name> <task>` - Run a task on a sub-agent
 - `/history` - Show conversation history
 - `/clear` - Clear conversation history
 - `/quit` or `/exit` - Exit Kuro
@@ -276,6 +281,119 @@ class CLI:
             for name in sorted(tool_names):
                 console.print(f"  - {name}")
 
+        elif cmd == "/agents":
+            if not self.engine.agent_manager:
+                console.print("[dim]Agent system not enabled[/dim]")
+            else:
+                agents = self.engine.agent_manager.list_definitions()
+                if not agents:
+                    console.print(
+                        "[dim]No agents registered. Use /agent create to create one.[/dim]"
+                    )
+                else:
+                    console.print("[bold]Registered agents:[/bold]")
+                    running = self.engine.agent_manager._running
+                    for defn in agents:
+                        status = (
+                            " [green](running)[/green]"
+                            if defn.name in running
+                            else ""
+                        )
+                        tools_info = ""
+                        if defn.allowed_tools:
+                            preview = ", ".join(defn.allowed_tools[:3])
+                            if len(defn.allowed_tools) > 3:
+                                preview += "..."
+                            tools_info = f" tools=[{preview}]"
+                        console.print(
+                            f"  - [cyan]{defn.name}[/cyan]: {defn.model}"
+                            f"{tools_info}{status} [dim]({defn.created_by})[/dim]"
+                        )
+
+        elif cmd == "/agent":
+            parts_inner = arg.split(maxsplit=1)
+            subcmd = parts_inner[0].lower() if parts_inner else ""
+            subarg = parts_inner[1] if len(parts_inner) > 1 else ""
+
+            if subcmd == "create":
+                await self._create_agent_interactive()
+
+            elif subcmd == "delete":
+                if not subarg:
+                    console.print("[yellow]Usage: /agent delete <name>[/yellow]")
+                elif (
+                    self.engine.agent_manager
+                    and self.engine.agent_manager.unregister(subarg)
+                ):
+                    console.print(f"[green]Agent '{subarg}' deleted[/green]")
+                else:
+                    console.print(f"[red]Agent '{subarg}' not found[/red]")
+
+            elif subcmd == "info":
+                if not subarg:
+                    console.print("[yellow]Usage: /agent info <name>[/yellow]")
+                elif self.engine.agent_manager:
+                    defn = self.engine.agent_manager.get_definition(subarg)
+                    if defn:
+                        console.print(
+                            Panel(
+                                Text.from_markup(
+                                    f"[bold]Name:[/bold] {defn.name}\n"
+                                    f"[bold]Model:[/bold] {defn.model}\n"
+                                    f"[bold]System Prompt:[/bold] "
+                                    f"{defn.system_prompt[:100] or '(default)'}\n"
+                                    f"[bold]Allowed Tools:[/bold] "
+                                    f"{', '.join(defn.allowed_tools) or 'all'}\n"
+                                    f"[bold]Denied Tools:[/bold] "
+                                    f"{', '.join(defn.denied_tools) or 'none'}\n"
+                                    f"[bold]Max Tool Rounds:[/bold] "
+                                    f"{defn.max_tool_rounds}\n"
+                                    f"[bold]Created By:[/bold] {defn.created_by}"
+                                ),
+                                title=f"[bold cyan]Agent: {defn.name}[/bold cyan]",
+                                border_style="cyan",
+                            )
+                        )
+                    else:
+                        console.print(f"[red]Agent '{subarg}' not found[/red]")
+
+            elif subcmd == "run":
+                # Parse: /agent run <name> <task>
+                run_parts = subarg.split(maxsplit=1)
+                if len(run_parts) < 2:
+                    console.print(
+                        "[yellow]Usage: /agent run <name> <task>[/yellow]"
+                    )
+                elif self.engine.agent_manager:
+                    agent_name, task = run_parts
+                    console.print(
+                        f"[dim]Delegating to agent '{agent_name}'...[/dim]"
+                    )
+                    try:
+                        result = await self.engine.agent_manager.run_agent(
+                            agent_name, task
+                        )
+                        console.print(
+                            Panel(
+                                Markdown(result),
+                                title=(
+                                    f"[bold magenta]Agent: "
+                                    f"{agent_name}[/bold magenta]"
+                                ),
+                                border_style="magenta",
+                                padding=(1, 2),
+                            )
+                        )
+                    except Exception as e:
+                        console.print(f"[red]Agent error: {e}[/red]")
+                else:
+                    console.print("[dim]Agent system not enabled[/dim]")
+
+            else:
+                console.print(
+                    "[yellow]Usage: /agent create|delete|info|run[/yellow]"
+                )
+
         elif cmd == "/history":
             if not self.session.messages:
                 console.print("[dim]No conversation history[/dim]")
@@ -300,6 +418,110 @@ class CLI:
             console.print("[dim]Type /help for available commands[/dim]")
 
         return True
+
+    async def _create_agent_interactive(self) -> None:
+        """Interactive agent creation with model selection."""
+        if not self.engine.agent_manager:
+            console.print("[red]Agent system not enabled[/red]")
+            return
+
+        console.print("[bold]Create a new agent[/bold]")
+        console.print()
+
+        # 1. Get agent name
+        try:
+            name = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: input("  Agent name: ").strip()
+            )
+        except (EOFError, KeyboardInterrupt):
+            console.print("[dim]Cancelled[/dim]")
+            return
+
+        if not name:
+            console.print("[red]Name is required[/red]")
+            return
+
+        if self.engine.agent_manager.get_definition(name):
+            console.print(f"[red]Agent '{name}' already exists[/red]")
+            return
+
+        # 2. Show available models and ask which to use
+        console.print()
+        console.print("[bold]Available models:[/bold]")
+        groups = await self.engine.model.list_models_grouped()
+        model_list: list[str] = []
+        for provider, models in groups.items():
+            console.print(f"  [cyan]{provider.capitalize()}:[/cyan]")
+            for m in models:
+                model_list.append(m)
+                console.print(f"    {len(model_list)}. {m}")
+
+        console.print()
+        try:
+            model_input = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: input("  Model (number or name): ").strip()
+            )
+        except (EOFError, KeyboardInterrupt):
+            console.print("[dim]Cancelled[/dim]")
+            return
+
+        # Resolve model
+        if model_input.isdigit():
+            idx = int(model_input) - 1
+            if 0 <= idx < len(model_list):
+                model = model_list[idx]
+            else:
+                console.print("[red]Invalid model number[/red]")
+                return
+        else:
+            model = model_input
+
+        if not model:
+            console.print("[red]Model is required[/red]")
+            return
+
+        # 3. Optional: custom system prompt
+        try:
+            sys_prompt = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: input("  System prompt (Enter to skip): ").strip(),
+            )
+        except (EOFError, KeyboardInterrupt):
+            sys_prompt = ""
+
+        # 4. Optional: tool restrictions
+        try:
+            tools_input = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: input(
+                    "  Allowed tools (comma-separated, Enter for all): "
+                ).strip(),
+            )
+        except (EOFError, KeyboardInterrupt):
+            tools_input = ""
+
+        allowed_tools = (
+            [t.strip() for t in tools_input.split(",") if t.strip()]
+            if tools_input
+            else []
+        )
+
+        # 5. Create and register
+        from src.core.types import AgentDefinition
+
+        defn = AgentDefinition(
+            name=name,
+            model=model,
+            system_prompt=sys_prompt,
+            allowed_tools=allowed_tools,
+            max_tool_rounds=self.config.agents.default_max_tool_rounds,
+            created_by="user",
+        )
+        self.engine.agent_manager.register(defn)
+
+        console.print(
+            f"\n[green]Agent '{name}' created with model {model}[/green]"
+        )
 
     def _print_banner(self) -> None:
         """Print the startup banner."""

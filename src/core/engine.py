@@ -61,6 +61,7 @@ class Engine:
         audit_log: AuditLog | None = None,
         memory_manager: MemoryManager | None = None,
         skills_manager: "SkillsManager | None" = None,
+        agent_manager: "AgentManager | None" = None,
     ) -> None:
         self.config = config
         self.model = model_router
@@ -69,6 +70,7 @@ class Engine:
         self.approval_cb = approval_callback or ApprovalCallback()
         self.memory = memory_manager or MemoryManager()
         self.skills = skills_manager
+        self.agent_manager = agent_manager
 
         # Security components
         self.approval_policy = ApprovalPolicy(config.security)
@@ -348,6 +350,7 @@ class Engine:
             allowed_directories=[str(p) for p in self.config.sandbox.allowed_directories],
             max_execution_time=self.config.sandbox.max_execution_time,
             max_output_size=self.config.sandbox.max_output_size,
+            agent_manager=self.agent_manager,
         )
 
         start = time.monotonic()

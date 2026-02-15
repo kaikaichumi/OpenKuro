@@ -180,6 +180,28 @@ class PluginsConfig(BaseModel):
     plugins_dir: str = "~/.kuro/plugins"
 
 
+class AgentDefinitionConfig(BaseModel):
+    """Persisted agent definition in config."""
+
+    name: str
+    model: str  # e.g., "ollama/llama3.1", "gemini/gemini-2.5-flash"
+    system_prompt: str = ""  # Optional custom system prompt for this agent
+    allowed_tools: list[str] = Field(default_factory=list)  # Empty = all tools
+    denied_tools: list[str] = Field(default_factory=list)  # Explicit denials
+    max_tool_rounds: int = 5  # Sub-agents get fewer rounds by default
+    temperature: float | None = None  # None = inherit from main config
+    max_tokens: int | None = None  # None = inherit from main config
+
+
+class AgentsConfig(BaseModel):
+    """Multi-agent system configuration."""
+
+    enabled: bool = True
+    max_concurrent_agents: int = 5  # Max agents that can run simultaneously
+    default_max_tool_rounds: int = 5  # Default tool rounds for sub-agents
+    predefined: list[AgentDefinitionConfig] = Field(default_factory=list)
+
+
 class KuroConfig(BaseModel):
     """Root configuration for Kuro assistant."""
 
@@ -191,6 +213,7 @@ class KuroConfig(BaseModel):
     web_ui: WebUIConfig = Field(default_factory=WebUIConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     plugins: PluginsConfig = Field(default_factory=PluginsConfig)
+    agents: AgentsConfig = Field(default_factory=AgentsConfig)
 
     # Core prompt: encrypted, always present as the first SYSTEM message.
     # Loaded from ~/.kuro/system_prompt.enc at startup. Not user-editable via config.

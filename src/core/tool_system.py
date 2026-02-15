@@ -46,6 +46,30 @@ class ToolRegistry:
         """Get all registered tool names."""
         return list(self._tools.keys())
 
+    def get_openai_tools_filtered(
+        self,
+        allowed: list[str] | None = None,
+        denied: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Get tools in OpenAI format, filtered by allow/deny lists.
+
+        Args:
+            allowed: If non-empty, only include these tool names.
+            denied: Exclude these tool names (applied after allowed filter).
+
+        Returns:
+            Filtered list of OpenAI-compatible tool definitions.
+        """
+        tools = list(self._tools.values())
+
+        if allowed:
+            tools = [t for t in tools if t.name in allowed]
+
+        if denied:
+            tools = [t for t in tools if t.name not in denied]
+
+        return [t.to_openai_tool() for t in tools]
+
 
 class ToolSystem:
     """Manages tool discovery, registration, and execution."""

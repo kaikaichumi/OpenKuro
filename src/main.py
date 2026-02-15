@@ -149,6 +149,20 @@ def build_engine(
         skills_manager=skills_manager,
     )
 
+    # Initialize agent manager (needs engine's approval infrastructure)
+    if config.agents.enabled:
+        from src.core.agents import AgentManager
+
+        agent_manager = AgentManager(
+            config=config,
+            model_router=model_router,
+            tool_system=tool_system,
+            approval_policy=engine.approval_policy,
+            approval_callback=engine.approval_cb,
+            audit_log=audit_log,
+        )
+        engine.agent_manager = agent_manager
+
     return engine
 
 
