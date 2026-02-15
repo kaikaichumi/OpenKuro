@@ -294,7 +294,12 @@ class DiscordAdapter(BaseAdapter):
 
             # Handle prefix commands
             if content.startswith(prefix):
-                await self._handle_command(message, content[len(prefix):])
+                asyncio.create_task(
+                    self._safe_handle(
+                        self._handle_command(message, content[len(prefix):]),
+                        message.channel,
+                    )
+                )
                 return
 
             # Check if bot is mentioned or in DM
@@ -313,7 +318,12 @@ class DiscordAdapter(BaseAdapter):
             if not content:
                 return
 
-            await self._handle_message(message, content)
+            asyncio.create_task(
+                self._safe_handle(
+                    self._handle_message(message, content),
+                    message.channel,
+                )
+            )
 
         logger.info("discord_starting", bot_token="***" + token[-4:])
 
@@ -332,6 +342,21 @@ class DiscordAdapter(BaseAdapter):
             except Exception as e:
                 logger.warning("discord_stop_error", error=str(e))
             logger.info("discord_stopped")
+
+    async def _safe_handle(self, coro, channel) -> None:
+        """Run a handler coroutine in a background task with error handling.
+
+        This allows on_message to return immediately so Discord can
+        process new messages while a sub-agent or the main engine is busy.
+        """
+        try:
+            await coro
+        except Exception as e:
+            logger.error("discord_handler_error", error=str(e))
+            try:
+                await channel.send(f"\u274c Error: {str(e)[:200]}")
+            except Exception:
+                pass
 
     def _is_user_allowed(self, user_id: int) -> bool:
         """Check if the user is in the whitelist (if configured)."""
