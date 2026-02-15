@@ -44,36 +44,53 @@ class ProviderConfig(BaseModel):
 class ModelsConfig(BaseModel):
     """LLM model configuration."""
 
-    default: str = "anthropic/claude-sonnet-4-20250514"
+    default: str = "anthropic/claude-sonnet-4.5"
     fallback_chain: list[str] = Field(default_factory=lambda: [
-        "anthropic/claude-sonnet-4-20250514",
-        "openai/gpt-4o",
-        "ollama/llama3.1",
+        "anthropic/claude-sonnet-4.5",
+        "openai/gpt-5.2",
+        "ollama/qwen3:32b",
     ])
     providers: dict[str, ProviderConfig] = Field(default_factory=lambda: {
         "gemini": ProviderConfig(
             api_key_env="GEMINI_API_KEY",
             known_models=[
+                "gemini/gemini-3-flash",
+                "gemini/gemini-3-pro",
                 "gemini/gemini-2.5-flash",
                 "gemini/gemini-2.5-pro",
-                "gemini/gemini-2.0-flash",
             ],
         ),
         "anthropic": ProviderConfig(
             api_key_env="ANTHROPIC_API_KEY",
             known_models=[
-                "anthropic/claude-sonnet-4-20250514",
-                "anthropic/claude-haiku-4-20250414",
+                "anthropic/claude-opus-4.6",
+                "anthropic/claude-sonnet-4.5",
+                "anthropic/claude-haiku-4.5",
             ],
         ),
         "openai": ProviderConfig(
             api_key_env="OPENAI_API_KEY",
             known_models=[
-                "openai/gpt-4o",
-                "openai/gpt-4o-mini",
+                "openai/gpt-5.3-codex",
+                "openai/gpt-5.2",
+                "openai/gpt-5",
+                "openai/gpt-oss-120b",
+                "openai/gpt-oss-20b",
             ],
         ),
-        "ollama": ProviderConfig(base_url="http://localhost:11434"),
+        "ollama": ProviderConfig(
+            base_url="http://localhost:11434",
+            api_key="not-needed",
+            known_models=[
+                "ollama/qwen3:32b",
+                "ollama/qwen3-coder",
+                "ollama/llama3.3:70b",
+                "ollama/deepseek-r1",
+                "ollama/deepseek-coder-v2",
+                "ollama/llama3.2:3b",
+                "ollama/mistral-nemo",
+            ],
+        ),
     })
     temperature: float = 0.7
     max_tokens: int = 4096

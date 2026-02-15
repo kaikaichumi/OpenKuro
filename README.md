@@ -113,13 +113,19 @@ curl -fsSL https://ollama.ai/install.sh | sh
 ### 2. Pull Models
 
 ```bash
-# Fast local model (recommended for sub-agents)
-ollama pull llama3.1
+# Recommended: Best general-purpose model (2026)
+ollama pull qwen3:32b
+
+# Fast coding model
+ollama pull qwen3-coder
 
 # Larger models
-ollama pull llama3.1:70b
-ollama pull qwen2.5:32b
-ollama pull deepseek-coder-v2
+ollama pull llama3.3:70b
+ollama pull deepseek-r1
+
+# Lightweight models
+ollama pull llama3.2:3b
+ollama pull mistral-nemo
 ```
 
 ### 3. Configure Kuro
@@ -129,14 +135,14 @@ Edit `~/.kuro/config.yaml`:
 ```yaml
 models:
   # Use Ollama as default
-  default: "ollama/llama3.1"
+  default: "ollama/qwen3:32b"
 
   # Or keep cloud default with local fallback
-  default: "anthropic/claude-sonnet-4-20250514"
+  default: "anthropic/claude-sonnet-4.5"
   fallback_chain:
-    - "anthropic/claude-sonnet-4-20250514"
-    - "openai/gpt-4o"
-    - "ollama/llama3.1"  # Falls back to local if cloud fails
+    - "anthropic/claude-sonnet-4.5"
+    - "openai/gpt-5.2"
+    - "ollama/qwen3:32b"  # Falls back to local if cloud fails
 
   providers:
     ollama:
@@ -148,7 +154,7 @@ models:
 
 ```bash
 # In CLI mode
-> /model ollama/llama3.1
+> /model ollama/qwen3:32b
 
 # Or use /models to see all available
 > /models
@@ -162,14 +168,14 @@ Use local models for fast, simple tasks, cloud models for complex reasoning:
 # Create a fast local agent
 > /agent create
   Agent name: fast
-  Model: ollama/llama3.1
+  Model: ollama/qwen3:32b
   System prompt: You are a fast local assistant. Be extremely concise.
   Allowed tools:
 
 # Create a cloud reasoning agent
 > /agent create
   Agent name: thinker
-  Model: anthropic/claude-sonnet-4-20250514
+  Model: anthropic/claude-sonnet-4.5
   System prompt: You are a deep reasoning specialist.
   Allowed tools:
 ```
@@ -182,12 +188,12 @@ agents:
   max_concurrent_agents: 3
   predefined:
     - name: fast
-      model: ollama/llama3.1
+      model: ollama/qwen3:32b
       system_prompt: "You are a fast local assistant. Be extremely concise."
       max_tool_rounds: 3
 
     - name: coder
-      model: ollama/deepseek-coder-v2
+      model: ollama/qwen3-coder
       system_prompt: "You are a coding specialist."
       allowed_tools:
         - file_read
@@ -196,7 +202,7 @@ agents:
         - shell_execute
 
     - name: cloud
-      model: anthropic/claude-sonnet-4-20250514
+      model: anthropic/claude-sonnet-4.5
       system_prompt: "You handle complex reasoning tasks."
 ```
 
@@ -254,22 +260,23 @@ Kuro can spawn sub-agents that run with different models, enabling efficient tas
 
   Available models:
     Gemini:
-      1. gemini/gemini-2.5-flash
-      2. gemini/gemini-2.5-pro
+      1. gemini/gemini-3-flash
+      2. gemini/gemini-3-pro
     Anthropic:
-      3. anthropic/claude-sonnet-4-20250514
-      4. anthropic/claude-haiku-4-20250414
+      3. anthropic/claude-opus-4.6
+      4. anthropic/claude-sonnet-4.5
     OpenAI:
-      5. openai/gpt-4o
-      6. openai/gpt-4o-mini
+      5. openai/gpt-5.3-codex
+      6. openai/gpt-5.2
     Ollama:
-      7. ollama/llama3.1
+      7. ollama/qwen3:32b
+      8. ollama/qwen3-coder
 
   Model (number or name): 1
   System prompt (Enter to skip): You are a web research specialist.
   Allowed tools (comma-separated, Enter for all): web_navigate, web_get_text, memory_store
 
-  Agent 'researcher' created with model gemini/gemini-2.5-flash
+  Agent 'researcher' created with model gemini/gemini-3-flash
 ```
 
 **Config (YAML):**
@@ -279,11 +286,11 @@ agents:
   enabled: true
   predefined:
     - name: fast
-      model: ollama/llama3.1
+      model: ollama/qwen3:32b
       max_tool_rounds: 3
 
     - name: researcher
-      model: gemini/gemini-2.5-flash
+      model: gemini/gemini-3-flash
       allowed_tools: [web_navigate, web_get_text, memory_store]
 ```
 
@@ -317,30 +324,39 @@ Config file: `~/.kuro/config.yaml` (created by `kuro --init`)
 
 ```yaml
 models:
-  default: "anthropic/claude-sonnet-4-20250514"
+  default: "anthropic/claude-sonnet-4.5"
   fallback_chain:
-    - "anthropic/claude-sonnet-4-20250514"
-    - "openai/gpt-4o"
-    - "ollama/llama3.1"
+    - "anthropic/claude-sonnet-4.5"
+    - "openai/gpt-5.2"
+    - "ollama/qwen3:32b"
   providers:
     gemini:
       api_key_env: "GEMINI_API_KEY"
       known_models:
+        - "gemini/gemini-3-flash"
+        - "gemini/gemini-3-pro"
         - "gemini/gemini-2.5-flash"
         - "gemini/gemini-2.5-pro"
     anthropic:
       api_key_env: "ANTHROPIC_API_KEY"
       known_models:
-        - "anthropic/claude-sonnet-4-20250514"
-        - "anthropic/claude-haiku-4-20250414"
+        - "anthropic/claude-opus-4.6"
+        - "anthropic/claude-sonnet-4.5"
+        - "anthropic/claude-haiku-4.5"
     openai:
       api_key_env: "OPENAI_API_KEY"
       known_models:
-        - "openai/gpt-4o"
-        - "openai/gpt-4o-mini"
+        - "openai/gpt-5.3-codex"
+        - "openai/gpt-5.2"
+        - "openai/gpt-5"
     ollama:
       base_url: "http://localhost:11434"
       api_key: "not-needed"  # Local models don't require API keys
+      known_models:
+        - "ollama/qwen3:32b"
+        - "ollama/qwen3-coder"
+        - "ollama/llama3.3:70b"
+        - "ollama/deepseek-r1"
   temperature: 0.7
   max_tokens: 4096
 
