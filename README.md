@@ -141,6 +141,7 @@ models:
   providers:
     ollama:
       base_url: "http://localhost:11434"  # Default Ollama URL
+      api_key: "not-needed"  # Local models don't require API keys
 ```
 
 ### 4. Switch Models
@@ -339,6 +340,7 @@ models:
         - "openai/gpt-4o-mini"
     ollama:
       base_url: "http://localhost:11434"
+      api_key: "not-needed"  # Local models don't require API keys
   temperature: 0.7
   max_tokens: 4096
 
@@ -400,7 +402,7 @@ action_log:
 
 ## System Prompt Encryption
 
-Protect the AI's core instructions from casual inspection.
+Protect the AI's core instructions from casual inspection. See [docs/SYSTEM_PROMPT_ENCRYPTION.md](docs/SYSTEM_PROMPT_ENCRYPTION.md) for implementation details.
 
 ```bash
 # Encrypt from a file
@@ -410,8 +412,6 @@ poetry run kuro --encrypt-prompt --prompt-file my_prompt.txt
 poetry run kuro --encrypt-prompt
 # Enter prompt text, then Ctrl+D (Unix) or Ctrl+Z (Windows)
 ```
-
-Encrypted prompt is stored at `~/.kuro/system_prompt.enc` using Fernet (AES-128-CBC + HMAC-SHA256) with a machine-derived key.
 
 ---
 
