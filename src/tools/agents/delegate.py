@@ -16,10 +16,11 @@ class DelegateToAgentTool(BaseTool):
 
     name = "delegate_to_agent"
     description = (
-        "Delegate a task to a named sub-agent. Sub-agents can use different "
-        "LLM models (e.g., a local model for simple tasks, a specialized model "
-        "for coding). Use list_agents to see available agents. The agent will "
-        "process the task independently and return its result."
+        "Delegate a task to a named sub-agent. You MUST use this tool to "
+        "actually run a sub-agent — do NOT pretend to delegate by just writing "
+        "text. Sub-agents run on their own LLM model (local or cloud) and "
+        "process the task independently. Use list_agents first to see available "
+        "agents. Always return the agent's actual result to the user."
     )
     parameters = {
         "type": "object",

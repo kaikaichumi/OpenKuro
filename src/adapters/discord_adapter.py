@@ -371,6 +371,8 @@ class DiscordAdapter(BaseAdapter):
                 f"`{prefix}model` — Show current model\n"
                 f"`{prefix}model <name>` — Switch AI model\n"
                 f"`{prefix}models` — List available models\n"
+                f"`{prefix}agents` — List available sub-agents\n"
+                f"`{prefix}delegate <agent> <task>` — Delegate task to a sub-agent\n"
                 f"`{prefix}clear` — Clear conversation history\n"
                 f"`{prefix}trust` — Show/set trust level\n\n"
                 f"**Usage:**\n"
@@ -411,6 +413,102 @@ class DiscordAdapter(BaseAdapter):
                     await message.channel.send("\n".join(lines))
             except Exception as e:
                 await message.channel.send(f"\u274c Error listing models: {str(e)[:200]}")
+
+        elif cmd == "agents":
+            agent_manager = getattr(self.engine, "agent_manager", None)
+            if agent_manager is None:
+                await message.channel.send(
+                    "\u274c Agent system is disabled. Enable it in config.yaml:\n"
+                    "```yaml\nagents:\n  enabled: true\n```"
+                )
+                return
+
+            definitions = agent_manager.list_definitions()
+            if not definitions:
+                await message.channel.send(
+                    "\U0001f916 No agents registered. "
+                    "Add agents in config.yaml under `agents.predefined`."
+                )
+                return
+
+            lines = ["\U0001f916 **Available Sub-Agents:**\n"]
+            for defn in definitions:
+                tools_info = ""
+                if defn.allowed_tools:
+                    tools_info = f"\n    Tools: {', '.join(defn.allowed_tools)}"
+                lines.append(
+                    f"  **{defn.name}**\n"
+                    f"    Model: `{defn.model}`\n"
+                    f"    Rounds: {defn.max_tool_rounds}"
+                    f"{tools_info}"
+                )
+            running = agent_manager.running_count
+            if running:
+                lines.append(f"\n\u26a1 Running: {running}")
+
+            prefix = self.config.adapters.discord.command_prefix
+            lines.append(
+                f"\n**Usage:** `{prefix}delegate <agent_name> <task>`"
+            )
+            await message.channel.send("\n".join(lines))
+
+        elif cmd == "delegate":
+            # Parse: !delegate <agent_name> <task>
+            delegate_parts = args_text.strip().split(None, 1)
+            if len(delegate_parts) < 2:
+                prefix = self.config.adapters.discord.command_prefix
+                await message.channel.send(
+                    f"\u274c Usage: `{prefix}delegate <agent_name> <task>`\n"
+                    f"Example: `{prefix}delegate fast Summarize today's news`"
+                )
+                return
+
+            agent_name = delegate_parts[0]
+            task = delegate_parts[1]
+
+            agent_manager = getattr(self.engine, "agent_manager", None)
+            if agent_manager is None:
+                await message.channel.send("\u274c Agent system is not available.")
+                return
+
+            defn = agent_manager.get_definition(agent_name)
+            if defn is None:
+                prefix = self.config.adapters.discord.command_prefix
+                available = [d.name for d in agent_manager.list_definitions()]
+                await message.channel.send(
+                    f"\u274c Agent `{agent_name}` not found.\n"
+                    f"Available: {', '.join(available) if available else 'none'}\n"
+                    f"Use `{prefix}agents` to see all agents."
+                )
+                return
+
+            # Register channel for approval callbacks
+            self._approval_cb.register_channel(session.id, message.channel.id)
+
+            # Send typing indicator and run agent
+            async with message.channel.typing():
+                await message.channel.send(
+                    f"\u26a1 Delegating to **{agent_name}** "
+                    f"(model: `{defn.model}`)..."
+                )
+                try:
+                    result = await agent_manager.delegate(agent_name, task)
+
+                    # Send result (split if needed)
+                    max_len = self.config.adapters.discord.max_message_length
+                    header = f"\U0001f4e8 **{agent_name}** responded:\n\n"
+                    chunks = split_message(header + result, max_len)
+                    for chunk in chunks:
+                        await message.channel.send(chunk)
+                except Exception as e:
+                    logger.error(
+                        "discord_delegate_error",
+                        agent=agent_name,
+                        error=str(e),
+                    )
+                    await message.channel.send(
+                        f"\u274c Agent `{agent_name}` failed: {str(e)[:200]}"
+                    )
 
         elif cmd == "clear":
             self.clear_session(session_key)

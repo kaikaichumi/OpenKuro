@@ -82,6 +82,37 @@ class Engine:
         """Build the system message with security rules."""
         return Message(role=Role.SYSTEM, content=self.config.system_prompt)
 
+    def _get_agent_context_message(self) -> Message | None:
+        """Build an agent-awareness message so the LLM knows available agents.
+
+        Without this, the LLM will pretend to delegate by writing text like
+        "I'll hand this to agent X" without actually calling the tool.
+        """
+        if not self.agent_manager:
+            return None
+        definitions = self.agent_manager.list_definitions()
+        if not definitions:
+            return None
+
+        lines = [
+            "[Available Sub-Agents]",
+            "You have the following sub-agents that run on DIFFERENT models.",
+            "To delegate work to them, you MUST call the `delegate_to_agent` tool.",
+            "Do NOT pretend to delegate — you must use the tool for it to actually run.",
+            "Do NOT answer on behalf of a sub-agent — delegate the task and return their result.",
+            "",
+        ]
+        for defn in definitions:
+            tools_info = ""
+            if defn.allowed_tools:
+                tools_info = f" | tools: {', '.join(defn.allowed_tools)}"
+            lines.append(
+                f"- name: \"{defn.name}\" | model: {defn.model} | "
+                f"max_rounds: {defn.max_tool_rounds}{tools_info}"
+            )
+
+        return Message(role=Role.SYSTEM, content="\n".join(lines))
+
     async def process_message(
         self,
         user_text: str,
@@ -117,6 +148,19 @@ class Engine:
             if not session.messages or session.messages[0].role != Role.SYSTEM:
                 session.messages.insert(0, self._get_system_message())
             context_messages = session.messages
+
+        # Inject agent-awareness context so the LLM knows about sub-agents
+        agent_ctx = self._get_agent_context_message()
+        if agent_ctx:
+            # Insert after system messages but before conversation
+            insert_idx = 0
+            for i, m in enumerate(context_messages):
+                if m.role != Role.SYSTEM:
+                    insert_idx = i
+                    break
+            else:
+                insert_idx = len(context_messages)
+            context_messages.insert(insert_idx, agent_ctx)
 
         # Agent loop: call LLM -> handle tool calls -> repeat
         max_rounds = getattr(self.config, "max_tool_rounds", _DEFAULT_MAX_TOOL_ROUNDS)
