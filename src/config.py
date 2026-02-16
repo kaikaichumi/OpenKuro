@@ -115,6 +115,9 @@ class SandboxConfig(BaseModel):
     allowed_directories: list[str] = Field(default_factory=lambda: [
         "~/Documents",
         "~/Desktop",
+        "~/.kuro/plugins",
+        "~/.kuro/skills",
+        "~/.kuro/memory",
     ])
     blocked_commands: list[str] = Field(default_factory=lambda: [
         "rm -rf /",

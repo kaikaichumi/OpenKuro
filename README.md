@@ -371,6 +371,9 @@ sandbox:
   allowed_directories:
     - "~/Documents"
     - "~/Desktop"
+    - "~/.kuro/plugins"   # Allow Kuro to create plugin tools
+    - "~/.kuro/skills"    # Allow Kuro to create skill files
+    - "~/.kuro/memory"    # Allow Kuro to manage memory
   blocked_commands:
     - "rm -rf /"
     - "format"
