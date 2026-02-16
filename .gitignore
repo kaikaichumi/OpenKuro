@@ -43,3 +43,6 @@ poetry.lock
 # Logs
 *.log
 logs/
+
+# Private documentation
+private_docs/
