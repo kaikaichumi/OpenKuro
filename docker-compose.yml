@@ -1,0 +1,66 @@
+# Docker Compose 配置 - 同時運行個人版和 Discord 公用版
+
+version: '3.8'
+
+services:
+  # 個人使用的 Kuro（CLI + Web GUI）
+  kuro-personal:
+    build: .
+    container_name: kuro-personal
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - KURO_HOME=/app/data
+    volumes:
+      # 個人資料掛載
+      - ./data/personal/.kuro:/app/data
+      # 允許存取個人檔案
+      - ~/Documents:/home/user/Documents
+      - ~/Desktop:/home/user/Desktop
+    ports:
+      - "7860:7860"  # Web GUI
+    command: ["poetry", "run", "kuro", "web"]
+    restart: unless-stopped
+
+  # Discord 公用版的 Kuro
+  kuro-discord:
+    build: .
+    container_name: kuro-discord
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - KURO_HOME=/app/data
+      # Discord 特定環境變數
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+    volumes:
+      # Discord 資料掛載（與個人版完全分離）
+      - ./data/discord/.kuro:/app/data
+      # Discord 版只允許存取受限目錄
+      - ./data/discord/workspace:/home/user/workspace
+    command: ["poetry", "run", "kuro", "discord"]
+    restart: unless-stopped
+    # 資源限制（避免 Discord 使用者消耗過多資源）
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'      # 最多 2 個 CPU 核心
+          memory: 4G       # 最多 4GB 記憶體
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # （可選）Ollama 本地模型伺服器（兩個 Kuro 共用）
+  ollama:
+    image: ollama/ollama:latest
+    container_name: kuro-ollama
+    volumes:
+      - ./data/ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

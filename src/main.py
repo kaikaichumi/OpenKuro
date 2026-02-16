@@ -17,9 +17,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import warnings
 from pathlib import Path
 
 import structlog
+
+# Suppress Windows asyncio pipe cleanup warnings
+if sys.platform == "win32":
+    warnings.filterwarnings("ignore", category=ResourceWarning, message="unclosed.*transport")
+    warnings.filterwarnings("ignore", category=ResourceWarning, message="unclosed.*pipe")
 
 from src.config import KuroConfig, get_kuro_home, load_config, save_default_config
 from src.core.action_log import ActionLogger
@@ -163,6 +169,40 @@ def build_engine(
         )
         engine.agent_manager = agent_manager
 
+    # Initialize task scheduler
+    from src.core.scheduler import TaskScheduler
+    from src.tools.scheduler import (
+        ScheduleAddTool,
+        ScheduleDisableTool,
+        ScheduleEnableTool,
+        ScheduleListTool,
+        ScheduleRemoveTool,
+    )
+
+    scheduler = TaskScheduler()
+
+    # Set up executor function for scheduler
+    async def scheduler_executor(tool_name: str, params: dict) -> str:
+        """Execute a tool for the scheduler."""
+        try:
+            result = await engine.execute_tool(tool_name, params)
+            return result
+        except Exception as e:
+            logger.error("scheduler_execution_failed", tool=tool_name, error=str(e))
+            return f"Error: {str(e)}"
+
+    scheduler.set_executor(scheduler_executor)
+
+    # Register scheduler tools
+    tool_system.registry.register(ScheduleAddTool(scheduler))
+    tool_system.registry.register(ScheduleListTool(scheduler))
+    tool_system.registry.register(ScheduleRemoveTool(scheduler))
+    tool_system.registry.register(ScheduleEnableTool(scheduler))
+    tool_system.registry.register(ScheduleDisableTool(scheduler))
+
+    # Store scheduler in engine for access
+    engine.scheduler = scheduler
+
     return engine
 
 
@@ -216,6 +256,11 @@ async def async_adapter_main(
     # Start all adapters
     await manager.start_all()
 
+    # Start the task scheduler
+    if hasattr(engine, 'scheduler'):
+        await engine.scheduler.start()
+        print("Task scheduler started")
+
     print(f"Kuro adapters running: {', '.join(manager.adapter_names)}")
     print("Press Ctrl+C to stop.")
 
@@ -227,7 +272,13 @@ async def async_adapter_main(
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
+        # Stop scheduler
+        if hasattr(engine, 'scheduler'):
+            await engine.scheduler.stop()
+
         await manager.stop_all()
+        # Give async tasks time to clean up (fixes Windows pipe warnings)
+        await asyncio.sleep(0.25)
 
 
 def _handle_encrypt_prompt(prompt_file: str | None = None) -> None:

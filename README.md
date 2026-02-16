@@ -11,8 +11,9 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 ## Features
 
 - **Multi-Agent System** - Delegate tasks to sub-agents with different models (local/cloud)
+- **Task Scheduler** - Cron-like scheduling for automated tool execution (daily, weekly, hourly, interval)
 - **Multi-model support** - Anthropic Claude, OpenAI GPT, Google Gemini, Ollama local models via LiteLLM
-- **20 built-in tools** - Files, shell, screenshots, clipboard, calendar, browser automation, memory, time, agent delegation
+- **25+ built-in tools** - Files, shell, screenshots, clipboard, calendar, browser automation, memory, time, scheduling, agent delegation
 - **Skills + Plugins** - On-demand SKILL.md instructions, external Python tool plugins
 - **Messaging integration** - Telegram, Discord (full), LINE (stub)
 - **Web GUI** - Dark-themed browser interface at `localhost:7860` with WebSocket streaming

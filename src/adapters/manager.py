@@ -85,7 +85,11 @@ class AdapterManager:
         for name, adapter in self._adapters.items():
             tasks.append(self._stop_adapter(name, adapter))
 
-        await asyncio.gather(*tasks)
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Give adapters time to cleanup (fixes Windows pipe cleanup warnings)
+        await asyncio.sleep(0.1)
+
         logger.info("adapters_stopped")
 
     async def _stop_adapter(self, name: str, adapter: BaseAdapter) -> None:

@@ -118,6 +118,8 @@ class SandboxConfig(BaseModel):
         "~/.kuro/plugins",
         "~/.kuro/skills",
         "~/.kuro/memory",
+        "./plugins",  # 安裝目錄的 plugins（讓 LLM 容易寫入）
+        "./skills",   # 安裝目錄的 skills
     ])
     blocked_commands: list[str] = Field(default_factory=lambda: [
         "rm -rf /",
@@ -189,7 +191,10 @@ class SkillsConfig(BaseModel):
     """Skills system configuration."""
 
     enabled: bool = True
-    skills_dirs: list[str] = Field(default_factory=lambda: ["~/.kuro/skills"])
+    skills_dirs: list[str] = Field(default_factory=lambda: [
+        "./skills",        # 安裝目錄（優先，LLM 容易寫入）
+        "~/.kuro/skills",  # 使用者 home 目錄
+    ])
     auto_activate: list[str] = Field(default_factory=list)  # Skills to auto-activate on startup
 
 
@@ -197,7 +202,7 @@ class PluginsConfig(BaseModel):
     """Plugin loader configuration."""
 
     enabled: bool = True
-    plugins_dir: str = "~/.kuro/plugins"
+    plugins_dir: str = "./plugins"  # 改為安裝目錄（LLM 容易寫入）
 
 
 class AgentDefinitionConfig(BaseModel):

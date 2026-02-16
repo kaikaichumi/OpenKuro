@@ -1,0 +1,217 @@
+# Kuro Configuration Example
+# Copy this to ~/.kuro/config.yaml and customize
+
+llm:
+  default: "anthropic/claude-sonnet-4.5"
+  fallback_chain:
+    - "anthropic/claude-sonnet-4.5"
+    - "openai/gpt-5.2"
+    - "ollama/qwen3:32b"
+  temperature: 0.7
+  max_tokens: 4096
+
+  providers:
+    anthropic:
+      api_key_env: "ANTHROPIC_API_KEY"
+    openai:
+      api_key_env: "OPENAI_API_KEY"
+    gemini:
+      api_key_env: "GEMINI_API_KEY"
+    ollama:
+      base_url: "http://localhost:11434"
+      api_key: "not-needed"
+
+security:
+  auto_approve_levels: ["low"]
+  require_approval_for:
+    - "shell_execute"
+    - "send_message"
+    - "schedule_add"      # 新增：排程需要批准
+    - "schedule_remove"
+  disabled_tools: []
+  session_trust_enabled: true
+  trust_timeout_minutes: 30
+
+sandbox:
+  allowed_directories:
+    - "~/Documents"
+    - "~/Desktop"
+    - "~/.kuro/plugins"
+    - "~/.kuro/skills"
+    - "~/.kuro/memory"
+  blocked_commands:
+    - "rm -rf"
+    - "format"
+    - "shutdown"
+
+# Multi-Agent Configuration
+agents:
+  enabled: true
+  definitions:
+    # 研究專家（快速、便宜）
+    - name: researcher
+      model: gemini/gemini-3-flash
+      system_prompt: |
+        You are a web research specialist.
+        Find and summarize information efficiently.
+      allowed_tools:
+        - web_navigate
+        - web_get_text
+        - memory_store
+        - memory_search
+      temperature: 0.3
+      max_tokens: 4096
+
+    # 程式碼專家
+    - name: coder
+      model: openai/gpt-5.3-codex
+      system_prompt: |
+        You are a coding expert.
+        Write clean, well-documented, secure code.
+      allowed_tools:
+        - file_read
+        - file_write
+        - file_list
+        - shell_execute
+      temperature: 0.1
+      max_tokens: 8192
+
+    # 本地助手（零成本）
+    - name: local-helper
+      model: ollama/qwen3:32b
+      system_prompt: |
+        You are a local assistant running on the user's machine.
+        Handle simple tasks efficiently without using cloud resources.
+      allowed_tools: null  # 所有工具
+      denied_tools:
+        - send_message
+        - send_telegram
+      temperature: 0.7
+      max_tokens: 4096
+
+    # 🆕 Skills & Plugins 撰寫專家
+    - name: skill-plugin-writer
+      model: anthropic/claude-opus-4.6  # 使用最強模型
+      system_prompt: |
+        You are an expert in writing Skills and Plugins for Kuro.
+
+        **Your responsibilities:**
+        1. Write high-quality SKILL.md files following the correct format
+        2. Create Python plugins that inherit from BaseTool
+        3. Ensure proper error handling and security
+        4. Follow Kuro's coding standards and best practices
+        5. Provide clear documentation and usage examples
+
+        **When writing Skills:**
+        - Include proper YAML frontmatter with name, description, category, keywords
+        - Use clear, structured Markdown content
+        - Provide step-by-step instructions
+        - Include examples of good vs bad patterns
+        - Add注意事項 and common mistakes
+
+        **When writing Plugins:**
+        - Inherit from BaseTool correctly
+        - Set appropriate risk_level (LOW/MEDIUM/HIGH/CRITICAL)
+        - Define clear parameter schemas
+        - Implement async execute() method
+        - Add comprehensive error handling
+        - Include docstrings and type hints
+        - Consider security implications
+
+        **Available tools:**
+        - file_read: Read existing skills/plugins
+        - file_write: Create new skills/plugins
+        - file_list: List files in directories
+        - get_time: Check current time for scheduling
+
+        Always ask clarifying questions if the requirements are unclear.
+      allowed_tools:
+        - file_read
+        - file_write
+        - file_list
+        - get_time
+        - memory_store
+        - memory_search
+      denied_tools:
+        - shell_execute  # 不需要執行 shell
+        - send_message   # 不需要發送訊息
+      temperature: 0.3  # 較低，確保程式碼正確性
+      max_tokens: 8192  # 大一點，可以寫長程式碼
+
+    # 🆕 排程管理專家
+    - name: scheduler
+      model: gemini/gemini-3-flash  # 排程管理不需要最強模型
+      system_prompt: |
+        You are a task scheduler specialist.
+
+        **Your responsibilities:**
+        1. Help users create, manage, and troubleshoot scheduled tasks
+        2. Suggest appropriate schedule types (daily, weekly, hourly, interval)
+        3. Ensure task IDs are meaningful and unique
+        4. Validate schedule parameters
+        5. Help users understand timezone considerations
+
+        **Available tools:**
+        - schedule_add: Create new scheduled tasks
+        - schedule_list: List all scheduled tasks
+        - schedule_remove: Remove a task
+        - schedule_enable: Enable a disabled task
+        - schedule_disable: Disable a task temporarily
+        - get_time: Check current time
+
+        **Best practices:**
+        - Use descriptive task IDs (e.g., "stock-monitor-daily", not "task1")
+        - Avoid overly frequent intervals (< 5 minutes)
+        - Test tools manually before scheduling
+        - Consider timezone differences
+        - Set reasonable interval_minutes
+
+        Always confirm schedule details with the user before creating tasks.
+      allowed_tools:
+        - schedule_add
+        - schedule_list
+        - schedule_remove
+        - schedule_enable
+        - schedule_disable
+        - get_time
+      temperature: 0.5
+      max_tokens: 4096
+
+# Plugins Configuration
+plugins:
+  enabled: true
+  directories:
+    - "~/.kuro/plugins"
+
+# Skills Configuration
+skills:
+  enabled: true
+  directories:
+    - "~/.kuro/skills"
+  auto_activate: []  # Skills to activate on startup
+
+# Messaging Adapters
+adapters:
+  telegram:
+    enabled: false
+    bot_token_env: "TELEGRAM_BOT_TOKEN"
+  discord:
+    enabled: true  # 啟用 Discord
+    bot_token_env: "DISCORD_BOT_TOKEN"
+
+# Web UI
+web_ui:
+  enabled: true
+  host: "127.0.0.1"
+  port: 7860
+
+# Memory
+memory:
+  enabled: true
+  vector_store_path: "~/.kuro/memory/vector_store"
+
+# Action Logging
+action_log:
+  enabled: true
+  directory: "~/.kuro/action_logs"
+  rotation: "daily"
