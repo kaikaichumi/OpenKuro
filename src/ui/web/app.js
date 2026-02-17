@@ -34,8 +34,15 @@
     // Panels
     const settingsPanel = document.getElementById("settings-panel");
     const auditPanel = document.getElementById("audit-panel");
+    const screenPanel = document.getElementById("screen-panel");
     const modelSelect = document.getElementById("model-select");
     const trustSelect = document.getElementById("trust-select");
+
+    // Screen preview
+    const screenImage = document.getElementById("screen-image");
+    const screenAction = document.getElementById("screen-action");
+    const screenStep = document.getElementById("screen-step");
+    const screenPlaceholder = document.getElementById("screen-placeholder");
 
     // === WebSocket ===
 
@@ -114,6 +121,12 @@
                 showApproval(data);
                 break;
             case "approval_result":
+                break;
+            case "screen_update":
+                showScreenUpdate(data);
+                break;
+            case "screen_action":
+                showScreenAction(data);
                 break;
             case "skills_list":
                 renderSkillsList(data.skills || []);
@@ -343,6 +356,32 @@
         return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
 
+    // === Screen Preview ===
+
+    function showScreenUpdate(data) {
+        // Auto-open panel on first screenshot
+        if (screenPanel.classList.contains("hidden")) {
+            screenPanel.classList.remove("hidden");
+        }
+        screenPlaceholder.classList.add("hidden");
+        screenImage.classList.remove("hidden");
+        screenImage.src = data.image;
+        screenStep.textContent = "Step " + (data.step || 0);
+        if (data.action) {
+            screenAction.textContent = data.action;
+            screenAction.classList.remove("hidden");
+        }
+    }
+
+    function showScreenAction(data) {
+        if (screenPanel.classList.contains("hidden")) {
+            screenPanel.classList.remove("hidden");
+        }
+        screenStep.textContent = "Step " + (data.step || 0);
+        screenAction.textContent = data.action || "";
+        screenAction.classList.remove("hidden");
+    }
+
     // === Skills Panel ===
 
     function loadSkills() {
@@ -395,10 +434,18 @@
     btnDeny.addEventListener("click", function () { respondApproval("deny"); });
     btnTrust.addEventListener("click", function () { respondApproval("trust"); });
 
+    // Screen preview panel
+    document.getElementById("btn-screen").addEventListener("click", function () {
+        screenPanel.classList.toggle("hidden");
+        settingsPanel.classList.add("hidden");
+        auditPanel.classList.add("hidden");
+    });
+
     // Settings panel
     document.getElementById("btn-settings").addEventListener("click", function () {
         settingsPanel.classList.toggle("hidden");
         auditPanel.classList.add("hidden");
+        screenPanel.classList.add("hidden");
         if (!settingsPanel.classList.contains("hidden")) {
             loadModels();
             loadSkills();
@@ -409,6 +456,7 @@
     document.getElementById("btn-audit").addEventListener("click", function () {
         auditPanel.classList.toggle("hidden");
         settingsPanel.classList.add("hidden");
+        screenPanel.classList.add("hidden");
         if (!auditPanel.classList.contains("hidden")) loadAudit();
     });
 

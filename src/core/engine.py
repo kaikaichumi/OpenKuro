@@ -7,7 +7,9 @@ Integrates with the security layer (approval, sandbox, audit, sanitizer).
 
 from __future__ import annotations
 
+import base64
 import time
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 import structlog
@@ -28,6 +30,56 @@ logger = structlog.get_logger()
 
 # Default maximum number of tool call rounds (overridable via config.max_tool_rounds)
 _DEFAULT_MAX_TOOL_ROUNDS = 10
+
+# Maximum image size for vision (resize if larger to save tokens)
+_MAX_SCREENSHOT_DIMENSION = 1280
+
+
+def _encode_image_base64(image_path: str) -> str | None:
+    """Read an image file and return its base64-encoded data URI string.
+
+    Resizes large screenshots to save LLM tokens.
+    Returns None if the file cannot be read.
+    """
+    try:
+        path = Path(image_path)
+        if not path.exists():
+            return None
+
+        from PIL import Image
+        import io
+
+        img = Image.open(path)
+        w, h = img.size
+
+        # Resize if too large
+        if max(w, h) > _MAX_SCREENSHOT_DIMENSION:
+            ratio = _MAX_SCREENSHOT_DIMENSION / max(w, h)
+            img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{b64}"
+    except Exception as e:
+        logger.warning("image_encode_failed", path=image_path, error=str(e))
+        return None
+
+
+class ToolExecutionCallback:
+    """Optional callback invoked after each tool execution.
+
+    UI implementations can override this to push live updates
+    (e.g. screen previews to the Web GUI).
+    """
+
+    async def on_tool_executed(
+        self,
+        tool_name: str,
+        params: dict[str, Any],
+        result: "ToolResult",
+    ) -> None:
+        pass
 
 
 class ApprovalCallback:
@@ -68,6 +120,7 @@ class Engine:
         self.tools = tool_system
         self.action_log = action_logger
         self.approval_cb = approval_callback or ApprovalCallback()
+        self.tool_callback: ToolExecutionCallback | None = None
         self.memory = memory_manager or MemoryManager()
         self.skills = skills_manager
         self.agent_manager = agent_manager
@@ -200,15 +253,33 @@ class Engine:
                             details=f"Tool {tc.name} output matched: {matched}",
                         )
 
-                    # Add tool result as a message
+                    # Build tool result message (multimodal if screenshot)
+                    content_value: str | list[dict[str, Any]] = output
+                    if result.image_path:
+                        data_uri = _encode_image_base64(result.image_path)
+                        if data_uri:
+                            content_value = [
+                                {"type": "text", "text": output},
+                                {"type": "image_url", "image_url": {"url": data_uri}},
+                            ]
+
                     tool_msg = Message(
                         role=Role.TOOL,
-                        content=output,
+                        content=content_value,
                         name=tc.name,
                         tool_call_id=tc.id,
                     )
                     session.add_message(tool_msg)
                     context_messages.append(tool_msg)
+
+                    # Notify UI callback (e.g. Web GUI screen preview)
+                    if self.tool_callback:
+                        try:
+                            await self.tool_callback.on_tool_executed(
+                                tc.name, tc.arguments, result
+                            )
+                        except Exception as cb_err:
+                            logger.warning("tool_callback_error", error=str(cb_err))
             else:
                 # No tool calls - we have the final response
                 content = response.content or ""

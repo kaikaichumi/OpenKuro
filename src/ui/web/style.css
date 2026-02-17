@@ -482,6 +482,48 @@ header {
     font-size: 0.8rem;
 }
 
+/* Screen Preview Panel */
+
+.screen-panel {
+    width: 420px;
+}
+
+.screen-panel-body {
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.screen-placeholder {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    text-align: center;
+    padding: 2rem 1rem;
+}
+
+.screen-image {
+    width: 100%;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    cursor: zoom-in;
+    transition: transform 0.2s ease;
+}
+
+.screen-image:hover {
+    transform: scale(1.02);
+}
+
+.screen-action-label {
+    font-size: 0.85rem;
+    padding: 0.4rem 0.75rem;
+    background: var(--bg-input);
+    border-radius: var(--radius);
+    color: var(--accent);
+    font-weight: 500;
+    text-align: center;
+    width: 100%;
+    border-left: 3px solid var(--accent);
+}
+
 /* Hidden utility */
 
 .hidden {
@@ -505,6 +547,10 @@ header {
     }
 
     .side-panel {
+        width: 100%;
+    }
+
+    .screen-panel {
         width: 100%;
     }
 

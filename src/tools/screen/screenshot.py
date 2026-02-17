@@ -73,6 +73,7 @@ class ScreenshotTool(BaseTool):
                 f"Screenshot saved: {filepath}\n"
                 f"Resolution: {width}x{height}\n"
                 f"Size: {file_size / 1024:.1f} KB",
+                image_path=str(filepath),
                 path=str(filepath),
                 width=width,
                 height=height,

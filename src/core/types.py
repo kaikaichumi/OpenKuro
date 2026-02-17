@@ -20,10 +20,14 @@ class Role(str, Enum):
 
 @dataclass
 class Message:
-    """A single message in the conversation."""
+    """A single message in the conversation.
+
+    content can be a plain string or a list of content parts for multimodal
+    messages (e.g. text + image for vision models).
+    """
 
     role: Role
-    content: str
+    content: str | list[dict[str, Any]]
     name: str | None = None  # Tool name for tool messages
     tool_call_id: str | None = None  # For tool result messages
     tool_calls: list[ToolCall] | None = None  # For assistant messages with tool calls
