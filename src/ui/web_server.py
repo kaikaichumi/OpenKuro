@@ -20,9 +20,9 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.config import KuroConfig
-from src.core.engine import ApprovalCallback, Engine
+from src.core.engine import ApprovalCallback, Engine, ToolExecutionCallback, _encode_image_base64
 from src.core.types import Session
-from src.tools.base import RiskLevel
+from src.tools.base import RiskLevel, ToolResult
 
 logger = structlog.get_logger()
 
@@ -114,6 +114,89 @@ class WebApprovalCallback(ApprovalCallback):
         return True
 
 
+class WebToolCallback(ToolExecutionCallback):
+    """Push screen updates to the Web GUI when screenshot-related tools run."""
+
+    # Tools that produce screenshots worth pushing to the frontend
+    _SCREEN_TOOLS = {"screenshot", "computer_use", "web_screenshot"}
+    # Tools whose actions are worth reporting (so the user can see what the AI did)
+    _ACTION_TOOLS = {"mouse_action", "keyboard_action"}
+
+    def __init__(self) -> None:
+        self._websockets: dict[str, WebSocket] = {}
+        self._step_counter: dict[str, int] = {}
+
+    def register_websocket(self, session_id: str, ws: WebSocket) -> None:
+        self._websockets[session_id] = ws
+        self._step_counter[session_id] = 0
+
+    def unregister_websocket(self, session_id: str) -> None:
+        self._websockets.pop(session_id, None)
+        self._step_counter.pop(session_id, None)
+
+    async def on_tool_executed(
+        self,
+        tool_name: str,
+        params: dict[str, Any],
+        result: ToolResult,
+    ) -> None:
+        """Send screen updates or action notifications to all connected clients."""
+        if tool_name not in self._SCREEN_TOOLS and tool_name not in self._ACTION_TOOLS:
+            return
+
+        for session_id, ws in list(self._websockets.items()):
+            try:
+                self._step_counter[session_id] = self._step_counter.get(session_id, 0) + 1
+                step = self._step_counter[session_id]
+
+                if tool_name in self._SCREEN_TOOLS and result.image_path:
+                    data_uri = _encode_image_base64(result.image_path)
+                    if data_uri:
+                        await ws.send_json({
+                            "type": "screen_update",
+                            "image": data_uri,
+                            "action": f"Screenshot ({tool_name})",
+                            "step": step,
+                        })
+                elif tool_name in self._ACTION_TOOLS:
+                    action_desc = self._describe_action(tool_name, params)
+                    await ws.send_json({
+                        "type": "screen_action",
+                        "action": action_desc,
+                        "step": step,
+                    })
+            except Exception:
+                pass  # Connection may have closed
+
+    @staticmethod
+    def _describe_action(tool_name: str, params: dict[str, Any]) -> str:
+        """Build a human-readable description of a desktop action."""
+        if tool_name == "mouse_action":
+            action = params.get("action", "?")
+            x, y = params.get("x", "?"), params.get("y", "?")
+            if action == "scroll":
+                amt = params.get("scroll_amount", 0)
+                return f"Scroll {'up' if amt > 0 else 'down'} at ({x}, {y})"
+            if action == "drag":
+                ex, ey = params.get("end_x", "?"), params.get("end_y", "?")
+                return f"Drag ({x},{y}) → ({ex},{ey})"
+            return f"{action.replace('_', ' ').title()} at ({x}, {y})"
+
+        if tool_name == "keyboard_action":
+            action = params.get("action", "?")
+            if action == "type":
+                text = params.get("text", "")
+                preview = text[:40] + ("..." if len(text) > 40 else "")
+                return f'Type: "{preview}"'
+            if action == "press":
+                return f"Press: {params.get('key', '?')}"
+            if action == "hotkey":
+                keys = params.get("keys", [])
+                return f"Hotkey: {' + '.join(keys)}"
+
+        return tool_name
+
+
 class WebServer:
     """FastAPI-based web server with WebSocket chat."""
 
@@ -125,6 +208,8 @@ class WebServer:
             approval_policy=engine.approval_policy,
         )
         self.engine.approval_cb = self.approval_cb
+        self._tool_cb = WebToolCallback()
+        self.engine.tool_callback = self._tool_cb
         self._connections: dict[str, ConnectionState] = {}
         self.app = self._create_app()
 
@@ -205,6 +290,7 @@ class WebServer:
         conn = ConnectionState(session=session)
         self._connections[session.id] = conn
         self.approval_cb.register_websocket(session.id, ws)
+        self._tool_cb.register_websocket(session.id, ws)
 
         # Send initial status
         try:
@@ -268,6 +354,7 @@ class WebServer:
             logger.error("websocket_error", error=str(e))
         finally:
             self.approval_cb.unregister_websocket(session.id)
+            self._tool_cb.unregister_websocket(session.id)
             self._connections.pop(session.id, None)
 
     async def _handle_chat_message(
@@ -318,6 +405,8 @@ class WebServer:
             conn.session = Session(adapter="web")
             self.approval_cb.unregister_websocket(old_id)
             self.approval_cb.register_websocket(conn.session.id, ws)
+            self._tool_cb.unregister_websocket(old_id)
+            self._tool_cb.register_websocket(conn.session.id, ws)
             self._connections.pop(old_id, None)
             self._connections[conn.session.id] = conn
             await ws.send_json({

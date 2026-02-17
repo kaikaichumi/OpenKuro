@@ -16,6 +16,7 @@
             <span id="trust-badge" class="badge badge-trust" title="Trust level">LOW</span>
         </div>
         <div class="header-right">
+            <button id="btn-screen" class="icon-btn" title="Screen Preview">&#128424;</button>
             <button id="btn-settings" class="icon-btn" title="Settings">&#9881;</button>
             <button id="btn-audit" class="icon-btn" title="Audit Log">&#128220;</button>
         </div>
@@ -72,6 +73,22 @@
 
             <label>Skills</label>
             <div id="skills-list"></div>
+        </div>
+    </div>
+
+    <!-- Screen Preview Panel -->
+    <div id="screen-panel" class="side-panel screen-panel hidden">
+        <div class="panel-header">
+            <h2>Screen Preview</h2>
+            <span id="screen-step" class="badge">Step 0</span>
+            <button class="icon-btn panel-close" data-panel="screen-panel">&times;</button>
+        </div>
+        <div class="panel-body screen-panel-body">
+            <div id="screen-placeholder" class="screen-placeholder">
+                No screen capture yet. AI will show the screen here when using computer control.
+            </div>
+            <img id="screen-image" class="screen-image hidden" alt="Screen preview" />
+            <div id="screen-action" class="screen-action-label hidden"></div>
         </div>
     </div>
 

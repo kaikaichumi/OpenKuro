@@ -39,10 +39,11 @@ class ToolResult:
     output: str = ""
     error: str | None = None
     data: dict[str, Any] = field(default_factory=dict)
+    image_path: str | None = None  # Screenshot path; engine converts to vision content
 
     @classmethod
-    def ok(cls, output: str = "", **data: Any) -> ToolResult:
-        return cls(success=True, output=output, data=data)
+    def ok(cls, output: str = "", image_path: str | None = None, **data: Any) -> ToolResult:
+        return cls(success=True, output=output, data=data, image_path=image_path)
 
     @classmethod
     def fail(cls, error: str, **data: Any) -> ToolResult:
@@ -63,6 +64,7 @@ class ToolContext:
     max_execution_time: int = 30
     max_output_size: int = 100_000
     agent_manager: Any = None  # AgentManager | None (Any avoids circular import)
+    session: Any = None  # Session | None (Any avoids circular import)
 
 
 class BaseTool(ABC):

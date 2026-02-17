@@ -1,1 +1,1 @@
-"""Screen tools: screenshot, clipboard."""
+"""Screen tools: screenshot, clipboard, desktop control (mouse/keyboard), computer use."""
