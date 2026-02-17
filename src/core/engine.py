@@ -466,6 +466,7 @@ class Engine:
             max_execution_time=self.config.sandbox.max_execution_time,
             max_output_size=self.config.sandbox.max_output_size,
             agent_manager=self.agent_manager,
+            session=session,
         )
 
         start = time.monotonic()

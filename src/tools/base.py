@@ -64,6 +64,7 @@ class ToolContext:
     max_execution_time: int = 30
     max_output_size: int = 100_000
     agent_manager: Any = None  # AgentManager | None (Any avoids circular import)
+    session: Any = None  # Session | None (Any avoids circular import)
 
 
 class BaseTool(ABC):
