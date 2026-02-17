@@ -190,6 +190,62 @@ ollama run qwen3:32b "Hello"
 
 ---
 
+## Computer Use 與 Docker
+
+> **重要：** Docker 容器預設沒有顯示器，桌面控制工具（`mouse_action`、`keyboard_action`、`computer_use`、`screenshot`）**無法在標準 Docker 容器中使用**。
+
+### 方案 1：禁用桌面工具（推薦）
+
+如果不需要 Computer Use，在容器配置中禁用相關工具：
+
+```yaml
+# data/discord/.kuro/config.yaml
+security:
+  disabled_tools:
+    - mouse_action
+    - keyboard_action
+    - screen_info
+    - computer_use
+    - screenshot
+    - clipboard_read
+    - clipboard_write
+```
+
+### 方案 2：X11 轉發（進階）
+
+如果需要在 Docker 中使用桌面控制，需掛載 X11 socket：
+
+```yaml
+services:
+  kuro-desktop:
+    build: .
+    environment:
+      - DISPLAY=${DISPLAY}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - kuro-data:/root/.kuro
+    network_mode: host  # 或設定 X11 網路
+```
+
+在宿主機上允許 Docker 存取 X11：
+```bash
+xhost +local:docker
+```
+
+### 方案 3：虛擬顯示（Xvfb）
+
+在 Dockerfile 中安裝 Xvfb，建立虛擬螢幕：
+
+```dockerfile
+RUN apt-get update && apt-get install -y xvfb
+ENV DISPLAY=:99
+CMD Xvfb :99 -screen 0 1920x1080x24 & poetry run kuro --web
+```
+
+> 此方案適合自動化測試或無人值守的 Computer Use 任務。
+
+---
+
 ## 進階配置
 
 ### 1. 自訂配置檔

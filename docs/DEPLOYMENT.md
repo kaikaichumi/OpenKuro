@@ -26,6 +26,7 @@
 | **RAM** | 2GB | 4GB |
 | **硬碟** | 2GB | 10GB |
 | **網路** | 穩定連線 | 10Mbps+ |
+| **顯示** | （Computer Use 需要）X11 / Quartz / Windows Desktop | 同左 |
 
 ### 運行本地模型（Ollama）
 
@@ -131,6 +132,9 @@ poetry run playwright install chromium
 # 初始化設定
 poetry run kuro --init
 ```
+
+> **Computer Use 注意事項（macOS）：**
+> 如果要使用桌面控制功能（`mouse_action`、`keyboard_action`、`computer_use`），需在「系統設定 → 隱私權與安全性 → 輔助使用」中授予 Python（或 Terminal）控制權限。
 
 #### 7. 設定環境變數
 
@@ -367,6 +371,9 @@ copy .env.example .env
 notepad .env
 ```
 
+> **Computer Use 注意事項（Windows）：**
+> 桌面控制功能（`mouse_action`、`keyboard_action`、`computer_use`）在 Windows 上開箱即用，無需額外權限設定。
+
 #### 7. 設定 config.yaml（Windows 路徑格式）
 
 編輯 `C:\Users\YourName\.kuro\config.yaml`：
@@ -515,6 +522,18 @@ sudo apt install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 \
 # 安裝 Playwright
 poetry run playwright install chromium
 ```
+
+> **Computer Use 注意事項（Linux）：**
+> 桌面控制功能需要 **X11 顯示伺服器**，目前不支援 Wayland 原生環境。確認 `DISPLAY` 環境變數已設定：
+> ```bash
+> echo $DISPLAY  # 應顯示 :0 或類似值
+> ```
+> 若在無頭伺服器（headless）環境，可使用虛擬顯示：
+> ```bash
+> sudo apt install -y xvfb
+> Xvfb :99 -screen 0 1920x1080x24 &
+> export DISPLAY=:99
+> ```
 
 #### 7. 啟動 Kuro
 
@@ -794,12 +813,16 @@ web_ui:
   host: "0.0.0.0"  # 允許外部連線
   port: 7860
 
-# 禁用本地工具（伺服器環境不需要）
+# 禁用桌面工具（伺服器環境無顯示器）
 security:
   disabled_tools:
     - screenshot
     - clipboard_read
     - clipboard_write
+    - mouse_action
+    - keyboard_action
+    - screen_info
+    - computer_use
 ```
 
 **HTTPS 設定（Let's Encrypt）**：

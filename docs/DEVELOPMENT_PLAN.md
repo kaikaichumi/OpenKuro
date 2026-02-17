@@ -41,7 +41,8 @@
 | 功能 | 函式庫 |
 |---|---|
 | 螢幕截圖 | `mss` + `Pillow` |
-| GUI 自動化 | `pyautogui` |
+| GUI 自動化（滑鼠/鍵盤） | `pyautogui` |
+| Computer Use（視覺驅動桌面控制） | `pyautogui` + `mss` + Vision Model |
 | 行事曆 | Google Calendar API（預設）+ `caldav`（通用備選） |
 | Shell 指令 | `subprocess` (stdlib) |
 
@@ -154,8 +155,13 @@ class BaseTool(ABC):
 | `file_write` | MEDIUM | 寫入/建立檔案 |
 | `file_search` | LOW | 搜尋/匹配檔案 |
 | `shell_execute` | HIGH | 執行 Shell 指令 |
-| `screenshot` | LOW | 螢幕截圖 |
-| `clipboard` | MEDIUM | 讀寫剪貼簿 |
+| `screenshot` | LOW | 螢幕截圖（支援 Vision 模型圖片傳遞） |
+| `clipboard_read` | LOW | 讀取剪貼簿 |
+| `clipboard_write` | MEDIUM | 寫入剪貼簿 |
+| `screen_info` | LOW | 取得螢幕解析度和滑鼠位置 |
+| `mouse_action` | MEDIUM | 滑鼠控制：移動、點擊、雙擊、右鍵、拖曳、滾輪 |
+| `keyboard_action` | MEDIUM | 鍵盤控制：打字、按鍵、快捷鍵組合 |
+| `computer_use` | HIGH | 視覺驅動的桌面自動化（截圖→分析→操作循環） |
 | `calendar_read` | LOW | 讀取行事曆事件（預設 Google Calendar，備選 CalDAV） |
 | `calendar_write` | MEDIUM | 建立/修改行事曆事件 |
 | `web_browse` | MEDIUM | 擷取網頁內容 |
@@ -311,10 +317,12 @@ F:\coding\assistant\
 │   │   ├── base.py                # BaseTool, RiskLevel, ToolResult
 │   │   ├── filesystem/            # file_read, file_write, file_search
 │   │   ├── shell/                 # shell_execute
-│   │   ├── screen/                # screenshot, clipboard
+│   │   ├── screen/                # screenshot, clipboard, desktop_control, computer_use
 │   │   ├── calendar/              # CalDAV integration
 │   │   ├── web/                   # Web browsing
-│   │   └── memory_tools/          # memory_search, memory_store
+│   │   ├── memory_tools/          # memory_search, memory_store
+│   │   ├── agents/                # delegate_to_agent, list_agents
+│   │   └── scheduler/             # schedule_add/list/remove/enable/disable
 │   │
 │   ├── adapters/
 │   │   ├── __init__.py
@@ -364,7 +372,7 @@ F:\coding\assistant\
 
 ## 實作階段
 
-### 第一階段：基礎架構
+### 第一階段：基礎架構 ✅ 已完成
 - Poetry 專案初始化、安裝依賴
 - `config.py` - YAML 設定 + Pydantic 驗證
 - `model_router.py` - LiteLLM 單模型支援
@@ -374,7 +382,7 @@ F:\coding\assistant\
 - `main.py` - 程式進入點
 - **成果：** 可運作的 CLI 聊天機器人，支援雲端 + 本機模型切換
 
-### 第二階段：工具系統 + 安全性 + 操作歷程
+### 第二階段：工具系統 + 安全性 + 操作歷程 ✅ 已完成
 - `tools/base.py` - BaseTool, RiskLevel, ToolResult
 - `tool_system.py` - 自動探索、工具註冊
 - `action_log.py` - JSONL 操作歷程記錄器（零 token 消耗）
@@ -385,17 +393,17 @@ F:\coding\assistant\
 - 首批工具：`file_read`, `file_write`, `file_search`, `shell_execute`
 - **成果：** CLI 助理具備檔案/Shell 工具 + 人工審批 + 操作歷程記錄
 
-### 第三階段：記憶系統
+### 第三階段：記憶系統 ✅ 已完成
 - `memory/working.py`, `history.py`, `longterm.py`, `manager.py`
 - ChromaDB + MEMORY.md 整合
 - 明確事實儲存的記憶工具
 - **成果：** 跨會話的持久記憶
 
-### 第四階段：電腦操控工具（詳細實作計畫）
+### 第四階段：電腦操控工具（詳細實作計畫） ✅ 已完成
 
-**新增依賴：** `mss`, `Pillow`, `playwright`, `icalendar`
+**新增依賴：** `mss`, `Pillow`, `playwright`, `icalendar`, `pyautogui`
 
-**安裝步驟：** `poetry add mss Pillow playwright icalendar` + `playwright install chromium`
+**安裝步驟：** `poetry add mss Pillow playwright icalendar pyautogui` + `playwright install chromium`
 
 #### 4-1. 螢幕截圖 `src/tools/screen/screenshot.py`
 - `mss` 擷取螢幕 → `Pillow` 壓縮為 PNG → 存到 `~/.kuro/screenshots/`
@@ -462,9 +470,36 @@ class BrowserManager:
 - 瀏覽器：navigate 到 example.com → get_text → 驗證回傳文字
 - 瀏覽器操作：navigate → click → type → screenshot 完整流程
 
-- **成果：** 完整的電腦操控能力（截圖、剪貼簿、本地行事曆、瀏覽器操控）
+- **成果：** 完整的電腦操控能力（截圖、剪貼簿、本地行事曆、瀏覽器操控、**桌面滑鼠/鍵盤控制、Computer Use 視覺驅動自動化**）
 
-### 第五階段：通訊適配器（詳細實作計畫）
+#### 4-6. 桌面 GUI 自動化 `src/tools/screen/desktop_control.py` ✅
+
+**依賴：** `pyautogui`
+
+提供以下工具：
+- `mouse_action`（MEDIUM）：控制滑鼠 — 點擊、雙擊、右鍵、移動、拖曳、滾輪
+- `keyboard_action`（MEDIUM）：控制鍵盤 — 打字、按鍵、快捷鍵組合
+- `screen_info`（LOW）：取得螢幕解析度和目前滑鼠位置
+
+**安全機制：**
+- pyautogui FAILSAFE：滑鼠移至左上角 (0,0) 緊急停止
+- 操作速率限制：至少 200ms 間隔
+- 座標邊界檢查：超出螢幕的座標會被拒絕
+
+#### 4-7. Computer Use 視覺驅動自動化 `src/tools/screen/computer_use.py` ✅
+
+提供 `computer_use`（HIGH）工具：
+- 接收任務描述 → 自動截圖 → 回傳截圖 + 提示訊息
+- 引導 Agent Loop 進入 computer use 模式（截圖 → 分析 → 動作 → 截圖...）
+- 需要 Vision 模型（Claude Sonnet/Opus, GPT-4o, Gemini Pro Vision）
+
+#### 4-8. Vision 截圖支援 ✅
+
+- `ToolResult` 新增 `image_path` 欄位
+- Engine 自動將 `image_path` 轉為 base64 multimodal 訊息傳給 Vision 模型
+- `screenshot` 工具回傳時填入 `image_path`
+
+### 第五階段：通訊適配器（詳細實作計畫） ✅ 已完成
 
 **新增依賴：** `python-telegram-bot[ext]`（v21+，原生 async）
 
@@ -677,7 +712,7 @@ async def async_adapter_main(config, adapters: list[str]):
 
 - **成果：** Telegram 通訊 + 可擴展的適配器框架
 
-### 第六階段：Web GUI（詳細實作計畫）
+### 第六階段：Web GUI（詳細實作計畫） ✅ 已完成
 
 **新增依賴：** `fastapi`, `uvicorn[standard]`
 
@@ -881,9 +916,18 @@ async def async_web_main(config: KuroConfig) -> None:
    - 手機響應式（瀏覽器 DevTools）
    - WebSocket 斷線重連
 
-- **成果：** 瀏覽器介面於 localhost:7860
+#### 6-9. Web GUI 即時螢幕預覽 ✅
 
-### 第七階段：完善 — System Prompt 加密 + 完整文件（詳細實作計畫）
+Computer Use 期間，Web GUI 自動顯示即時螢幕預覽：
+
+- WebSocket 新增 `screen_update` 訊息類型（Server → Client）
+- Engine 新增 `ToolExecutionCallback` 介面
+- WebServer 實作 `WebToolCallback`，在 `screenshot`/`computer_use` 執行後推送截圖
+- 前端新增可摺疊的螢幕預覽面板（步驟計數器 + 動作說明 + 即時截圖）
+
+- **成果：** 瀏覽器介面於 localhost:7860（含即時螢幕預覽）
+
+### 第七階段：完善 — System Prompt 加密 + 完整文件（詳細實作計畫） ✅ 已完成
 
 **新增依賴：** `cryptography>=42.0`
 

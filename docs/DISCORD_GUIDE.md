@@ -394,9 +394,9 @@ Usage: !trust low|medium|high|critical
 
 | 等級 | 自動核准工具範例 | 建議場景 |
 |------|----------------|---------|
-| **LOW** | file_read, screenshot, memory_search, get_time | 一般使用（預設） |
-| **MEDIUM** | file_write, clipboard_write, web_navigate | 信任的使用者 |
-| **HIGH** | shell_execute | 開發環境、受控環境 |
+| **LOW** | file_read, screenshot, memory_search, get_time, screen_info | 一般使用（預設） |
+| **MEDIUM** | file_write, clipboard_write, web_navigate, mouse_action, keyboard_action | 信任的使用者 |
+| **HIGH** | shell_execute, computer_use | 開發環境、受控環境 |
 | **CRITICAL** | send_message | 不建議使用 |
 
 ---
@@ -526,7 +526,50 @@ NAME              ID         SIZE    PROCESSOR    UNTIL
 qwen3-coder:latest a1b2c3d4   4.7 GB  100% GPU     4 minutes from now
 ```
 
-### 場景 6: 本地模型（完全離線）
+### 場景 6: Computer Use（桌面控制）
+
+透過 Discord 指揮 Kuro 操控本機桌面：
+
+```
+User: @Kuro 幫我打開 Chrome 然後搜尋今天的天氣
+
+Bot: 好的，我來操控你的電腦完成這個任務。
+
+     ⚡ Approval Required
+     Tool: computer_use
+     Risk: ⚠️ HIGH
+     Params: task="打開 Chrome 搜尋今天的天氣"
+     [Allow] [Deny]
+
+User: [點擊 Allow]
+
+Bot: [截圖] 目前畫面：桌面
+     → keyboard_action(hotkey, ["win","r"])
+     [截圖] 執行對話框已開啟
+     → keyboard_action(type, "chrome")
+     → keyboard_action(press, "enter")
+     [截圖] Chrome 已開啟
+     → keyboard_action(type, "今天天氣")
+     → keyboard_action(press, "enter")
+     [截圖] 搜尋結果
+
+     完成！以下是搜尋結果截圖。
+```
+
+> **注意：** Computer Use 需要 Kuro 運行在有顯示器的環境（非 Docker headless）。
+> 建議使用支援 Vision 的模型（Claude Sonnet/Opus, GPT-4o）以獲得最佳效果。
+
+**安全建議：** 在 Discord 環境中建議對桌面控制工具保持嚴格審批：
+
+```yaml
+security:
+  require_approval_for:
+    - computer_use
+    - mouse_action
+    - keyboard_action
+```
+
+### 場景 7: 本地模型（完全離線）
 
 ```
 !model ollama/qwen3:32b
@@ -536,6 +579,8 @@ User: @Kuro 你現在是用本地模型嗎？
 Bot: 是的！我現在運行在本地的 Qwen3 32B 模型上，
      你的資料完全不會離開這台機器。
 ```
+
+> **Computer Use + 本地模型：** 若要使用 Computer Use，需選用支援 Vision 的本地模型（如 `ollama/llava`）。純文字模型無法分析截圖。
 
 ---
 
