@@ -2,7 +2,7 @@
 
 > **Kuro** - 在幕後默默運作的守護者。
 
-A privacy-first personal AI assistant with multi-agent architecture, multi-model support, computer control, messaging integration, and a browser-based GUI.
+A privacy-first personal AI assistant with multi-agent architecture, multi-model support, **desktop computer control (Computer Use)**, messaging integration, and a browser-based GUI with real-time screen preview.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -10,13 +10,14 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 
 ## Features
 
+- **Computer Use** - AI sees your screen (Vision) and controls mouse/keyboard to complete desktop tasks autonomously
 - **Multi-Agent System** - Delegate tasks to sub-agents with different models (local/cloud)
 - **Task Scheduler** - Cron-like scheduling for automated tool execution (daily, weekly, hourly, interval)
 - **Multi-model support** - Anthropic Claude, OpenAI GPT, Google Gemini, Ollama local models via LiteLLM
-- **25+ built-in tools** - Files, shell, screenshots, clipboard, calendar, browser automation, memory, time, scheduling, agent delegation
+- **30+ built-in tools** - Files, shell, desktop control, screenshots, clipboard, calendar, browser automation, memory, time, scheduling, agent delegation
 - **Skills + Plugins** - On-demand SKILL.md instructions, external Python tool plugins
 - **Messaging integration** - Telegram, Discord (full), LINE (stub)
-- **Web GUI** - Dark-themed browser interface at `localhost:7860` with WebSocket streaming
+- **Web GUI** - Dark-themed browser interface at `localhost:7860` with WebSocket streaming and live screen preview
 - **CLI** - Rich terminal with markdown rendering, streaming, slash commands
 - **5-layer security** - Approval, sandbox, credentials, audit, sanitizer
 - **3-tier memory** - Working memory, conversation history (SQLite), long-term RAG (ChromaDB)
@@ -33,6 +34,7 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 - [Poetry](https://python-poetry.org/docs/#installation)
 - (Optional) [Ollama](https://ollama.ai/) for local models
 - (Optional) Playwright: `playwright install chromium` for browser tools
+- (Optional) Display server for desktop control: X11 on Linux, Quartz on macOS
 
 ### Setup
 
@@ -73,7 +75,7 @@ poetry run kuro --web
 # Open http://127.0.0.1:7860
 ```
 
-Browser-based chat with dark theme, streaming, approval modals, settings panel, and audit log viewer.
+Browser-based chat with dark theme, streaming, approval modals, settings panel, audit log viewer, and **live screen preview** during Computer Use.
 
 ### Telegram Bot Mode
 
@@ -94,6 +96,145 @@ poetry run kuro --discord
 ```bash
 poetry run kuro --adapters
 ```
+
+---
+
+## Computer Use (Desktop Control)
+
+Kuro can see your screen and control your mouse and keyboard to complete tasks autonomously — like a human operating a computer.
+
+### How It Works
+
+1. You describe a task in natural language
+2. Kuro takes a screenshot and analyzes the current screen state (Vision)
+3. Kuro executes mouse/keyboard actions to complete the task
+4. After each action, Kuro takes a new screenshot to verify progress
+5. The cycle repeats until the task is done
+
+> **Requires a Vision-capable model** — Claude Sonnet/Opus, GPT-4o, Gemini Pro Vision, or a local model with image support (e.g., `ollama/llava`).
+
+### Basic Usage
+
+**CLI:**
+
+```
+> 幫我打開記事本，輸入 "Hello World" 然後存檔
+
+AI: 好的，我來操控你的電腦完成這個任務。
+    [呼叫 computer_use(task="打開記事本，輸入 Hello World 然後存檔")]
+    → 截圖：看到桌面
+    → keyboard_action(hotkey, ["win","r"]) — 開啟「執行」
+    → 截圖：看到執行對話框
+    → keyboard_action(type, "notepad") — 輸入 notepad
+    → keyboard_action(press, "enter")
+    → 截圖：記事本已開啟
+    → keyboard_action(type, "Hello World")
+    → keyboard_action(hotkey, ["ctrl","s"])
+    → 截圖：存檔對話框
+    → keyboard_action(press, "enter")
+    → 截圖：確認存檔完成
+    完成！
+```
+
+**Web GUI:**
+
+打開 `http://127.0.0.1:7860` 後，發送任何涉及桌面操作的指令，右側螢幕預覽面板會即時顯示每一步的截圖，以及目前執行的動作說明。
+
+### Desktop Control Tools
+
+| Tool | Risk | Description |
+|---|---|---|
+| `computer_use` | HIGH | 啟動 Computer Use 模式：AI 看到螢幕後透過滑鼠鍵盤完成任務 |
+| `mouse_action` | MEDIUM | 控制滑鼠：移動、點擊、雙擊、右鍵、拖曳、滾輪 |
+| `keyboard_action` | MEDIUM | 控制鍵盤：打字、按鍵、快捷鍵組合 |
+| `screen_info` | LOW | 取得螢幕解析度和目前滑鼠位置 |
+| `screenshot` | LOW | 截取螢幕（支援 Vision 模型圖片傳遞）|
+
+#### mouse_action 參數
+
+```
+action  : click | double_click | right_click | move | drag | scroll
+x, y    : 目標座標 (必填)
+end_x, end_y : 拖曳終點座標 (drag 專用)
+scroll_amount: 滾輪量，正數=向上，負數=向下 (scroll 專用)
+```
+
+**範例：**
+
+```
+點擊座標 (500, 300)
+> 請點擊螢幕座標 (500, 300)
+  → mouse_action(click, x=500, y=300)
+
+拖曳檔案
+> 把檔案從 (100, 200) 拖曳到 (800, 400)
+  → mouse_action(drag, x=100, y=200, end_x=800, end_y=400)
+
+向下滾動頁面
+> 往下滾動頁面
+  → mouse_action(scroll, x=960, y=540, scroll_amount=-3)
+```
+
+#### keyboard_action 參數
+
+```
+action : type | press | hotkey
+text   : 要輸入的文字 (type 專用)
+key    : 單一按鍵名稱 (press 專用，如 enter、tab、escape、f5、delete)
+keys   : 快捷鍵組合陣列 (hotkey 專用，如 ["ctrl","c"]、["alt","f4"])
+```
+
+**常用快捷鍵範例：**
+
+```
+複製          → keyboard_action(hotkey, ["ctrl","c"])
+貼上          → keyboard_action(hotkey, ["ctrl","v"])
+儲存          → keyboard_action(hotkey, ["ctrl","s"])
+全選          → keyboard_action(hotkey, ["ctrl","a"])
+關閉視窗      → keyboard_action(hotkey, ["alt","f4"])
+開啟工作管理員 → keyboard_action(hotkey, ["ctrl","shift","escape"])
+切換視窗      → keyboard_action(hotkey, ["alt","tab"])
+按下 Enter    → keyboard_action(press, "enter")
+```
+
+### Web GUI 螢幕預覽
+
+在 Web GUI (`--web` 模式) 中，每當 Kuro 使用桌面控制工具時：
+
+- 右側自動顯示**螢幕預覽面板**
+- 每一步操作後**即時更新截圖**
+- 顯示目前執行的動作說明（如 `click at (500, 300)`）
+- 顯示步驟計數器
+- 可折疊面板節省空間
+
+### 安全設定
+
+Computer Use 工具的安全注意事項：
+
+| 機制 | 說明 |
+|---|---|
+| FAILSAFE | 滑鼠快速移動到螢幕**左上角 (0,0)** 可緊急停止所有操作 |
+| 速率限制 | 每次操作間隔至少 200ms，避免太快失控 |
+| 審批機制 | `computer_use` 為 HIGH risk，預設需要人工確認 |
+| 座標檢查 | 超出螢幕範圍的座標會被拒絕執行 |
+
+建議在 `config.yaml` 中加入額外保護：
+
+```yaml
+security:
+  require_approval_for:
+    - "keyboard_action"   # 鍵盤操作需確認
+    - "mouse_action"      # 滑鼠操作需確認
+    - "computer_use"      # Computer Use 需確認
+```
+
+### 平台需求
+
+| 平台 | 需求 |
+|---|---|
+| **Linux** | X11 顯示伺服器（不支援 Wayland 原生），需 `DISPLAY` 環境變數 |
+| **macOS** | 需在「系統設定 → 隱私權 → 輔助使用」授予 Python 控制權限 |
+| **Windows** | 直接支援，無需額外設定 |
 
 ---
 
@@ -453,9 +594,9 @@ poetry run kuro --encrypt-prompt
 
 | Level | Auto-approve | Examples |
 |---|---|---|
-| LOW | Yes | `file_read`, `screenshot`, `memory_search`, `get_time`, `list_agents` |
-| MEDIUM | With trust | `file_write`, `clipboard_write`, `web_navigate`, `delegate_to_agent` |
-| HIGH | Never | `shell_execute` |
+| LOW | Yes | `file_read`, `screenshot`, `memory_search`, `get_time`, `list_agents`, `screen_info` |
+| MEDIUM | With trust | `file_write`, `clipboard_write`, `web_navigate`, `delegate_to_agent`, `mouse_action`, `keyboard_action` |
+| HIGH | Never | `shell_execute`, `computer_use` |
 | CRITICAL | Never | `send_message` |
 
 ---
@@ -486,10 +627,14 @@ Manually editable file at `~/.kuro/memory/MEMORY.md`. Kuro reads this on every c
 | `file_search` | LOW | Search/glob files |
 | **Shell** |||
 | `shell_execute` | HIGH | Execute shell commands |
-| **Screen** |||
-| `screenshot` | LOW | Capture screen (mss + Pillow) |
+| **Screen & Desktop Control** |||
+| `screenshot` | LOW | Capture screen (mss + Pillow)，支援傳給 Vision 模型 |
 | `clipboard_read` | LOW | Read clipboard |
 | `clipboard_write` | MEDIUM | Write clipboard |
+| `screen_info` | LOW | 取得螢幕解析度和目前滑鼠位置 |
+| `mouse_action` | MEDIUM | 控制滑鼠：移動、點擊、雙擊、右鍵、拖曳、滾輪 |
+| `keyboard_action` | MEDIUM | 控制鍵盤：打字、按鍵、快捷鍵組合 |
+| `computer_use` | HIGH | 視覺驅動的桌面自動化（截圖 → 分析 → 操作 → 截圖...）|
 | **Calendar & Time** |||
 | `calendar_read` | LOW | Read local ICS calendar |
 | `calendar_write` | MEDIUM | Add calendar events |
@@ -507,6 +652,14 @@ Manually editable file at `~/.kuro/memory/MEMORY.md`. Kuro reads this on every c
 | **Agents** |||
 | `delegate_to_agent` | MEDIUM | Delegate task to sub-agent |
 | `list_agents` | LOW | List available agents |
+| **Scheduling** |||
+| `schedule_add` | MEDIUM | Create scheduled task |
+| `schedule_list` | LOW | List all scheduled tasks |
+| `schedule_remove` | MEDIUM | Delete scheduled task |
+| `schedule_enable` | MEDIUM | Enable disabled task |
+| `schedule_disable` | MEDIUM | Disable task |
+| **Session** |||
+| `session_clear` | LOW | Clear conversation history |
 
 ---
 
@@ -622,11 +775,12 @@ src/
     base.py                   # BaseTool ABC + RiskLevel
     filesystem/               # file_read, file_write, file_search
     shell/                    # shell_execute
-    screen/                   # screenshot, clipboard
+    screen/                   # screenshot, clipboard, desktop_control, computer_use
     calendar/                 # calendar_read, calendar_write, get_time
     web/                      # browser automation (Playwright)
     memory_tools/             # memory_search, memory_store
     agents/                   # delegate_to_agent, list_agents
+    scheduler/                # schedule_add/list/remove/enable/disable
   adapters/
     base.py                   # BaseAdapter ABC
     manager.py                # Adapter lifecycle
@@ -635,8 +789,11 @@ src/
     line_adapter.py           # LINE (stub)
   ui/
     cli.py                    # Rich terminal interface
-    web_server.py             # FastAPI + WebSocket
+    web_server.py             # FastAPI + WebSocket (incl. screen preview push)
     web/                      # Static HTML/CSS/JS
+      index.html              # Web GUI (incl. screen preview panel)
+      app.js                  # WebSocket client (incl. screen_update handler)
+      style.css               # Dark theme + screen preview styles
 tests/
   test_phase4.py              # Computer control tests
   test_phase5.py              # Messaging adapter tests
