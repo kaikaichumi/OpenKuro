@@ -611,6 +611,39 @@ class DiscordAdapter(BaseAdapter):
                 )
 
 
+    async def send_notification(self, user_id: str, message: str) -> bool:
+        """Send a proactive notification to a Discord channel.
+
+        Args:
+            user_id: The channel ID (as string) to send to.
+            message: The notification message.
+
+        Returns:
+            True if sent successfully.
+        """
+        if self._bot is None or not self._bot.is_ready():
+            logger.warning("discord_notify_bot_not_ready")
+            return False
+
+        try:
+            channel_id = int(user_id)
+            channel = self._bot.get_channel(channel_id)
+            if channel is None:
+                channel = await self._bot.fetch_channel(channel_id)
+
+            max_len = self.config.adapters.discord.max_message_length
+            chunks = split_message(message, max_len)
+            for chunk in chunks:
+                await channel.send(chunk)
+
+            logger.info("discord_notification_sent", channel_id=channel_id)
+            return True
+
+        except Exception as e:
+            logger.error("discord_notification_failed", error=str(e), user_id=user_id)
+            return False
+
+
 def split_message(text: str, max_len: int = 2000) -> list[str]:
     """Split a message into chunks respecting Discord's length limit.
 

@@ -19,6 +19,10 @@ from src.config import get_kuro_home
 
 logger = structlog.get_logger()
 
+# Type alias for notification callback:
+# (adapter_name, user_id, message) -> success
+NotificationCallback = Callable[[str, str, str], Any]
+
 
 class ScheduleType(str, Enum):
     """Types of schedule patterns."""
@@ -47,6 +51,8 @@ class ScheduledTask:
     next_run: datetime | None = None
     run_count: int = 0
     created_at: datetime = field(default_factory=lambda: datetime.now())
+    notify_adapter: str | None = None   # "discord" / "telegram" / None
+    notify_user_id: str | None = None   # Channel/chat ID for notifications
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -64,6 +70,8 @@ class ScheduledTask:
             "next_run": self.next_run.isoformat() if self.next_run else None,
             "run_count": self.run_count,
             "created_at": self.created_at.isoformat(),
+            "notify_adapter": self.notify_adapter,
+            "notify_user_id": self.notify_user_id,
         }
 
     @classmethod
@@ -83,6 +91,8 @@ class ScheduledTask:
             next_run=datetime.fromisoformat(data["next_run"]) if data.get("next_run") else None,
             run_count=data.get("run_count", 0),
             created_at=datetime.fromisoformat(data["created_at"]),
+            notify_adapter=data.get("notify_adapter"),
+            notify_user_id=data.get("notify_user_id"),
         )
 
 
@@ -100,6 +110,7 @@ class TaskScheduler:
         self._running = False
         self._loop_task: asyncio.Task | None = None
         self._executor: Callable | None = None
+        self._notification_callback: NotificationCallback | None = None
 
         # Load existing tasks
         self._load_tasks()
@@ -113,6 +124,15 @@ class TaskScheduler:
         """
         self._executor = executor
 
+    def set_notification_callback(self, callback: NotificationCallback) -> None:
+        """Set the notification callback for task results.
+
+        Args:
+            callback: Async function with signature:
+                     (adapter_name: str, user_id: str, message: str) -> bool
+        """
+        self._notification_callback = callback
+
     def add_task(
         self,
         task_id: str,
@@ -123,6 +143,8 @@ class TaskScheduler:
         schedule_time: str | None = None,
         schedule_days: list[int] | None = None,
         interval_minutes: int | None = None,
+        notify_adapter: str | None = None,
+        notify_user_id: str | None = None,
     ) -> ScheduledTask:
         """Add a new scheduled task.
 
@@ -154,6 +176,8 @@ class TaskScheduler:
             schedule_time=schedule_time,
             schedule_days=schedule_days,
             interval_minutes=interval_minutes,
+            notify_adapter=notify_adapter,
+            notify_user_id=notify_user_id,
         )
 
         # Calculate next run time
@@ -347,6 +371,9 @@ class TaskScheduler:
             result_preview = result[:200] if isinstance(result, str) else str(result)[:200]
             logger.debug("task_result", task_id=task.id, result=result_preview)
 
+            # Send notification on success
+            await self._notify_result(task, result)
+
         except Exception as e:
             logger.error("task_execution_failed", task_id=task.id, error=str(e))
 
@@ -354,6 +381,38 @@ class TaskScheduler:
             task.last_run = datetime.now()
             task.next_run = self._calculate_next_run(task)
             self._save_tasks()
+
+            # Send error notification
+            await self._notify_error(task, e)
+
+    async def _notify_result(self, task: ScheduledTask, result: str) -> None:
+        """Send a success notification for a completed task."""
+        if not (task.notify_adapter and task.notify_user_id and self._notification_callback):
+            return
+
+        try:
+            result_preview = result[:1500] if isinstance(result, str) else str(result)[:1500]
+            msg = (
+                f"\U0001f4cb Scheduled task completed: **{task.name}**\n\n"
+                f"Result:\n{result_preview}"
+            )
+            await self._notification_callback(task.notify_adapter, task.notify_user_id, msg)
+        except Exception as e:
+            logger.error("task_notify_failed", task_id=task.id, error=str(e))
+
+    async def _notify_error(self, task: ScheduledTask, error: Exception) -> None:
+        """Send an error notification for a failed task."""
+        if not (task.notify_adapter and task.notify_user_id and self._notification_callback):
+            return
+
+        try:
+            msg = (
+                f"\u274c Scheduled task failed: **{task.name}**\n\n"
+                f"Error: {str(error)[:500]}"
+            )
+            await self._notification_callback(task.notify_adapter, task.notify_user_id, msg)
+        except Exception as e:
+            logger.error("task_error_notify_failed", task_id=task.id, error=str(e))
 
     def _load_tasks(self) -> None:
         """Load tasks from storage."""

@@ -55,6 +55,12 @@ class ScheduleAddTool(BaseTool):
             "interval_minutes": {
                 "type": "integer",
                 "description": "Interval in minutes (for interval schedules)"
+            },
+            "notify": {
+                "type": "boolean",
+                "description": "Send notification when task completes (default: true). "
+                               "Notifications are sent to the adapter/channel where the task was created.",
+                "default": True
             }
         },
         "required": ["task_id", "name", "tool_name", "schedule_type"]
@@ -67,6 +73,17 @@ class ScheduleAddTool(BaseTool):
     async def execute(self, params: dict[str, Any], context: ToolContext) -> ToolResult:
         """Add a scheduled task."""
         try:
+            # Capture notification target from current session
+            notify_adapter = None
+            notify_user_id = None
+            if params.get("notify", True) and context.session:
+                adapter = getattr(context.session, "adapter", "cli")
+                user_id = getattr(context.session, "user_id", "local")
+                # Only enable notifications for platform adapters (not CLI)
+                if adapter in ("discord", "telegram"):
+                    notify_adapter = adapter
+                    notify_user_id = user_id
+
             task = self.scheduler.add_task(
                 task_id=params["task_id"],
                 name=params["name"],
@@ -76,16 +93,20 @@ class ScheduleAddTool(BaseTool):
                 schedule_time=params.get("schedule_time"),
                 schedule_days=params.get("schedule_days"),
                 interval_minutes=params.get("interval_minutes"),
+                notify_adapter=notify_adapter,
+                notify_user_id=notify_user_id,
             )
 
             schedule_info = self._format_schedule(task)
             next_run = task.next_run.strftime("%Y-%m-%d %H:%M") if task.next_run else "N/A"
+            notify_info = f"Notify: {notify_adapter}" if notify_adapter else "Notify: off"
 
             return ToolResult.ok(
                 f"✅ Scheduled task '{task.name}' (ID: {task.id})\n\n"
                 f"Tool: {task.tool_name}\n"
                 f"Schedule: {schedule_info}\n"
-                f"Next run: {next_run}"
+                f"Next run: {next_run}\n"
+                f"{notify_info}"
             )
 
         except ValueError as e:

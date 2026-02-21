@@ -77,6 +77,42 @@ class AdapterManager:
         except Exception as e:
             logger.error("adapter_start_failed", adapter=name, error=str(e))
 
+    async def send_notification(
+        self,
+        adapter_name: str,
+        user_id: str,
+        message: str,
+    ) -> bool:
+        """Send a proactive notification through a specific adapter.
+
+        Used by the scheduler and workflow engine to push results
+        to users via Discord/Telegram.
+
+        Args:
+            adapter_name: Name of the adapter (e.g., "discord", "telegram").
+            user_id: Platform-specific user/channel identifier.
+            message: The notification message to send.
+
+        Returns:
+            True if the message was sent successfully.
+        """
+        adapter = self._adapters.get(adapter_name)
+        if adapter is None:
+            logger.warning(
+                "notification_adapter_not_found",
+                adapter=adapter_name,
+            )
+            return False
+        try:
+            return await adapter.send_notification(user_id, message)
+        except Exception as e:
+            logger.error(
+                "notification_send_failed",
+                adapter=adapter_name,
+                error=str(e),
+            )
+            return False
+
     async def stop_all(self) -> None:
         """Stop all registered adapters gracefully."""
         logger.info("adapters_stopping")

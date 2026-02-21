@@ -44,7 +44,10 @@ HELP_TEXT = """
 - `/model <name>` - Switch model (e.g., `/model gemini/gemini-2.5-flash`)
 - `/model` - Show current model
 - `/trust <level>` - Set session trust level (low/medium/high)
-- `/skills` - List all available skills
+- `/skills` - List all loaded skills
+- `/skills available` - List built-in skills catalog
+- `/skills install <name>` - Install a built-in skill
+- `/skills search <query>` - Search skills by keyword
 - `/skill <name>` - Activate/deactivate a skill (toggle)
 - `/plugins` - List loaded plugins and their tools
 - `/agents` - List all registered sub-agents
@@ -52,6 +55,11 @@ HELP_TEXT = """
 - `/agent delete <name>` - Delete a sub-agent
 - `/agent info <name>` - Show agent details
 - `/agent run <name> <task>` - Run a task on a sub-agent
+- `/stats` - Show usage analytics and smart suggestions
+- `/security` - Show security posture score
+- `/version` - Show current version and git info
+- `/update` - Check for and install updates
+- `/personality` - Show or edit personality settings
 - `/history` - Show conversation history
 - `/clear` - Clear conversation history
 - `/quit` or `/exit` - Exit Kuro
@@ -250,14 +258,30 @@ class CLI:
                 )
 
         elif cmd == "/skills":
-            skills = self.engine.skills.list_skills() if self.engine.skills else []
-            if not skills:
-                console.print("[dim]No skills found. Place SKILL.md files in ~/.kuro/skills/<name>/[/dim]")
+            if arg.startswith("install "):
+                skill_name = arg[8:].strip()
+                await self._install_skill(skill_name)
+            elif arg == "available":
+                await self._list_available_skills()
+            elif arg.startswith("search "):
+                query = arg[7:].strip()
+                await self._search_skills(query)
+            elif arg in ("install", "search"):
+                console.print(
+                    "[yellow]Usage: /skills install <name> | /skills search <query> | /skills available[/yellow]"
+                )
             else:
-                active = self.engine.skills._active if self.engine.skills else set()
-                for s in skills:
-                    marker = "[green]\u25cf[/green]" if s.name in active else "[dim]\u25cb[/dim]"
-                    console.print(f"  {marker} {s.name} \u2014 {s.description}")
+                skills = self.engine.skills.list_skills() if self.engine.skills else []
+                if not skills:
+                    console.print("[dim]No skills found. Try /skills available to see built-in skills.[/dim]")
+                else:
+                    active = self.engine.skills._active if self.engine.skills else set()
+                    for s in skills:
+                        marker = "[green]\u25cf[/green]" if s.name in active else "[dim]\u25cb[/dim]"
+                        source_tag = f" [dim]({s.source})[/dim]" if s.source != "local" else ""
+                        console.print(f"  {marker} {s.name} \u2014 {s.description}{source_tag}")
+                    console.print(f"\n[dim]Total: {len(skills)} skills ({len(active)} active)[/dim]")
+                    console.print("[dim]See also: /skills available, /skills install <name>, /skills search <query>[/dim]")
 
         elif cmd == "/skill":
             if not arg:
@@ -409,6 +433,21 @@ class CLI:
                     preview = msg.content[:200] if msg.content else "(empty)"
                     console.print(f"[{role_color}]{msg.role.value}:[/{role_color}] {preview}")
 
+        elif cmd == "/stats":
+            await self._show_stats()
+
+        elif cmd == "/security":
+            await self._show_security()
+
+        elif cmd == "/version":
+            await self._show_version()
+
+        elif cmd == "/update":
+            await self._handle_update()
+
+        elif cmd == "/personality":
+            await self._handle_personality(arg)
+
         elif cmd == "/clear":
             self.session = Session(adapter="cli")
             console.print("[green]Conversation cleared[/green]")
@@ -522,6 +561,265 @@ class CLI:
         console.print(
             f"\n[green]Agent '{name}' created with model {model}[/green]"
         )
+
+    async def _install_skill(self, skill_name: str) -> None:
+        """Install a built-in skill to the user's skills directory."""
+        if not self.engine.skills:
+            console.print("[dim]Skills system not initialized[/dim]")
+            return
+
+        result = self.engine.skills.install_skill(skill_name)
+        if result:
+            console.print(f"[green]Installed skill '{skill_name}' to {result}[/green]")
+            console.print(f"[dim]Activate with: /skill {skill_name}[/dim]")
+        else:
+            console.print(f"[red]Failed to install skill '{skill_name}'. Is it in the built-in catalog?[/red]")
+            console.print("[dim]Use /skills available to see installable skills.[/dim]")
+
+    async def _list_available_skills(self) -> None:
+        """List all skills available for installation."""
+        if not self.engine.skills:
+            console.print("[dim]Skills system not initialized[/dim]")
+            return
+
+        available = self.engine.skills.list_available_skills()
+        if not available:
+            console.print("[dim]No built-in skills found in catalog.[/dim]")
+            return
+
+        console.print("[bold]Available Skills (built-in catalog):[/bold]\n")
+        for s in available:
+            installed = "[green](installed)[/green]" if s["installed"] == "yes" else "[dim](not installed)[/dim]"
+            console.print(f"  [cyan]{s['name']}[/cyan] \u2014 {s['description']} {installed}")
+
+        console.print(f"\n[dim]Install with: /skills install <name>[/dim]")
+
+    async def _search_skills(self, query: str) -> None:
+        """Search skills by keyword."""
+        if not self.engine.skills:
+            console.print("[dim]Skills system not initialized[/dim]")
+            return
+
+        results = self.engine.skills.search_skills(query)
+        if not results:
+            console.print(f"[dim]No skills matching '{query}'[/dim]")
+            return
+
+        console.print(f"[bold]Skills matching '{query}':[/bold]")
+        active = self.engine.skills._active
+        for s in results:
+            marker = "[green]\u25cf[/green]" if s.name in active else "[dim]\u25cb[/dim]"
+            console.print(f"  {marker} [cyan]{s.name}[/cyan] \u2014 {s.description} [dim]({s.source})[/dim]")
+
+    async def _show_stats(self) -> None:
+        """Show usage analytics and smart suggestions."""
+        from src.core.analytics import CostEstimator, SmartAdvisor, UsageAnalyzer
+
+        console.print("[dim]Analyzing usage data...[/dim]")
+
+        try:
+            analyzer = UsageAnalyzer()
+            usage = await analyzer.get_usage_summary(14)
+
+            console.print(
+                Panel(
+                    Text.from_markup(
+                        f"[bold]Tool Calls (14d):[/bold] {usage.get('total_calls', 0)}\n"
+                        f"[bold]Sessions:[/bold] {usage.get('unique_sessions', 0)}\n"
+                        f"[bold]Error Rate:[/bold] {usage.get('error_rate', 0)}%"
+                    ),
+                    title="[bold blue]📊 Usage Summary[/bold blue]",
+                    border_style="blue",
+                )
+            )
+
+            # Top tools
+            tool_counts = usage.get("tool_counts", {})
+            if tool_counts:
+                console.print("\n[bold]Most Used Tools:[/bold]")
+                for tool, count in sorted(tool_counts.items(), key=lambda x: -x[1])[:10]:
+                    bar = "█" * min(count, 30)
+                    console.print(f"  [cyan]{tool:<20}[/cyan] {bar} {count}")
+
+            # Cost estimate
+            estimator = CostEstimator()
+            costs = await estimator.estimate_costs(14)
+            total_cost = costs.get("total_estimated_cost_usd", 0)
+            if total_cost > 0:
+                console.print(f"\n[bold yellow]Estimated Cost (14d): ${total_cost:.4f}[/bold yellow]")
+                by_model = costs.get("by_model", {})
+                for model, info in sorted(by_model.items(), key=lambda x: -x[1].get("estimated_cost_usd", 0)):
+                    console.print(
+                        f"  {model}: {info['calls']} calls (${info['estimated_cost_usd']:.4f})"
+                    )
+
+            # Suggestions
+            advisor = SmartAdvisor()
+            result = await advisor.get_suggestions()
+            suggestions = result.get("suggestions", [])
+            if suggestions:
+                console.print("\n[bold]Smart Suggestions:[/bold]")
+                for s in suggestions:
+                    icon = s.get("icon", "💡")
+                    console.print(f"\n  {icon} [bold]{s.get('title', '')}[/bold]")
+                    console.print(f"    [dim]{s.get('detail', '')}[/dim]")
+
+        except Exception as e:
+            console.print(f"[red]Error loading stats: {e}[/red]")
+
+    async def _show_security(self) -> None:
+        """Show security posture score."""
+        console.print("[dim]Analyzing security posture...[/dim]")
+
+        try:
+            score_data = await self.engine.audit.get_security_score()
+            score = score_data.get("score", 0)
+            grade = score_data.get("grade", "?")
+
+            # Color based on score
+            if score >= 90:
+                color = "green"
+            elif score >= 70:
+                color = "yellow"
+            else:
+                color = "red"
+
+            factors_text = ""
+            for f in score_data.get("factors", []):
+                status_icon = "✅" if f["status"] == "ok" else "⚠️" if f["status"] == "warning" else "❌"
+                factors_text += f"  {status_icon} {f['name']}: {f['detail']}\n"
+
+            console.print(
+                Panel(
+                    Text.from_markup(
+                        f"[bold]Score:[/bold] [{color}]{score}/100 (Grade {grade})[/{color}]\n\n"
+                        f"[bold]Factors:[/bold]\n{factors_text}"
+                    ),
+                    title="[bold green]🛡️ Security Posture[/bold green]",
+                    border_style="green",
+                )
+            )
+
+            recs = score_data.get("recommendations", [])
+            if recs:
+                console.print("[bold yellow]Recommendations:[/bold yellow]")
+                for r in recs:
+                    console.print(f"  ⚠ {r}")
+
+            # Show today's stats
+            daily = await self.engine.audit.get_daily_stats()
+            console.print(
+                f"\n[bold]Today:[/bold] {daily['total_events']} events, "
+                f"{daily['approved']} approved, {daily['denied']} denied, "
+                f"{daily['security_events']} security events"
+            )
+
+        except Exception as e:
+            console.print(f"[red]Error loading security data: {e}[/red]")
+
+    async def _show_version(self) -> None:
+        """Show current version and git info."""
+        from src import __version__
+        from src.core.updater import Updater
+
+        updater = Updater()
+        console.print(f"[bold cyan]Kuro[/bold cyan] v{__version__}")
+
+        if updater.is_git_repo():
+            hash_ = await updater.get_current_hash()
+            branch = await updater.get_branch()
+            console.print(f"  Git: {branch} @ {hash_ or 'unknown'}")
+        else:
+            console.print("  [dim]Not a git repository[/dim]")
+
+    async def _handle_update(self) -> None:
+        """Check for and install updates."""
+        from src.core.updater import Updater
+
+        updater = Updater()
+        if not updater.is_git_repo():
+            console.print("[red]Not a git repository. Cannot update.[/red]")
+            return
+
+        console.print("[dim]Checking for updates...[/dim]")
+        info = await updater.check_for_updates()
+
+        if info is None:
+            console.print("[red]Failed to check for updates. Check network.[/red]")
+            return
+
+        if not info.has_update:
+            console.print(f"[green]Already up to date[/green] (commit: {info.current_hash})")
+            return
+
+        console.print(f"\n[bold yellow]Update available![/bold yellow]")
+        console.print(f"  Current: {info.current_hash}")
+        console.print(f"  Latest:  {info.remote_hash}")
+        console.print(f"  Behind:  {info.commits_behind} commit(s)")
+        if info.summary:
+            console.print(f"\n[dim]Recent changes:[/dim]\n{info.summary}")
+
+        # Confirm
+        from prompt_toolkit import prompt as pt_prompt
+        try:
+            confirm = pt_prompt("\nProceed with update? [Y/n] > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            confirm = "n"
+
+        if confirm not in ("", "y", "yes"):
+            console.print("[dim]Update cancelled.[/dim]")
+            return
+
+        console.print("[dim]Updating...[/dim]")
+        result = await updater.perform_update()
+
+        if result.success:
+            console.print(f"\n[green]✅ {result.message}[/green]")
+            if result.needs_restart:
+                console.print("[bold yellow]Please restart Kuro for the update to take effect.[/bold yellow]")
+        else:
+            console.print(f"\n[red]❌ Update failed: {result.message}[/red]")
+
+    async def _handle_personality(self, arg: str) -> None:
+        """Handle /personality command."""
+        from src.config import get_kuro_home
+
+        personality_path = get_kuro_home() / "personality.md"
+
+        if arg == "edit":
+            # Show path and suggest editing
+            console.print(f"[bold]Personality file:[/bold] {personality_path}")
+            console.print("[dim]Edit this file with your favorite text editor to customize Kuro's personality.[/dim]")
+            import subprocess, sys
+            if sys.platform == "win32":
+                subprocess.Popen(["notepad", str(personality_path)])
+                console.print("[green]Opened in Notepad.[/green]")
+            else:
+                editor = "nano"
+                import os
+                editor = os.environ.get("EDITOR", editor)
+                console.print(f"[dim]Run: {editor} {personality_path}[/dim]")
+        elif arg == "reset":
+            # Reset to default
+            from src.main import _get_default_personality
+            personality_path.write_text(_get_default_personality(), encoding="utf-8")
+            console.print("[green]Personality reset to default.[/green]")
+        else:
+            # Show current personality
+            if personality_path.exists():
+                content = personality_path.read_text(encoding="utf-8").strip()
+                if content:
+                    console.print(Panel(
+                        content,
+                        title="[bold cyan]🎭 Personality Settings[/bold cyan]",
+                        border_style="cyan",
+                    ))
+                    console.print(f"\n[dim]File: {personality_path}[/dim]")
+                    console.print("[dim]Use /personality edit to modify, /personality reset to restore defaults[/dim]")
+                else:
+                    console.print("[dim]Personality file is empty. Use /personality edit to add personality.[/dim]")
+            else:
+                console.print("[dim]No personality file found. It will be created on next startup.[/dim]")
 
     def _print_banner(self) -> None:
         """Print the startup banner."""

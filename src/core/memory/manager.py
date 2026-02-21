@@ -12,6 +12,7 @@ from typing import Any
 
 import structlog
 
+from src.config import get_kuro_home
 from src.core.memory.history import ConversationHistory
 from src.core.memory.longterm import LongTermMemory
 from src.core.memory.working import WorkingMemory
@@ -58,6 +59,19 @@ class MemoryManager:
 
         # 1. System prompt (user-configurable supplement)
         context.append(Message(role=Role.SYSTEM, content=system_prompt))
+
+        # 1.5 Personality (user-defined character & style)
+        try:
+            personality_path = get_kuro_home() / "personality.md"
+            if personality_path.exists():
+                personality_text = personality_path.read_text(encoding="utf-8").strip()
+                if personality_text:
+                    context.append(Message(
+                        role=Role.SYSTEM,
+                        content=f"[Personality & Style Guide]\n{personality_text}",
+                    ))
+        except Exception as e:
+            logger.debug("personality_load_failed", error=str(e))
 
         # 2. Active skills (instructions injected on-demand)
         if active_skills:

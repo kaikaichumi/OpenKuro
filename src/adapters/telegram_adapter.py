@@ -427,6 +427,37 @@ class TelegramAdapter(BaseAdapter):
                 f"\u274c Error processing message: {str(e)[:200]}"
             )
 
+    async def send_notification(self, user_id: str, message: str) -> bool:
+        """Send a proactive notification to a Telegram chat.
+
+        Args:
+            user_id: The chat ID (as string) to send to.
+            message: The notification message.
+
+        Returns:
+            True if sent successfully.
+        """
+        if self._app is None:
+            logger.warning("telegram_notify_app_not_ready")
+            return False
+
+        try:
+            chat_id = int(user_id)
+            max_len = self.config.adapters.telegram.max_message_length
+            chunks = split_message(message, max_len)
+            for chunk in chunks:
+                await self._app.bot.send_message(
+                    chat_id=chat_id,
+                    text=chunk,
+                )
+
+            logger.info("telegram_notification_sent", chat_id=chat_id)
+            return True
+
+        except Exception as e:
+            logger.error("telegram_notification_failed", error=str(e), user_id=user_id)
+            return False
+
     async def _on_callback_query(self, update, context) -> None:
         """Handle inline keyboard button presses (approval responses)."""
         query = update.callback_query

@@ -85,7 +85,34 @@ def ensure_kuro_home() -> Path:
             encoding="utf-8",
         )
 
+    # Create default personality.md if not exists
+    personality_file = home / "personality.md"
+    if not personality_file.exists():
+        personality_file.write_text(
+            _get_default_personality(),
+            encoding="utf-8",
+        )
+
     return home
+
+
+def _get_default_personality() -> str:
+    """Return the default personality.md content."""
+    return (
+        "# Kuro Personality\n\n"
+        "Edit this file to customize Kuro's personality, tone, and behavior.\n"
+        "Kuro reads this file on every conversation to shape its responses.\n\n"
+        "## Traits\n"
+        "- Friendly but professional\n"
+        "- Concise, not verbose\n"
+        "- Security-conscious\n\n"
+        "## Communication Style\n"
+        "- Respond in the user's language\n"
+        "- Use emoji moderately\n"
+        "- Explain before taking action\n\n"
+        "## Special Instructions\n"
+        "(Add any custom rules or habits you want Kuro to follow)\n"
+    )
 
 
 def _load_env() -> None:
@@ -203,6 +230,63 @@ def build_engine(
     # Store scheduler in engine for access
     engine.scheduler = scheduler
 
+    # Initialize workflow engine
+    from src.core.workflow import WorkflowEngine
+    from src.tools.workflow.workflow_tool import (
+        WorkflowCreateTool,
+        WorkflowDeleteTool,
+        WorkflowListTool,
+        WorkflowRunTool,
+    )
+
+    workflow_engine = WorkflowEngine()
+
+    # Set up executors for workflow steps
+    async def workflow_tool_executor(tool_name: str, params: dict) -> str:
+        """Execute a tool for workflow steps."""
+        try:
+            result = await engine.execute_tool(tool_name, params)
+            return result
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    async def workflow_agent_executor(agent_name: str, prompt: str) -> str:
+        """Execute an agent delegation for workflow steps."""
+        if engine.agent_manager:
+            try:
+                return await engine.agent_manager.run_agent(agent_name, prompt)
+            except Exception as e:
+                return f"Error: {str(e)}"
+        return "Error: Agent system not enabled"
+
+    workflow_engine.set_executors(
+        tool_executor=workflow_tool_executor,
+        agent_executor=workflow_agent_executor,
+    )
+
+    # Note: workflow notification callback is set in async_adapter_main()
+    # when an AdapterManager is available.
+
+    # Register workflow tools
+    tool_system.registry.register(WorkflowRunTool(workflow_engine))
+    tool_system.registry.register(WorkflowListTool(workflow_engine))
+    tool_system.registry.register(WorkflowCreateTool(workflow_engine))
+    tool_system.registry.register(WorkflowDeleteTool(workflow_engine))
+
+    # Store in engine for access
+    engine.workflow_engine = workflow_engine
+
+    # Register system tools (version, update)
+    from src.tools.system.update_tool import (
+        CheckUpdateTool,
+        PerformUpdateTool,
+        VersionTool,
+    )
+
+    tool_system.registry.register(CheckUpdateTool())
+    tool_system.registry.register(PerformUpdateTool())
+    tool_system.registry.register(VersionTool())
+
     return engine
 
 
@@ -256,10 +340,19 @@ async def async_adapter_main(
     # Start all adapters
     await manager.start_all()
 
-    # Start the task scheduler
+    # Start the task scheduler with notification support
     if hasattr(engine, 'scheduler'):
+        # Wire notification callback: scheduler → adapter manager → Discord/Telegram
+        async def scheduler_notification(adapter_name: str, user_id: str, message: str) -> bool:
+            return await manager.send_notification(adapter_name, user_id, message)
+
+        engine.scheduler.set_notification_callback(scheduler_notification)
         await engine.scheduler.start()
-        print("Task scheduler started")
+        print("Task scheduler started (with notifications)")
+
+    # Wire workflow notifications
+    if hasattr(engine, 'workflow_engine'):
+        engine.workflow_engine.set_notification_callback(scheduler_notification)
 
     print(f"Kuro adapters running: {', '.join(manager.adapter_names)}")
     print("Press Ctrl+C to stop.")
@@ -334,6 +427,99 @@ def _handle_encrypt_prompt(prompt_file: str | None = None) -> None:
     print("This prompt will be used on next startup.")
 
 
+def _handle_version() -> None:
+    """Handle the --version CLI command."""
+    from src import __version__
+    from src.core.updater import Updater
+
+    updater = Updater()
+    print(f"Kuro v{__version__}")
+    if updater.is_git_repo():
+        import asyncio as _aio
+
+        async def _get_info():
+            hash_ = await updater.get_current_hash()
+            branch = await updater.get_branch()
+            return hash_, branch
+
+        hash_, branch = _aio.run(_get_info())
+        print(f"Git: {branch} @ {hash_ or 'unknown'}")
+    else:
+        print("Git: not a git repository")
+
+
+async def _handle_check_update() -> None:
+    """Handle the --check-update CLI command."""
+    from src.core.updater import Updater
+
+    updater = Updater()
+    if not updater.is_git_repo():
+        print("Not a git repository. Cannot check for updates.")
+        return
+
+    print("Checking for updates...")
+    info = await updater.check_for_updates()
+    if info is None:
+        print("Failed to check for updates. Check your network connection.")
+        return
+
+    if not info.has_update:
+        print(f"Already up to date (commit: {info.current_hash}).")
+    else:
+        print(f"\n\U0001f4e6 Update available!")
+        print(f"  Current: {info.current_hash}")
+        print(f"  Latest:  {info.remote_hash}")
+        print(f"  Behind:  {info.commits_behind} commit(s)")
+        if info.summary:
+            print(f"\nRecent changes:\n{info.summary}")
+        print(f"\nRun 'kuro --update' to update.")
+
+
+async def _handle_update() -> None:
+    """Handle the --update CLI command."""
+    from src.core.updater import Updater
+
+    updater = Updater()
+    if not updater.is_git_repo():
+        print("Not a git repository. Cannot update.")
+        return
+
+    # Check first
+    print("Checking for updates...")
+    info = await updater.check_for_updates()
+    if info is None:
+        print("Failed to check for updates.")
+        return
+
+    if not info.has_update:
+        print(f"Already up to date (commit: {info.current_hash}).")
+        return
+
+    print(f"\n\U0001f4e6 Update available ({info.commits_behind} commit(s) behind)")
+    if info.summary:
+        print(f"\nChanges:\n{info.summary}")
+
+    # Confirm
+    try:
+        confirm = input("\nProceed with update? [Y/n] > ").strip().lower()
+    except EOFError:
+        confirm = "y"
+
+    if confirm not in ("", "y", "yes"):
+        print("Update cancelled.")
+        return
+
+    print("\nUpdating...")
+    result = await updater.perform_update()
+
+    if result.success:
+        print(f"\n\u2705 {result.message}")
+        if result.needs_restart:
+            print("\n\u26a0\ufe0f  Please restart Kuro for the update to take effect.")
+    else:
+        print(f"\n\u274c Update failed: {result.message}")
+
+
 def main() -> None:
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -382,6 +568,21 @@ def main() -> None:
         default=None,
         help="Path to a plaintext prompt file (used with --encrypt-prompt)",
     )
+    parser.add_argument(
+        "--version",
+        action="store_true",
+        help="Show Kuro version and git info",
+    )
+    parser.add_argument(
+        "--check-update",
+        action="store_true",
+        help="Check if a newer version is available",
+    )
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help="Update Kuro to the latest version from GitHub",
+    )
     args = parser.parse_args()
 
     # Setup
@@ -397,6 +598,18 @@ def main() -> None:
 
     if args.encrypt_prompt:
         _handle_encrypt_prompt(args.prompt_file)
+        return
+
+    if args.version:
+        _handle_version()
+        return
+
+    if args.check_update:
+        asyncio.run(_handle_check_update())
+        return
+
+    if args.update:
+        asyncio.run(_handle_update())
         return
 
     # Load config

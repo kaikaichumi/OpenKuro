@@ -212,6 +212,211 @@ class AuditLog:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
 
+    async def get_daily_stats(self, date: str | None = None) -> dict[str, Any]:
+        """Get aggregated statistics for a given date (default: today).
+
+        Returns dict with keys:
+            total_events, tool_calls, approved, denied, blocked,
+            risk_distribution, top_tools, security_events
+        """
+        await self._ensure_db()
+
+        if date is None:
+            date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        stats: dict[str, Any] = {
+            "date": date,
+            "total_events": 0,
+            "tool_calls": 0,
+            "approved": 0,
+            "denied": 0,
+            "risk_distribution": {"low": 0, "medium": 0, "high": 0, "critical": 0},
+            "top_tools": [],
+            "security_events": 0,
+            "hourly_activity": [0] * 24,
+        }
+
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            # Total events for the date
+            async with db.execute(
+                "SELECT COUNT(*) as cnt FROM audit_log WHERE timestamp LIKE ?",
+                (f"{date}%",),
+            ) as cursor:
+                row = await cursor.fetchone()
+                stats["total_events"] = row["cnt"] if row else 0
+
+            # Tool calls breakdown
+            async with db.execute(
+                """SELECT approval_status, COUNT(*) as cnt FROM audit_log
+                   WHERE timestamp LIKE ? AND event_type = 'tool_execution'
+                   GROUP BY approval_status""",
+                (f"{date}%",),
+            ) as cursor:
+                async for row in cursor:
+                    status = row["approval_status"]
+                    count = row["cnt"]
+                    stats["tool_calls"] += count
+                    if status == "approved":
+                        stats["approved"] = count
+                    elif status == "denied":
+                        stats["denied"] = count
+
+            # Risk distribution
+            async with db.execute(
+                """SELECT risk_level, COUNT(*) as cnt FROM audit_log
+                   WHERE timestamp LIKE ? AND risk_level != ''
+                   GROUP BY risk_level""",
+                (f"{date}%",),
+            ) as cursor:
+                async for row in cursor:
+                    level = row["risk_level"].lower()
+                    if level in stats["risk_distribution"]:
+                        stats["risk_distribution"][level] = row["cnt"]
+
+            # Top tools
+            async with db.execute(
+                """SELECT tool_name, COUNT(*) as cnt FROM audit_log
+                   WHERE timestamp LIKE ? AND tool_name != ''
+                   GROUP BY tool_name ORDER BY cnt DESC LIMIT 10""",
+                (f"{date}%",),
+            ) as cursor:
+                stats["top_tools"] = [
+                    {"tool": row["tool_name"], "count": row["cnt"]}
+                    async for row in cursor
+                ]
+
+            # Security events
+            async with db.execute(
+                """SELECT COUNT(*) as cnt FROM audit_log
+                   WHERE timestamp LIKE ? AND event_type LIKE 'security:%'""",
+                (f"{date}%",),
+            ) as cursor:
+                row = await cursor.fetchone()
+                stats["security_events"] = row["cnt"] if row else 0
+
+            # Hourly activity
+            async with db.execute(
+                """SELECT timestamp FROM audit_log WHERE timestamp LIKE ?""",
+                (f"{date}%",),
+            ) as cursor:
+                async for row in cursor:
+                    try:
+                        ts = row["timestamp"]
+                        hour = int(ts[11:13])  # ISO format: YYYY-MM-DDTHH:...
+                        if 0 <= hour < 24:
+                            stats["hourly_activity"][hour] += 1
+                    except (ValueError, IndexError):
+                        pass
+
+        return stats
+
+    async def get_blocked_count(self, days: int = 7) -> dict[str, Any]:
+        """Get count of blocked/denied operations over the last N days.
+
+        Returns dict with daily_counts, total_blocked, total_approved.
+        """
+        await self._ensure_db()
+
+        result: dict[str, Any] = {
+            "days": days,
+            "daily_counts": [],
+            "total_blocked": 0,
+            "total_approved": 0,
+        }
+
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            # Get daily approved/denied counts
+            async with db.execute(
+                """SELECT
+                       SUBSTR(timestamp, 1, 10) as day,
+                       approval_status,
+                       COUNT(*) as cnt
+                   FROM audit_log
+                   WHERE event_type = 'tool_execution'
+                   GROUP BY day, approval_status
+                   ORDER BY day DESC
+                   LIMIT ?""",
+                (days * 2,),  # at most 2 statuses per day
+            ) as cursor:
+                day_data: dict[str, dict[str, int]] = {}
+                async for row in cursor:
+                    day = row["day"]
+                    if day not in day_data:
+                        day_data[day] = {"approved": 0, "denied": 0}
+                    status = row["approval_status"]
+                    if status in ("approved", "denied"):
+                        day_data[day][status] = row["cnt"]
+
+                for day, counts in sorted(day_data.items()):
+                    result["daily_counts"].append({
+                        "date": day,
+                        "approved": counts["approved"],
+                        "denied": counts["denied"],
+                    })
+                    result["total_blocked"] += counts["denied"]
+                    result["total_approved"] += counts["approved"]
+
+        return result
+
+    async def get_security_score(self) -> dict[str, Any]:
+        """Calculate a security posture score based on configuration and activity.
+
+        Returns dict with score (0-100), factors, recommendations.
+        """
+        await self._ensure_db()
+
+        score = 100
+        factors: list[dict[str, Any]] = []
+        recommendations: list[str] = []
+
+        # Factor 1: Check integrity of recent entries
+        total, tampered = await self.verify_integrity(50)
+        if tampered > 0:
+            score -= 30
+            factors.append({"name": "integrity", "status": "warning",
+                            "detail": f"{tampered}/{total} entries have invalid HMAC"})
+            recommendations.append("Audit log integrity compromised - investigate immediately")
+        else:
+            factors.append({"name": "integrity", "status": "ok",
+                            "detail": f"All {total} recent entries verified"})
+
+        # Factor 2: Check denied operations ratio (high denied = suspicious activity)
+        blocked = await self.get_blocked_count(7)
+        total_ops = blocked["total_approved"] + blocked["total_blocked"]
+        if total_ops > 0:
+            deny_ratio = blocked["total_blocked"] / total_ops
+            if deny_ratio > 0.3:
+                score -= 10
+                factors.append({"name": "deny_ratio", "status": "warning",
+                                "detail": f"{deny_ratio:.0%} operations denied in last 7 days"})
+                recommendations.append("High denial rate - review blocked operations")
+            else:
+                factors.append({"name": "deny_ratio", "status": "ok",
+                                "detail": f"{deny_ratio:.0%} operations denied"})
+
+        # Factor 3: Check for high-risk operations
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        stats = await self.get_daily_stats(today)
+        high_risk = stats["risk_distribution"].get("high", 0) + stats["risk_distribution"].get("critical", 0)
+        if high_risk > 10:
+            score -= 10
+            factors.append({"name": "high_risk_ops", "status": "warning",
+                            "detail": f"{high_risk} high/critical operations today"})
+        else:
+            factors.append({"name": "high_risk_ops", "status": "ok",
+                            "detail": f"{high_risk} high/critical operations today"})
+
+        return {
+            "score": max(0, min(100, score)),
+            "grade": "A" if score >= 90 else "B" if score >= 70 else "C" if score >= 50 else "D",
+            "factors": factors,
+            "recommendations": recommendations,
+        }
+
     async def verify_integrity(self, limit: int = 100) -> tuple[int, int]:
         """Verify HMAC integrity of recent entries.
 

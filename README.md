@@ -11,10 +11,16 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 ## Features
 
 - **Multi-Agent System** - Delegate tasks to sub-agents with different models (local/cloud)
-- **Task Scheduler** - Cron-like scheduling for automated tool execution (daily, weekly, hourly, interval)
+- **Task Scheduler + Proactive Notifications** - Cron-like scheduling with auto-push results to Discord/Telegram
 - **Multi-model support** - Anthropic Claude, OpenAI GPT, Google Gemini, Ollama local models via LiteLLM
-- **25+ built-in tools** - Files, shell, screenshots, clipboard, calendar, browser automation, memory, time, scheduling, agent delegation
-- **Skills + Plugins** - On-demand SKILL.md instructions, external Python tool plugins
+- **Workflow Engine** - Composable multi-step automation with YAML definitions, agent chaining, and template variables
+- **Self-Update** - Update Kuro with a single command (`/update`), no reinstall or reconfiguration needed
+- **Customizable Personality** - Define Kuro's character via `~/.kuro/personality.md`
+- **Security Dashboard** - Real-time security visualization, posture scoring, integrity verification
+- **Usage Analytics** - Tool usage statistics, cost estimation, smart optimization suggestions
+- **30+ built-in tools** - Files, shell, screenshots, clipboard, calendar, browser automation, memory, time, scheduling, agent delegation, workflows, version check, self-update
+- **10+ Built-in Skills** - Translator, code reviewer, git helper, debug assistant, data analyst, and more
+- **Skills + Plugins** - On-demand SKILL.md instructions, external Python tool plugins, one-click install
 - **Messaging integration** - Telegram, Discord (full), LINE (stub)
 - **Web GUI** - Dark-themed browser interface at `localhost:7860` with WebSocket streaming
 - **CLI** - Rich terminal with markdown rendering, streaming, slash commands
@@ -234,9 +240,17 @@ curl http://localhost:11434/api/tags
 | `/agent info <name>` | Show agent details |
 | `/agent run <name> <task>` | Run task on a sub-agent |
 | `/skills` | List all available skills |
+| `/skills available` | List built-in skills catalog |
+| `/skills install <name>` | Install a built-in skill |
+| `/skills search <query>` | Search skills by keyword |
 | `/skill <name>` | Activate/deactivate a skill (toggle) |
 | `/plugins` | List loaded plugins and their tools |
 | `/trust [level]` | Set session trust level (low/medium/high) |
+| `/stats` | Show usage analytics and smart suggestions |
+| `/security` | Show security posture score |
+| `/version` | Show current version and git info |
+| `/update` | Check for and install updates |
+| `/personality` | Show, edit, or reset personality settings |
 | `/history` | Show conversation history |
 | `/clear` | Clear current conversation |
 | `/help` | Show available commands |
@@ -476,6 +490,127 @@ Manually editable file at `~/.kuro/memory/MEMORY.md`. Kuro reads this on every c
 
 ---
 
+## Scheduler Notifications
+
+When a scheduled task completes, Kuro proactively pushes the result to the adapter (Discord/Telegram) where the task was created.
+
+### How It Works
+
+1. A user creates a scheduled task via Discord or Telegram
+2. The task automatically records the notification target (adapter + channel/chat ID)
+3. When the task fires, the result is pushed back to the user
+
+```
+User (Discord):  "Remind me to check stocks every day at 9am"
+Kuro:             Creates schedule_add with notify_adapter="discord"
+Every day 9:00:   Kuro executes the task → sends result to Discord channel
+```
+
+### Notification Control
+
+By default, notifications are **on** for Discord/Telegram and **off** for CLI. The LLM can explicitly disable notifications:
+
+```json
+{ "task_id": "silent-task", "notify": false, ... }
+```
+
+Notifications include both **success results** and **error alerts** if a task fails.
+
+---
+
+## Self-Update
+
+Update Kuro without reinstalling or losing your configuration. All user data lives in `~/.kuro/` which is separate from the code directory.
+
+### CLI Commands
+
+```bash
+# Check version
+poetry run kuro --version
+
+# Check if updates are available
+poetry run kuro --check-update
+
+# Update to latest version (interactive confirmation)
+poetry run kuro --update
+```
+
+### Interactive Commands
+
+```bash
+# In CLI mode
+> /version     # Show version + git hash
+> /update      # Check & install updates
+```
+
+### How It Works
+
+- Uses `git pull origin main` + `poetry install` (if dependencies changed)
+- **Does NOT require GitHub Releases** — works with any git commits
+- Automatically stashes local changes, updates, then pops stash
+- Shows what changed (commit log) before updating
+- Kuro can also update itself via LLM tool calls (`check_update`, `perform_update`)
+
+---
+
+## Personality System
+
+Customize Kuro's character, tone, and behavior by editing a simple markdown file.
+
+### File Location
+
+```
+~/.kuro/personality.md
+```
+
+This file is automatically created on first startup with default settings.
+
+### Example
+
+```markdown
+# Kuro Personality
+
+## Traits
+- Friendly but professional
+- Concise, not verbose
+- Security-conscious
+
+## Communication Style
+- Respond in the user's language
+- Use emoji moderately
+- Explain before taking action
+
+## Special Instructions
+- Always respond in Traditional Chinese
+- Use a slightly playful tone
+- Add relevant emojis to responses
+```
+
+### How It Works
+
+The personality file is injected into the LLM context on every conversation, between the system prompt and skills:
+
+```
+core_prompt → system_prompt → personality.md → skills → MEMORY.md → RAG → conversation
+```
+
+### Commands
+
+```bash
+> /personality        # View current personality
+> /personality edit   # Open in editor (Notepad on Windows)
+> /personality reset  # Restore defaults
+```
+
+### Web API
+
+```
+GET  /api/personality   # Read personality content
+PUT  /api/personality   # Update personality (JSON body: {"content": "..."})
+```
+
+---
+
 ## Built-in Tools
 
 | Tool | Risk | Description |
@@ -507,6 +642,19 @@ Manually editable file at `~/.kuro/memory/MEMORY.md`. Kuro reads this on every c
 | **Agents** |||
 | `delegate_to_agent` | MEDIUM | Delegate task to sub-agent |
 | `list_agents` | LOW | List available agents |
+| **Scheduling** |||
+| `schedule_add` | MEDIUM | Add a scheduled task |
+| `schedule_list` | LOW | List scheduled tasks |
+| `schedule_remove` | MEDIUM | Remove a scheduled task |
+| **Workflows** |||
+| `workflow_create` | MEDIUM | Create a multi-step workflow |
+| `workflow_run` | MEDIUM | Run a registered workflow |
+| `workflow_list` | LOW | List workflows and recent runs |
+| `workflow_delete` | MEDIUM | Delete a workflow |
+| **System** |||
+| `get_version` | LOW | Show current Kuro version |
+| `check_update` | LOW | Check if updates are available |
+| `perform_update` | HIGH | Update Kuro from GitHub |
 
 ---
 
@@ -602,10 +750,14 @@ src/
     model_router.py           # LiteLLM multi-model routing
     tool_system.py            # Plugin auto-discovery
     action_log.py             # JSONL operation logger
+    analytics.py              # Usage analytics + cost estimator + smart advisor
     types.py                  # Message, Session, ToolCall, AgentDefinition
     agents.py                 # AgentRunner, AgentManager (multi-agent)
-    skills.py                 # SkillsManager
+    skills.py                 # SkillsManager (with install/search)
     plugin_loader.py          # PluginLoader
+    workflow.py               # WorkflowEngine (multi-step automation)
+    scheduler.py              # TaskScheduler (cron-like scheduling + notifications)
+    updater.py                # Self-update mechanism (git pull + poetry install)
     security/
       approval.py             # Risk-based approval policy
       sandbox.py              # Execution sandbox
@@ -627,6 +779,9 @@ src/
     web/                      # browser automation (Playwright)
     memory_tools/             # memory_search, memory_store
     agents/                   # delegate_to_agent, list_agents
+    scheduler/                # schedule_add, schedule_list, etc.
+    workflow/                 # workflow_create, workflow_run, etc.
+    system/                   # get_version, check_update, perform_update
   adapters/
     base.py                   # BaseAdapter ABC
     manager.py                # Adapter lifecycle
@@ -662,7 +817,7 @@ tests/
 ### Running Tests
 
 ```bash
-# All tests (301 total)
+# All tests (367 total)
 poetry run pytest tests/ -v
 
 # Specific test file
@@ -679,9 +834,11 @@ poetry run pytest tests/ --cov=src --cov-report=html
 ```
 ~/.kuro/
   config.yaml                 # User configuration
+  personality.md              # Customizable AI personality & style
   system_prompt.enc           # Encrypted system prompt (optional)
   audit.db                    # Security audit log
   history.db                  # Conversation history
+  scheduler.json              # Scheduled tasks (with notification targets)
   action_logs/                # JSONL operation logs (daily rotation)
   memory/
     MEMORY.md                 # Editable preferences/facts

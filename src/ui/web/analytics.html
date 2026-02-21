@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kuro 暗 - Analytics</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        body {
+            overflow-y: auto;
+        }
+
+        .dashboard {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+
+        .dash-nav {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .dash-nav a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            padding: 0.4rem 0.8rem;
+            border-radius: var(--radius);
+            font-size: 0.85rem;
+            transition: background var(--transition);
+        }
+
+        .dash-nav a:hover, .dash-nav a.active {
+            background: var(--bg-input);
+            color: var(--text-primary);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+
+        .stat-card {
+            padding: 1.25rem;
+            background: var(--bg-secondary);
+            border-radius: var(--radius-lg);
+            border: 1px solid var(--border);
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            line-height: 1;
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-top: 0.35rem;
+        }
+
+        .stat-value.green { color: var(--success); }
+        .stat-value.red { color: var(--danger); }
+        .stat-value.yellow { color: var(--warning); }
+        .stat-value.blue { color: var(--accent); }
+
+        .chart-section {
+            background: var(--bg-secondary);
+            border-radius: var(--radius-lg);
+            border: 1px solid var(--border);
+            padding: 1.25rem;
+        }
+
+        .chart-section h3 {
+            font-size: 0.95rem;
+            color: var(--text-secondary);
+            margin-bottom: 1rem;
+        }
+
+        .two-col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+
+        @media (max-width: 768px) {
+            .two-col { grid-template-columns: 1fr; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        /* Tool usage bars */
+        .usage-bars {
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+        }
+
+        .usage-bar-row {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+        }
+
+        .usage-bar-label {
+            width: 120px;
+            color: var(--accent);
+            font-weight: 600;
+            font-size: 0.8rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .usage-bar-track {
+            flex: 1;
+            height: 16px;
+            background: var(--bg-input);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .usage-bar-fill {
+            height: 100%;
+            background: var(--accent);
+            border-radius: 4px;
+            transition: width 0.6s ease;
+            opacity: 0.8;
+        }
+
+        .usage-bar-count {
+            width: 40px;
+            text-align: right;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+        }
+
+        /* Daily activity chart */
+        .daily-chart {
+            display: flex;
+            align-items: flex-end;
+            gap: 3px;
+            height: 100px;
+        }
+
+        .daily-bar {
+            flex: 1;
+            background: var(--accent);
+            border-radius: 2px 2px 0 0;
+            min-height: 2px;
+            opacity: 0.7;
+            transition: opacity 0.2s;
+            position: relative;
+        }
+
+        .daily-bar:hover {
+            opacity: 1;
+        }
+
+        .daily-bar:hover::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--bg-input);
+            color: var(--text-primary);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.7rem;
+            white-space: nowrap;
+            z-index: 10;
+        }
+
+        .daily-labels {
+            display: flex;
+            gap: 3px;
+            font-size: 0.6rem;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
+
+        .daily-labels span {
+            flex: 1;
+            text-align: center;
+        }
+
+        /* Cost table */
+        .cost-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .cost-table th, .cost-table td {
+            padding: 0.5rem 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.85rem;
+        }
+
+        .cost-table th {
+            color: var(--text-muted);
+            font-weight: 500;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+        }
+
+        .cost-table .model-name {
+            color: var(--accent);
+            font-weight: 600;
+        }
+
+        .cost-table .cost-val {
+            color: var(--warning);
+            font-weight: 600;
+        }
+
+        /* Suggestions */
+        .suggestions {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .suggestion-card {
+            padding: 1rem;
+            background: var(--bg-input);
+            border-radius: var(--radius);
+            border-left: 3px solid var(--accent);
+        }
+
+        .suggestion-card.cost { border-left-color: var(--warning); }
+        .suggestion-card.security { border-left-color: var(--danger); }
+        .suggestion-card.efficiency { border-left-color: var(--accent); }
+        .suggestion-card.general { border-left-color: var(--success); }
+
+        .suggestion-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.35rem;
+        }
+
+        .suggestion-icon {
+            font-size: 1.1rem;
+        }
+
+        .suggestion-title {
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: var(--text-primary);
+        }
+
+        .suggestion-priority {
+            font-size: 0.7rem;
+            padding: 1px 6px;
+            border-radius: 3px;
+            background: var(--bg-secondary);
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+
+        .suggestion-detail {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+
+        /* Duration table */
+        .duration-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .duration-table th, .duration-table td {
+            padding: 0.4rem 0.5rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.8rem;
+        }
+
+        .duration-table th {
+            color: var(--text-muted);
+            font-weight: 500;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 3rem;
+            color: var(--text-muted);
+        }
+
+        .loading::after {
+            content: "";
+            animation: dots 1.5s steps(4, end) infinite;
+        }
+
+        @keyframes dots {
+            0%, 20% { content: ""; }
+            40% { content: "."; }
+            60% { content: ".."; }
+            80%, 100% { content: "..."; }
+        }
+    </style>
+</head>
+<body>
+    <header id="header">
+        <div class="header-left">
+            <h1 class="logo">Kuro <span class="logo-kanji">暗</span></h1>
+        </div>
+        <div class="header-center">
+            <div class="dash-nav">
+                <a href="/">Chat</a>
+                <a href="/security">Security</a>
+                <a href="/analytics" class="active">Analytics</a>
+            </div>
+        </div>
+        <div class="header-right"></div>
+    </header>
+
+    <div class="dashboard" id="dashboard">
+        <div class="loading" id="loading">Loading analytics data</div>
+    </div>
+
+    <script>
+    (function() {
+        "use strict";
+
+        var dashboard = document.getElementById("dashboard");
+        var loading = document.getElementById("loading");
+
+        function escapeHtml(str) {
+            if (!str) return "";
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+
+        function renderAnalytics(usage, costs, suggestions) {
+            loading.style.display = "none";
+            var html = "";
+
+            // --- Summary Stats ---
+            html += '<div class="stats-grid">';
+            html += '<div class="stat-card"><div class="stat-value blue">' +
+                     (usage.total_calls || 0) + '</div><div class="stat-label">Tool Calls (30d)</div></div>';
+            html += '<div class="stat-card"><div class="stat-value yellow">$' +
+                     (costs.total_estimated_cost_usd || 0).toFixed(2) +
+                     '</div><div class="stat-label">Est. Cost (30d)</div></div>';
+            html += '<div class="stat-card"><div class="stat-value">' +
+                     (usage.unique_sessions || 0) + '</div><div class="stat-label">Sessions</div></div>';
+            html += '<div class="stat-card"><div class="stat-value ' +
+                     ((usage.error_rate || 0) > 5 ? "red" : "green") + '">' +
+                     (usage.error_rate || 0) + '%</div><div class="stat-label">Error Rate</div></div>';
+            html += '</div>';
+
+            // --- Two Column ---
+            html += '<div class="two-col">';
+
+            // Tool Usage
+            html += '<div class="chart-section">';
+            html += '<h3>Most Used Tools</h3>';
+            var toolCounts = usage.tool_counts || {};
+            var toolList = [];
+            for (var k in toolCounts) { toolList.push([k, toolCounts[k]]); }
+            toolList.sort(function(a, b) { return b[1] - a[1]; });
+            var maxCount = toolList.length > 0 ? toolList[0][1] : 1;
+
+            html += '<div class="usage-bars">';
+            for (var i = 0; i < Math.min(toolList.length, 10); i++) {
+                var name = toolList[i][0];
+                var count = toolList[i][1];
+                var pct = Math.round(count / maxCount * 100);
+                html += '<div class="usage-bar-row">';
+                html += '<span class="usage-bar-label">' + escapeHtml(name) + '</span>';
+                html += '<div class="usage-bar-track"><div class="usage-bar-fill" style="width:' + pct + '%"></div></div>';
+                html += '<span class="usage-bar-count">' + count + '</span>';
+                html += '</div>';
+            }
+            if (toolList.length === 0) {
+                html += '<div style="color:var(--text-muted);font-size:0.85rem">No tool usage data yet</div>';
+            }
+            html += '</div></div>';
+
+            // Cost by Model
+            html += '<div class="chart-section">';
+            html += '<h3>Cost by Model</h3>';
+            var byModel = costs.by_model || {};
+            var modelList = [];
+            for (var m in byModel) { modelList.push([m, byModel[m]]); }
+            modelList.sort(function(a, b) { return (b[1].estimated_cost_usd || 0) - (a[1].estimated_cost_usd || 0); });
+
+            if (modelList.length > 0) {
+                html += '<table class="cost-table"><thead><tr><th>Model</th><th>Calls</th><th>Est. Cost</th></tr></thead><tbody>';
+                for (var j = 0; j < modelList.length; j++) {
+                    var mn = modelList[j][0];
+                    var info = modelList[j][1];
+                    html += '<tr><td class="model-name">' + escapeHtml(mn.split("/").pop()) +
+                            '</td><td>' + (info.calls || 0) +
+                            '</td><td class="cost-val">$' + (info.estimated_cost_usd || 0).toFixed(4) + '</td></tr>';
+                }
+                html += '</tbody></table>';
+            } else {
+                html += '<div style="color:var(--text-muted);font-size:0.85rem">No cost data yet</div>';
+            }
+            html += '</div>';
+
+            html += '</div>'; // end two-col
+
+            // --- Daily Activity ---
+            var daily = usage.daily_activity || [];
+            if (daily.length > 0) {
+                html += '<div class="chart-section">';
+                html += '<h3>Daily Activity (30 Days)</h3>';
+                var maxD = 1;
+                for (var d = 0; d < daily.length; d++) {
+                    if (daily[d].count > maxD) maxD = daily[d].count;
+                }
+                html += '<div class="daily-chart">';
+                for (var d2 = 0; d2 < daily.length; d2++) {
+                    var pctD = Math.round(daily[d2].count / maxD * 100);
+                    html += '<div class="daily-bar" style="height:' + Math.max(pctD, 3) + '%" ' +
+                            'data-tooltip="' + daily[d2].date + ': ' + daily[d2].count + ' calls"></div>';
+                }
+                html += '</div>';
+                html += '<div class="daily-labels">';
+                for (var d3 = 0; d3 < daily.length; d3++) {
+                    if (d3 % 5 === 0) {
+                        html += '<span>' + daily[d3].date.slice(5) + '</span>';
+                    } else {
+                        html += '<span></span>';
+                    }
+                }
+                html += '</div>';
+                html += '</div>';
+            }
+
+            // --- Avg Duration ---
+            var durations = usage.avg_duration_ms || {};
+            var durList = [];
+            for (var dk in durations) { durList.push([dk, durations[dk]]); }
+            durList.sort(function(a, b) { return b[1] - a[1]; });
+
+            if (durList.length > 0) {
+                html += '<div class="chart-section">';
+                html += '<h3>Average Tool Duration</h3>';
+                html += '<table class="duration-table"><thead><tr><th>Tool</th><th>Avg ms</th></tr></thead><tbody>';
+                for (var di = 0; di < Math.min(durList.length, 10); di++) {
+                    html += '<tr><td style="color:var(--accent)">' + escapeHtml(durList[di][0]) +
+                            '</td><td>' + durList[di][1] + ' ms</td></tr>';
+                }
+                html += '</tbody></table></div>';
+            }
+
+            // --- Smart Suggestions ---
+            var sug = suggestions.suggestions || [];
+            if (sug.length > 0) {
+                html += '<div class="chart-section">';
+                html += '<h3>Smart Suggestions</h3>';
+                html += '<div class="suggestions">';
+                for (var si = 0; si < sug.length; si++) {
+                    var s = sug[si];
+                    var cat = s.category || "general";
+                    html += '<div class="suggestion-card ' + cat + '">';
+                    html += '<div class="suggestion-header">';
+                    html += '<span class="suggestion-icon">' + (s.icon || "💡") + '</span>';
+                    html += '<span class="suggestion-title">' + escapeHtml(s.title) + '</span>';
+                    html += '<span class="suggestion-priority">' + escapeHtml(s.priority || "") + '</span>';
+                    html += '</div>';
+                    html += '<div class="suggestion-detail">' + escapeHtml(s.detail) + '</div>';
+                    html += '</div>';
+                }
+                html += '</div></div>';
+            }
+
+            dashboard.innerHTML = html;
+        }
+
+        // Fetch all data in parallel
+        Promise.all([
+            fetch("/api/analytics/usage").then(function(r) { return r.json(); }),
+            fetch("/api/analytics/costs").then(function(r) { return r.json(); }),
+            fetch("/api/analytics/suggestions").then(function(r) { return r.json(); }),
+        ])
+        .then(function(results) {
+            renderAnalytics(results[0], results[1], results[2]);
+        })
+        .catch(function(e) {
+            loading.textContent = "Failed to load analytics data: " + e.message;
+        });
+    })();
+    </script>
+</body>
+</html>

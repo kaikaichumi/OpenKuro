@@ -272,10 +272,126 @@ class WebServer:
                 ]
             }
 
+        @app.get("/api/skills/available")
+        async def get_skills_available():
+            """List skills available for installation."""
+            sm = self.engine.skills
+            if not sm:
+                return {"available": []}
+            return {"available": sm.list_available_skills()}
+
         @app.get("/api/plugins")
         async def get_plugins():
             names = self.engine.tools.registry.get_names()
             return {"tools": sorted(names), "count": len(names)}
+
+        # === Personality API ===
+
+        @app.get("/api/personality")
+        async def get_personality():
+            """Get current personality settings."""
+            from src.config import get_kuro_home
+            personality_path = get_kuro_home() / "personality.md"
+            if personality_path.exists():
+                content = personality_path.read_text(encoding="utf-8")
+                return {"content": content, "path": str(personality_path)}
+            return {"content": "", "path": str(personality_path)}
+
+        @app.put("/api/personality")
+        async def update_personality(request):
+            """Update personality settings."""
+            from src.config import get_kuro_home
+            data = await request.json()
+            content = data.get("content", "")
+            personality_path = get_kuro_home() / "personality.md"
+            personality_path.write_text(content, encoding="utf-8")
+            return {"status": "ok", "message": "Personality updated"}
+
+        # === Security Dashboard API ===
+
+        @app.get("/api/security/dashboard")
+        async def get_security_dashboard(
+            date: str | None = Query(None),
+        ):
+            """Get comprehensive security dashboard data."""
+            stats = await self.engine.audit.get_daily_stats(date)
+            blocked = await self.engine.audit.get_blocked_count(7)
+            score = await self.engine.audit.get_security_score()
+            return {
+                "daily_stats": stats,
+                "blocked_history": blocked,
+                "security_score": score,
+            }
+
+        @app.get("/api/security/stats")
+        async def get_security_stats(
+            date: str | None = Query(None),
+        ):
+            """Get daily audit statistics."""
+            return await self.engine.audit.get_daily_stats(date)
+
+        @app.get("/api/security/blocked")
+        async def get_security_blocked(
+            days: int = Query(7, ge=1, le=90),
+        ):
+            """Get blocked operations over the last N days."""
+            return await self.engine.audit.get_blocked_count(days)
+
+        @app.get("/api/security/score")
+        async def get_security_score():
+            """Get current security posture score."""
+            return await self.engine.audit.get_security_score()
+
+        @app.get("/api/security/integrity")
+        async def get_security_integrity(
+            limit: int = Query(100, ge=10, le=1000),
+        ):
+            """Verify audit log integrity."""
+            total, tampered = await self.engine.audit.verify_integrity(limit)
+            return {
+                "total_checked": total,
+                "tampered": tampered,
+                "integrity": "ok" if tampered == 0 else "compromised",
+            }
+
+        # === Analytics API ===
+
+        @app.get("/api/analytics/usage")
+        async def get_analytics_usage():
+            """Get tool usage analytics from action logs."""
+            from src.core.analytics import UsageAnalyzer
+            analyzer = UsageAnalyzer()
+            return await analyzer.get_usage_summary()
+
+        @app.get("/api/analytics/costs")
+        async def get_analytics_costs():
+            """Get estimated cost analytics."""
+            from src.core.analytics import CostEstimator
+            estimator = CostEstimator()
+            return await estimator.estimate_costs()
+
+        @app.get("/api/analytics/suggestions")
+        async def get_analytics_suggestions():
+            """Get smart optimization suggestions."""
+            from src.core.analytics import SmartAdvisor
+            advisor = SmartAdvisor()
+            return await advisor.get_suggestions()
+
+        @app.get("/security")
+        async def security_page():
+            """Serve the security dashboard page."""
+            sec_file = WEB_DIR / "security.html"
+            if sec_file.exists():
+                return FileResponse(str(sec_file), media_type="text/html")
+            return HTMLResponse("<h1>Security Dashboard</h1><p>security.html not found</p>")
+
+        @app.get("/analytics")
+        async def analytics_page():
+            """Serve the analytics page."""
+            ana_file = WEB_DIR / "analytics.html"
+            if ana_file.exists():
+                return FileResponse(str(ana_file), media_type="text/html")
+            return HTMLResponse("<h1>Analytics</h1><p>analytics.html not found</p>")
 
         @app.websocket("/ws")
         async def websocket_endpoint(ws: WebSocket):

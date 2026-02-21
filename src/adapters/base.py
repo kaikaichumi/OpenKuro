@@ -74,6 +74,21 @@ class BaseAdapter(ABC):
             del self._sessions[user_key]
             logger.info("session_cleared", adapter=self.name, user_key=user_key)
 
+    async def send_notification(self, user_id: str, message: str) -> bool:
+        """Send a proactive notification to a user.
+
+        Override in subclasses to enable push notifications for
+        scheduled tasks, workflow results, etc.
+
+        Args:
+            user_id: Platform-specific user/channel identifier.
+            message: The notification message to send.
+
+        Returns:
+            True if the message was sent successfully.
+        """
+        return False
+
     @property
     def session_count(self) -> int:
         """Number of active sessions."""
