@@ -385,6 +385,12 @@ class WebServer:
             advisor = SmartAdvisor()
             return await advisor.get_suggestions()
 
+        @app.get("/api/analytics/pricing")
+        async def get_analytics_pricing():
+            """Get model pricing table."""
+            from src.core.analytics import get_pricing_info
+            return get_pricing_info()
+
         @app.get("/security")
         async def security_page():
             """Serve the security dashboard page."""

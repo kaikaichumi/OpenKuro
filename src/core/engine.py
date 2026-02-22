@@ -273,6 +273,19 @@ class Engine:
                 tools=tools,
             )
 
+            # Log token usage
+            if response.usage:
+                try:
+                    await self.audit.log_token_usage(
+                        session_id=session.id,
+                        model=response.model or model or self.model.default_model,
+                        prompt_tokens=response.usage.get("prompt_tokens", 0),
+                        completion_tokens=response.usage.get("completion_tokens", 0),
+                        total_tokens=response.usage.get("total_tokens", 0),
+                    )
+                except Exception:
+                    pass  # Don't let token logging break the main loop
+
             if response.has_tool_calls:
                 # Handle tool calls
                 assistant_msg = Message(
@@ -394,6 +407,19 @@ class Engine:
             model=model,
             tools=tools,
         )
+
+        # Log token usage for stream path
+        if response.usage:
+            try:
+                await self.audit.log_token_usage(
+                    session_id=session.id,
+                    model=response.model or model or self.model.default_model,
+                    prompt_tokens=response.usage.get("prompt_tokens", 0),
+                    completion_tokens=response.usage.get("completion_tokens", 0),
+                    total_tokens=response.usage.get("total_tokens", 0),
+                )
+            except Exception:
+                pass
 
         if response.has_tool_calls:
             # Has tool calls - process them and return final text

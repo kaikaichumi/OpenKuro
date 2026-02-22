@@ -84,10 +84,24 @@ CREATE TABLE IF NOT EXISTS audit_log (
 )
 """
 
+CREATE_TOKEN_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS token_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    session_id TEXT,
+    model TEXT NOT NULL,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0
+)
+"""
+
 CREATE_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
 CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_log(session_id);
 CREATE INDEX IF NOT EXISTS idx_audit_tool ON audit_log(tool_name);
+CREATE INDEX IF NOT EXISTS idx_token_timestamp ON token_usage(timestamp);
+CREATE INDEX IF NOT EXISTS idx_token_model ON token_usage(model);
 """
 
 
@@ -104,6 +118,7 @@ class AuditLog:
             return
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(CREATE_TABLE_SQL)
+            await db.execute(CREATE_TOKEN_TABLE_SQL)
             await db.executescript(CREATE_INDEX_SQL)
             await db.commit()
         self._initialized = True
@@ -166,6 +181,30 @@ class AuditLog:
             risk_level=risk_level,
             result_summary=result_summary,
         )
+
+    async def log_token_usage(
+        self,
+        session_id: str,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+    ) -> None:
+        """Log token usage from an LLM call."""
+        await self._ensure_db()
+        ts = datetime.now(timezone.utc).isoformat()
+
+        try:
+            async with aiosqlite.connect(self._db_path) as db:
+                await db.execute(
+                    """INSERT INTO token_usage
+                       (timestamp, session_id, model, prompt_tokens, completion_tokens, total_tokens)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (ts, session_id, model, prompt_tokens, completion_tokens, total_tokens),
+                )
+                await db.commit()
+        except Exception as e:
+            logger.debug("token_log_failed", error=str(e))
 
     async def log_security_event(
         self,

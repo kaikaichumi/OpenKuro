@@ -21,7 +21,9 @@ from src.config import get_kuro_home
 
 logger = structlog.get_logger()
 
-# Approximate token cost per 1K tokens (USD) - 2026 pricing estimates
+# Token cost per 1K tokens (USD)
+# Last updated: 2026-02-22
+MODEL_COSTS_UPDATED = "2026-02-22"
 MODEL_COSTS: dict[str, dict[str, float]] = {
     "anthropic/claude-sonnet-4.5": {"input": 0.003, "output": 0.015},
     "anthropic/claude-opus-4.6": {"input": 0.015, "output": 0.075},
@@ -38,16 +40,26 @@ MODEL_COSTS: dict[str, dict[str, float]] = {
 }
 
 
-def _get_model_cost(model: str) -> dict[str, float]:
-    """Get cost per 1K tokens for a model."""
+def _get_model_cost(model: str) -> dict[str, float] | None:
+    """Get cost per 1K tokens for a model, or None if not in pricing table."""
     if model in MODEL_COSTS:
         return MODEL_COSTS[model]
-    # Check prefix match
+    # Check prefix match for ollama
     provider = model.split("/")[0] if "/" in model else model
     if provider == "ollama":
         return {"input": 0.0, "output": 0.0}
-    # Default to medium pricing
-    return {"input": 0.003, "output": 0.012}
+    return None  # Unknown model: no cost estimation
+
+
+def get_pricing_info() -> dict[str, Any]:
+    """Return pricing table metadata for the frontend."""
+    return {
+        "last_updated": MODEL_COSTS_UPDATED,
+        "models": {
+            model: {"input": cost["input"], "output": cost["output"]}
+            for model, cost in MODEL_COSTS.items()
+        },
+    }
 
 
 class UsageAnalyzer:
@@ -149,73 +161,126 @@ class UsageAnalyzer:
 
 
 class CostEstimator:
-    """Estimate API costs from audit log data."""
+    """Estimate API costs from actual token usage data."""
 
     def __init__(self, db_path: str | None = None) -> None:
         self._db_path = db_path or str(get_kuro_home() / "audit.db")
 
     async def estimate_costs(self, days: int = 30) -> dict[str, Any]:
-        """Estimate costs per model/provider.
+        """Calculate costs from real token_usage data.
 
-        Note: This is a rough estimate based on tool call counts.
-        Actual costs depend on token usage which we approximate.
+        For models in MODEL_COSTS, computes actual cost.
+        For unknown models, returns token counts only (no cost).
         """
-        # Estimate ~500 input tokens + ~200 output tokens per tool call
-        AVG_INPUT_TOKENS = 500
-        AVG_OUTPUT_TOKENS = 200
-
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
 
-        model_calls: Counter[str] = Counter()
+        # Aggregate token usage per model
+        model_data: dict[str, dict[str, int]] = defaultdict(
+            lambda: {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        )
         daily_costs: dict[str, float] = defaultdict(float)
+        daily_tokens: dict[str, int] = defaultdict(int)
 
         try:
             async with aiosqlite.connect(self._db_path) as db:
+                # Check if token_usage table exists
+                async with db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='token_usage'"
+                ) as cursor:
+                    if await cursor.fetchone() is None:
+                        # Table doesn't exist yet → return empty
+                        return self._empty_result(days)
+
                 db.row_factory = aiosqlite.Row
                 async with db.execute(
-                    """SELECT timestamp, source FROM audit_log
-                       WHERE timestamp >= ? AND event_type = 'tool_execution'
+                    """SELECT model, prompt_tokens, completion_tokens, total_tokens, timestamp
+                       FROM token_usage
+                       WHERE timestamp >= ?
                        ORDER BY timestamp""",
                     (cutoff,),
                 ) as cursor:
                     async for row in cursor:
-                        source = row["source"] or "unknown"
-                        model_calls[source] += 1
+                        model = row["model"]
+                        pt = row["prompt_tokens"]
+                        ct = row["completion_tokens"]
+                        tt = row["total_tokens"]
                         day = row["timestamp"][:10]
-                        cost_info = _get_model_cost(source)
-                        call_cost = (
-                            AVG_INPUT_TOKENS / 1000 * cost_info["input"]
-                            + AVG_OUTPUT_TOKENS / 1000 * cost_info["output"]
-                        )
-                        daily_costs[day] += call_cost
+
+                        model_data[model]["calls"] += 1
+                        model_data[model]["prompt_tokens"] += pt
+                        model_data[model]["completion_tokens"] += ct
+                        model_data[model]["total_tokens"] += tt
+
+                        daily_tokens[day] += tt
+
+                        # Only compute cost for known models
+                        cost_info = _get_model_cost(model)
+                        if cost_info is not None:
+                            call_cost = pt / 1000 * cost_info["input"] + ct / 1000 * cost_info["output"]
+                            daily_costs[day] += call_cost
+
         except Exception as e:
             logger.warning("cost_estimation_error", error=str(e))
 
-        # Compute per-model costs
-        model_costs = {}
+        # Build per-model breakdown
+        by_model: dict[str, dict[str, Any]] = {}
         total_cost = 0.0
-        for model, count in model_calls.most_common():
+        total_tokens = 0
+
+        for model, data in sorted(model_data.items(), key=lambda x: -x[1]["total_tokens"]):
             cost_info = _get_model_cost(model)
-            est = (
-                count * AVG_INPUT_TOKENS / 1000 * cost_info["input"]
-                + count * AVG_OUTPUT_TOKENS / 1000 * cost_info["output"]
-            )
-            model_costs[model] = {
-                "calls": count,
-                "estimated_cost_usd": round(est, 4),
+            has_pricing = cost_info is not None
+
+            entry: dict[str, Any] = {
+                "calls": data["calls"],
+                "prompt_tokens": data["prompt_tokens"],
+                "completion_tokens": data["completion_tokens"],
+                "total_tokens": data["total_tokens"],
+                "has_pricing": has_pricing,
             }
-            total_cost += est
+
+            if has_pricing:
+                est = (
+                    data["prompt_tokens"] / 1000 * cost_info["input"]
+                    + data["completion_tokens"] / 1000 * cost_info["output"]
+                )
+                entry["estimated_cost_usd"] = round(est, 6)
+                entry["pricing"] = {"input": cost_info["input"], "output": cost_info["output"]}
+                total_cost += est
+            else:
+                entry["estimated_cost_usd"] = None
+                entry["pricing"] = None
+
+            total_tokens += data["total_tokens"]
+            by_model[model] = entry
 
         sorted_daily = sorted(daily_costs.items())
+        sorted_daily_tokens = sorted(daily_tokens.items())
 
         return {
             "period_days": days,
-            "total_estimated_cost_usd": round(total_cost, 4),
-            "by_model": model_costs,
+            "total_estimated_cost_usd": round(total_cost, 6),
+            "total_tokens": total_tokens,
+            "by_model": by_model,
             "daily_costs": [
-                {"date": d, "cost_usd": round(c, 4)} for d, c in sorted_daily
+                {"date": d, "cost_usd": round(c, 6)} for d, c in sorted_daily
             ],
-            "note": "Estimates based on ~500 input + ~200 output tokens per tool call",
+            "daily_tokens": [
+                {"date": d, "tokens": t} for d, t in sorted_daily_tokens
+            ],
+            "pricing_info": get_pricing_info(),
+        }
+
+    @staticmethod
+    def _empty_result(days: int) -> dict[str, Any]:
+        return {
+            "period_days": days,
+            "total_estimated_cost_usd": 0,
+            "total_tokens": 0,
+            "by_model": {},
+            "daily_costs": [],
+            "daily_tokens": [],
+            "pricing_info": get_pricing_info(),
         }
 
 
@@ -300,12 +365,13 @@ class SmartAdvisor:
 
         # Suggestion: Using expensive model for many simple calls
         for model, info in by_model.items():
+            est_cost = info.get("estimated_cost_usd") or 0
             if ("claude-opus" in model or "gpt-5.2" in model) and info["calls"] > 50:
                 suggestions.append({
                     "category": "cost",
                     "priority": "high",
                     "title": f"Expensive model '{model}' used frequently",
-                    "detail": f"Called {info['calls']} times (~${info['estimated_cost_usd']}). "
+                    "detail": f"Called {info['calls']} times (~${est_cost}). "
                               "Consider using a sub-agent with Ollama or Gemini Flash for simple tasks.",
                     "icon": "💰",
                 })

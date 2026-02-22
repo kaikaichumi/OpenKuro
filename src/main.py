@@ -315,9 +315,12 @@ async def async_adapter_main(
 ) -> None:
     """Async entry point for adapter mode.
 
-    Starts the specified adapters and runs until interrupted.
+    Starts the specified adapters and the Web GUI dashboard concurrently.
+    The web server always runs so the dashboard (security, analytics, collab)
+    is accessible regardless of which adapter is active.
     """
     from src.adapters.manager import AdapterManager
+    from src.ui.web_server import WebServer
 
     engine = build_engine(config)
     manager = AdapterManager.from_config(engine, config, adapters=adapter_names)
@@ -343,7 +346,14 @@ async def async_adapter_main(
     if hasattr(engine, 'workflow_engine'):
         engine.workflow_engine.set_notification_callback(scheduler_notification)
 
+    # Start web server in background (dashboard always available)
+    web_server = WebServer(engine, config)
+    host = config.web_ui.host
+    port = config.web_ui.port
+    web_task = asyncio.create_task(web_server.run())
+
     print(f"Kuro adapters running: {', '.join(manager.adapter_names)}")
+    print(f"Kuro Web GUI: http://{host}:{port}")
     print("Press Ctrl+C to stop.")
 
     # Keep running until interrupted
@@ -358,6 +368,7 @@ async def async_adapter_main(
         if hasattr(engine, 'scheduler'):
             await engine.scheduler.stop()
 
+        web_task.cancel()
         await manager.stop_all()
         # Give async tasks time to clean up (fixes Windows pipe warnings)
         await asyncio.sleep(0.25)

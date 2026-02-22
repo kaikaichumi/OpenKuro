@@ -89,8 +89,11 @@
         }
 
         @media (max-width: 768px) {
-            .two-col { grid-template-columns: 1fr; }
             .stats-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        .table-scroll {
+            overflow-x: auto;
         }
 
         /* Tool usage bars */
@@ -220,6 +223,66 @@
             font-weight: 600;
         }
 
+        .cost-table .no-pricing {
+            color: var(--text-muted);
+            font-style: italic;
+        }
+
+        .cost-table .rate {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+        }
+
+        .cost-table td.tokens {
+            font-variant-numeric: tabular-nums;
+            font-size: 0.8rem;
+        }
+
+        /* Pricing reference table */
+        .pricing-meta {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .pricing-meta .badge {
+            background: var(--bg-input);
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 0.75rem;
+        }
+
+        .pricing-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .pricing-table th, .pricing-table td {
+            padding: 0.4rem 0.6rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.8rem;
+        }
+
+        .pricing-table th {
+            color: var(--text-muted);
+            font-weight: 500;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+        }
+
+        .pricing-table .rate {
+            font-variant-numeric: tabular-nums;
+            color: var(--text-secondary);
+        }
+
+        .pricing-table .free {
+            color: var(--success);
+        }
+
         /* Suggestions */
         .suggestions {
             display: flex;
@@ -341,26 +404,30 @@
             return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
         }
 
-        function renderAnalytics(usage, costs, suggestions) {
+        function formatTokens(n) {
+            if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+            if (n >= 1000) return (n / 1000).toFixed(1) + "K";
+            return String(n);
+        }
+
+        function renderAnalytics(usage, costs, suggestions, pricing) {
             loading.style.display = "none";
             var html = "";
 
             // --- Summary Stats ---
+            var totalTokens = costs.total_tokens || 0;
             html += '<div class="stats-grid">';
             html += '<div class="stat-card"><div class="stat-value blue">' +
                      (usage.total_calls || 0) + '</div><div class="stat-label">Tool Calls (30d)</div></div>';
             html += '<div class="stat-card"><div class="stat-value yellow">$' +
                      (costs.total_estimated_cost_usd || 0).toFixed(2) +
                      '</div><div class="stat-label">Est. Cost (30d)</div></div>';
-            html += '<div class="stat-card"><div class="stat-value">' +
-                     (usage.unique_sessions || 0) + '</div><div class="stat-label">Sessions</div></div>';
+            html += '<div class="stat-card"><div class="stat-value blue">' +
+                     formatTokens(totalTokens) + '</div><div class="stat-label">Total Tokens (30d)</div></div>';
             html += '<div class="stat-card"><div class="stat-value ' +
                      ((usage.error_rate || 0) > 5 ? "red" : "green") + '">' +
                      (usage.error_rate || 0) + '%</div><div class="stat-label">Error Rate</div></div>';
             html += '</div>';
-
-            // --- Two Column ---
-            html += '<div class="two-col">';
 
             // Tool Usage
             html += '<div class="chart-section">';
@@ -387,30 +454,56 @@
             }
             html += '</div></div>';
 
-            // Cost by Model
+            // Token Usage & Cost by Model (full width)
+
             html += '<div class="chart-section">';
-            html += '<h3>Cost by Model</h3>';
+            html += '<h3>Token Usage & Cost by Model</h3>';
             var byModel = costs.by_model || {};
             var modelList = [];
             for (var m in byModel) { modelList.push([m, byModel[m]]); }
-            modelList.sort(function(a, b) { return (b[1].estimated_cost_usd || 0) - (a[1].estimated_cost_usd || 0); });
+            // Sort: models with pricing first (by cost desc), then unknown (by tokens desc)
+            modelList.sort(function(a, b) {
+                if (a[1].has_pricing && !b[1].has_pricing) return -1;
+                if (!a[1].has_pricing && b[1].has_pricing) return 1;
+                if (a[1].has_pricing && b[1].has_pricing) {
+                    return (b[1].estimated_cost_usd || 0) - (a[1].estimated_cost_usd || 0);
+                }
+                return (b[1].total_tokens || 0) - (a[1].total_tokens || 0);
+            });
 
             if (modelList.length > 0) {
-                html += '<table class="cost-table"><thead><tr><th>Model</th><th>Calls</th><th>Est. Cost</th></tr></thead><tbody>';
+                html += '<div class="table-scroll">';
+                html += '<table class="cost-table"><thead><tr>';
+                html += '<th>Model</th><th>Calls</th>';
+                html += '<th>Prompt Tokens</th><th>Completion Tokens</th><th>Total Tokens</th>';
+                html += '<th>Input Rate</th><th>Output Rate</th>';
+                html += '<th>Est. Cost</th>';
+                html += '</tr></thead><tbody>';
                 for (var j = 0; j < modelList.length; j++) {
                     var mn = modelList[j][0];
                     var info = modelList[j][1];
-                    html += '<tr><td class="model-name">' + escapeHtml(mn.split("/").pop()) +
-                            '</td><td>' + (info.calls || 0) +
-                            '</td><td class="cost-val">$' + (info.estimated_cost_usd || 0).toFixed(4) + '</td></tr>';
+                    html += '<tr>';
+                    html += '<td class="model-name">' + escapeHtml(mn) + '</td>';
+                    html += '<td>' + (info.calls || 0) + '</td>';
+                    html += '<td class="tokens">' + formatTokens(info.prompt_tokens || 0) + '</td>';
+                    html += '<td class="tokens">' + formatTokens(info.completion_tokens || 0) + '</td>';
+                    html += '<td class="tokens">' + formatTokens(info.total_tokens || 0) + '</td>';
+                    if (info.has_pricing && info.pricing) {
+                        html += '<td class="rate">$' + info.pricing.input + '/1K</td>';
+                        html += '<td class="rate">$' + info.pricing.output + '/1K</td>';
+                        html += '<td class="cost-val">$' + (info.estimated_cost_usd || 0).toFixed(4) + '</td>';
+                    } else {
+                        html += '<td class="no-pricing">—</td>';
+                        html += '<td class="no-pricing">—</td>';
+                        html += '<td class="no-pricing">N/A</td>';
+                    }
+                    html += '</tr>';
                 }
-                html += '</tbody></table>';
+                html += '</tbody></table></div>';
             } else {
-                html += '<div style="color:var(--text-muted);font-size:0.85rem">No cost data yet</div>';
+                html += '<div style="color:var(--text-muted);font-size:0.85rem">No token usage data yet</div>';
             }
             html += '</div>';
-
-            html += '</div>'; // end two-col
 
             // --- Daily Activity ---
             var daily = usage.daily_activity || [];
@@ -437,6 +530,36 @@
                     }
                 }
                 html += '</div>';
+                html += '</div>';
+            }
+
+            // --- Pricing Reference ---
+            if (pricing && pricing.models) {
+                html += '<div class="chart-section">';
+                html += '<h3>Model Pricing Reference</h3>';
+                html += '<div class="pricing-meta">';
+                html += '<span>Last updated:</span>';
+                html += '<span class="badge">' + escapeHtml(pricing.last_updated || "unknown") + '</span>';
+                html += '<span style="margin-left:0.5rem;font-size:0.75rem;color:var(--text-muted)">(per 1K tokens, USD)</span>';
+                html += '</div>';
+                html += '<table class="pricing-table"><thead><tr>';
+                html += '<th>Model</th><th>Input</th><th>Output</th>';
+                html += '</tr></thead><tbody>';
+                var pModels = pricing.models;
+                for (var pm in pModels) {
+                    var pi = pModels[pm];
+                    var isFree = pi.input === 0 && pi.output === 0;
+                    html += '<tr>';
+                    html += '<td style="color:var(--accent);font-weight:600">' + escapeHtml(pm) + '</td>';
+                    if (isFree) {
+                        html += '<td class="free">Free</td><td class="free">Free</td>';
+                    } else {
+                        html += '<td class="rate">$' + pi.input + '</td>';
+                        html += '<td class="rate">$' + pi.output + '</td>';
+                    }
+                    html += '</tr>';
+                }
+                html += '</tbody></table>';
                 html += '</div>';
             }
 
@@ -486,9 +609,10 @@
             fetch("/api/analytics/usage").then(function(r) { return r.json(); }),
             fetch("/api/analytics/costs").then(function(r) { return r.json(); }),
             fetch("/api/analytics/suggestions").then(function(r) { return r.json(); }),
+            fetch("/api/analytics/pricing").then(function(r) { return r.json(); }),
         ])
         .then(function(results) {
-            renderAnalytics(results[0], results[1], results[2]);
+            renderAnalytics(results[0], results[1], results[2], results[3]);
         })
         .catch(function(e) {
             loading.textContent = "Failed to load analytics data: " + e.message;
