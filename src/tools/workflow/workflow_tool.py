@@ -11,6 +11,8 @@ from src.tools.base import BaseTool, RiskLevel, ToolContext, ToolResult
 class WorkflowRunTool(BaseTool):
     """Run a registered workflow by name."""
 
+    _auto_discover = False  # Requires workflow_engine dependency injection
+
     name = "workflow_run"
     description = (
         "Run a registered multi-step workflow. "
@@ -70,6 +72,8 @@ class WorkflowRunTool(BaseTool):
 class WorkflowListTool(BaseTool):
     """List all registered workflows."""
 
+    _auto_discover = False
+
     name = "workflow_list"
     description = (
         "List all registered multi-step workflows. "
@@ -116,6 +120,8 @@ class WorkflowListTool(BaseTool):
 
 
 class WorkflowCreateTool(BaseTool):
+
+    _auto_discover = False
     """Create a new workflow from a JSON definition."""
 
     name = "workflow_create"
@@ -236,6 +242,8 @@ class WorkflowCreateTool(BaseTool):
 
 
 class WorkflowDeleteTool(BaseTool):
+
+    _auto_discover = False
     """Delete a registered workflow."""
 
     name = "workflow_delete"

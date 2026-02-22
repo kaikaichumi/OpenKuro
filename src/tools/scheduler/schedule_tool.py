@@ -11,6 +11,7 @@ from src.tools.base import BaseTool, RiskLevel, ToolContext, ToolResult
 class ScheduleAddTool(BaseTool):
     """Add a new scheduled task."""
 
+    _auto_discover = False  # Requires scheduler dependency injection
     name = "schedule_add"
     description = (
         "Schedule a tool to run automatically at specific times. "
@@ -139,6 +140,7 @@ class ScheduleAddTool(BaseTool):
 class ScheduleListTool(BaseTool):
     """List all scheduled tasks."""
 
+    _auto_discover = False
     name = "schedule_list"
     description = "List all scheduled tasks with their status and next run times."
     risk_level = RiskLevel.LOW
@@ -200,6 +202,7 @@ class ScheduleListTool(BaseTool):
 class ScheduleRemoveTool(BaseTool):
     """Remove a scheduled task."""
 
+    _auto_discover = False
     name = "schedule_remove"
     description = "Remove a scheduled task by its ID."
     risk_level = RiskLevel.MEDIUM
@@ -232,6 +235,7 @@ class ScheduleRemoveTool(BaseTool):
 class ScheduleEnableTool(BaseTool):
     """Enable a scheduled task."""
 
+    _auto_discover = False
     name = "schedule_enable"
     description = "Enable a disabled scheduled task."
     risk_level = RiskLevel.LOW
@@ -266,6 +270,7 @@ class ScheduleEnableTool(BaseTool):
 class ScheduleDisableTool(BaseTool):
     """Disable a scheduled task."""
 
+    _auto_discover = False
     name = "schedule_disable"
     description = "Disable a scheduled task without removing it."
     risk_level = RiskLevel.LOW

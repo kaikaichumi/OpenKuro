@@ -276,17 +276,6 @@ def build_engine(
     # Store in engine for access
     engine.workflow_engine = workflow_engine
 
-    # Register system tools (version, update)
-    from src.tools.system.update_tool import (
-        CheckUpdateTool,
-        PerformUpdateTool,
-        VersionTool,
-    )
-
-    tool_system.registry.register(CheckUpdateTool())
-    tool_system.registry.register(PerformUpdateTool())
-    tool_system.registry.register(VersionTool())
-
     return engine
 
 

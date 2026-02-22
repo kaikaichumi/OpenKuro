@@ -103,6 +103,7 @@ class ToolSystem:
                         and issubclass(attr, BaseTool)
                         and attr is not BaseTool
                         and hasattr(attr, "name")
+                        and getattr(attr, "_auto_discover", True)
                     ):
                         try:
                             tool_instance = attr()
