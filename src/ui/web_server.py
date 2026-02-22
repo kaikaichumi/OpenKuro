@@ -201,6 +201,8 @@ class WebServer:
     """FastAPI-based web server with WebSocket chat."""
 
     def __init__(self, engine: Engine, config: KuroConfig) -> None:
+        from src.core.collaboration import CollaborationHub
+
         self.engine = engine
         self.config = config
         self.approval_cb = WebApprovalCallback(
@@ -211,6 +213,12 @@ class WebServer:
         self._tool_cb = WebToolCallback()
         self.engine.tool_callback = self._tool_cb
         self._connections: dict[str, ConnectionState] = {}
+
+        # Collaborative session support
+        self.collab_hub = CollaborationHub()
+        # session_id -> {user_id -> WebSocket}
+        self._collab_connections: dict[str, dict[str, WebSocket]] = {}
+
         self.app = self._create_app()
 
     def _create_app(self) -> FastAPI:
@@ -397,6 +405,81 @@ class WebServer:
         async def websocket_endpoint(ws: WebSocket):
             await self._handle_websocket(ws)
 
+        # === Collaboration API ===
+
+        @app.get("/collab")
+        async def collab_page():
+            collab_file = WEB_DIR / "collab.html"
+            if collab_file.exists():
+                return FileResponse(str(collab_file), media_type="text/html")
+            return HTMLResponse("<h1>Collaboration</h1><p>collab.html not found</p>")
+
+        @app.post("/api/collab/create")
+        async def create_collab(request_body: dict = None):
+            try:
+                from fastapi import Request
+            except ImportError:
+                pass
+            data = request_body or {}
+            name = data.get("name", "Collaboration Session")
+            user_id = data.get("user_id", f"user_{uuid.uuid4().hex[:6]}")
+            display_name = data.get("display_name", "Host")
+            collab = self.collab_hub.create_session(
+                name=name,
+                owner_user_id=user_id,
+                owner_display_name=display_name,
+            )
+            return {
+                "session_id": collab.id,
+                "invite_code": collab.invite_code,
+                "name": collab.name,
+            }
+
+        @app.post("/api/collab/join")
+        async def join_collab(request_body: dict = None):
+            data = request_body or {}
+            invite_code = data.get("invite_code", "")
+            user_id = data.get("user_id", f"user_{uuid.uuid4().hex[:6]}")
+            display_name = data.get("display_name", "Guest")
+            collab = self.collab_hub.join_by_invite(
+                invite_code=invite_code,
+                user_id=user_id,
+                display_name=display_name,
+            )
+            if collab is None:
+                return {"error": "Invalid invite code"}, 404
+            return {
+                "session_id": collab.id,
+                "name": collab.name,
+                "participants": [p.to_dict() for p in collab.participants.values()],
+            }
+
+        @app.get("/api/collab/sessions")
+        async def list_collab_sessions(user_id: str = Query(...)):
+            sessions = self.collab_hub.get_user_sessions(user_id)
+            return {
+                "sessions": [
+                    {
+                        "id": s.id,
+                        "name": s.name,
+                        "participants": len(s.participants),
+                        "invite_code": s.invite_code,
+                    }
+                    for s in sessions
+                ]
+            }
+
+        @app.get("/api/collab/{session_id}")
+        async def get_collab_session(session_id: str):
+            collab = self.collab_hub.get_session(session_id)
+            if collab is None:
+                return {"error": "Session not found"}, 404
+            return collab.to_dict()
+
+        @app.websocket("/ws/collab/{session_id}")
+        async def collab_websocket(ws: WebSocket, session_id: str):
+            await self._handle_collab_websocket(ws, session_id)
+
         return app
 
     async def _handle_websocket(self, ws: WebSocket) -> None:
@@ -582,6 +665,183 @@ class WebServer:
                 "type": "error",
                 "message": f"Unknown command: {command}",
             })
+
+    async def _handle_collab_websocket(self, ws: WebSocket, session_id: str) -> None:
+        """Handle a collaborative session WebSocket connection.
+
+        Protocol:
+          1. Client connects and sends: {"user_id": "<id>"}
+          2. Server confirms with collab_joined + current participants
+          3. Client sends messages with type: message | typing | vote
+          4. Server broadcasts updates to all participants in the session
+        """
+        from src.core.collaboration import Permission, VotingApproval
+
+        await ws.accept()
+
+        collab = self.collab_hub.get_session(session_id)
+        if collab is None:
+            await ws.send_json({"type": "error", "message": "Session not found"})
+            await ws.close()
+            return
+
+        # First message must authenticate the user
+        try:
+            raw = await asyncio.wait_for(ws.receive_text(), timeout=10)
+            auth = json.loads(raw)
+            user_id = auth.get("user_id", "")
+        except (asyncio.TimeoutError, json.JSONDecodeError, Exception):
+            await ws.send_json({"type": "error", "message": "Auth required: send {user_id}"})
+            await ws.close()
+            return
+
+        if not user_id or user_id not in collab.participants:
+            await ws.send_json({"type": "error", "message": "User not in session"})
+            await ws.close()
+            return
+
+        # Register connection
+        if session_id not in self._collab_connections:
+            self._collab_connections[session_id] = {}
+        self._collab_connections[session_id][user_id] = ws
+
+        # Ensure a VotingApproval instance exists for this session
+        if not hasattr(self, "_collab_voting"):
+            self._collab_voting: dict[str, VotingApproval] = {}
+        if session_id not in self._collab_voting:
+            self._collab_voting[session_id] = VotingApproval(collab)
+
+        # Mark online, send welcome, broadcast presence
+        collab.set_online(user_id, True)
+        display_name = collab.participants[user_id].display_name
+
+        try:
+            await ws.send_json({
+                "type": "collab_joined",
+                "session_id": session_id,
+                "name": collab.name,
+                "user_id": user_id,
+                "participants": [p.to_dict() for p in collab.participants.values()],
+            })
+        except Exception:
+            self._collab_connections.get(session_id, {}).pop(user_id, None)
+            return
+
+        await self._broadcast_collab(session_id, {
+            "type": "collab_presence",
+            "user_id": user_id,
+            "display_name": display_name,
+            "online": True,
+        }, exclude_user_id=user_id)
+
+        try:
+            while True:
+                raw = await ws.receive_text()
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    await ws.send_json({"type": "error", "message": "Invalid JSON"})
+                    continue
+
+                msg_type = data.get("type")
+
+                if msg_type == "message":
+                    if not collab.has_permission(user_id, Permission.WRITE):
+                        await ws.send_json({"type": "error", "message": "No write permission"})
+                        continue
+
+                    text = data.get("text", "").strip()
+                    if not text:
+                        continue
+
+                    collab.set_typing(user_id, False)
+
+                    # Broadcast who is sending and what
+                    await self._broadcast_collab(session_id, {
+                        "type": "collab_stream_start",
+                        "author_user_id": user_id,
+                        "author_name": display_name,
+                        "text": text,
+                    })
+
+                    try:
+                        response = await self.engine.process_message(
+                            text, collab.session, author_user_id=user_id
+                        )
+                        await self._broadcast_collab(session_id, {
+                            "type": "collab_response",
+                            "author_user_id": user_id,
+                            "author_name": display_name,
+                            "response": response,
+                        })
+                    except Exception as e:
+                        logger.error("collab_message_error", session_id=session_id, error=str(e))
+                        await self._broadcast_collab(session_id, {
+                            "type": "error",
+                            "message": f"Error: {e}",
+                        })
+
+                elif msg_type == "typing":
+                    is_typing = bool(data.get("is_typing", False))
+                    collab.set_typing(user_id, is_typing)
+                    await self._broadcast_collab(session_id, {
+                        "type": "collab_typing",
+                        "user_id": user_id,
+                        "display_name": display_name,
+                        "is_typing": is_typing,
+                    }, exclude_user_id=user_id)
+
+                elif msg_type == "vote":
+                    voting = self._collab_voting.get(session_id)
+                    if voting is None:
+                        await ws.send_json({"type": "error", "message": "No active vote"})
+                        continue
+                    approval_id = data.get("approval_id", "")
+                    approve = bool(data.get("approve", False))
+                    result = voting.cast_vote(approval_id, user_id, approve)
+                    await self._broadcast_collab(session_id, {
+                        "type": "collab_vote_update",
+                        "approval_id": approval_id,
+                        "voter_id": user_id,
+                        "voter_name": display_name,
+                        **result,
+                    })
+
+                else:
+                    await ws.send_json({
+                        "type": "error",
+                        "message": f"Unknown message type: {msg_type}",
+                    })
+
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            logger.error("collab_websocket_error", session_id=session_id, error=str(e))
+        finally:
+            self._collab_connections.get(session_id, {}).pop(user_id, None)
+            collab.set_online(user_id, False)
+            await self._broadcast_collab(session_id, {
+                "type": "collab_presence",
+                "user_id": user_id,
+                "display_name": display_name,
+                "online": False,
+            })
+
+    async def _broadcast_collab(
+        self,
+        session_id: str,
+        data: dict,
+        exclude_user_id: str | None = None,
+    ) -> None:
+        """Broadcast a message to all WebSocket connections in a collab session."""
+        conns = self._collab_connections.get(session_id, {})
+        for uid, ws in list(conns.items()):
+            if exclude_user_id and uid == exclude_user_id:
+                continue
+            try:
+                await ws.send_json(data)
+            except Exception:
+                pass  # Connection may have already closed
 
     async def run(self) -> None:
         """Start the uvicorn server."""

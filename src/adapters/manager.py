@@ -162,6 +162,12 @@ class AdapterManager:
                 adapters.append("telegram")
             if config.adapters.discord.enabled:
                 adapters.append("discord")
+            if config.adapters.slack.enabled:
+                adapters.append("slack")
+            if config.adapters.line.enabled:
+                adapters.append("line")
+            if config.adapters.email.enabled:
+                adapters.append("email")
 
         for name in adapters:
             if name == "telegram":
@@ -172,9 +178,17 @@ class AdapterManager:
                 from src.adapters.discord_adapter import DiscordAdapter
                 adapter = DiscordAdapter(engine, config)
                 manager.register(adapter)
+            elif name == "slack":
+                from src.adapters.slack_adapter import SlackAdapter
+                adapter = SlackAdapter(engine, config)
+                manager.register(adapter)
             elif name == "line":
                 from src.adapters.line_adapter import LineAdapter
                 adapter = LineAdapter(engine, config)
+                manager.register(adapter)
+            elif name == "email":
+                from src.adapters.email_adapter import EmailAdapter
+                adapter = EmailAdapter(engine, config)
                 manager.register(adapter)
             else:
                 logger.warning("unknown_adapter", adapter=name)

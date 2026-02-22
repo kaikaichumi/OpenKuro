@@ -171,12 +171,72 @@ class DiscordConfig(BaseModel):
         return os.environ.get(self.bot_token_env)
 
 
+class SlackConfig(BaseModel):
+    """Slack adapter configuration."""
+
+    enabled: bool = False
+    bot_token_env: str = "KURO_SLACK_BOT_TOKEN"
+    app_token_env: str = "KURO_SLACK_APP_TOKEN"  # For Socket Mode (no public URL needed)
+    allowed_user_ids: list[str] = Field(default_factory=list)  # Slack user IDs are strings
+    allowed_channel_ids: list[str] = Field(default_factory=list)
+    max_message_length: int = 4000
+    approval_timeout: int = 60
+
+    def get_bot_token(self) -> str | None:
+        return os.environ.get(self.bot_token_env)
+
+    def get_app_token(self) -> str | None:
+        return os.environ.get(self.app_token_env)
+
+
+class LineConfig(BaseModel):
+    """LINE Messaging API adapter configuration."""
+
+    enabled: bool = False
+    channel_secret_env: str = "KURO_LINE_CHANNEL_SECRET"
+    channel_access_token_env: str = "KURO_LINE_ACCESS_TOKEN"
+    webhook_port: int = 8443
+    allowed_user_ids: list[str] = Field(default_factory=list)
+    max_message_length: int = 5000
+    approval_timeout: int = 60
+
+    def get_channel_secret(self) -> str | None:
+        return os.environ.get(self.channel_secret_env)
+
+    def get_access_token(self) -> str | None:
+        return os.environ.get(self.channel_access_token_env)
+
+
+class EmailConfig(BaseModel):
+    """Email adapter configuration (IMAP receive + SMTP send)."""
+
+    enabled: bool = False
+    imap_host: str = "imap.gmail.com"
+    imap_port: int = 993
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    email_env: str = "KURO_EMAIL_ADDRESS"
+    password_env: str = "KURO_EMAIL_PASSWORD"
+    allowed_senders: list[str] = Field(default_factory=list)  # Empty = allow all
+    check_interval: int = 30  # seconds between IMAP IDLE reconnects
+    max_message_length: int = 50000
+    approval_timeout: int = 300  # Email is slower, 5 minutes
+
+    def get_email(self) -> str | None:
+        return os.environ.get(self.email_env)
+
+    def get_password(self) -> str | None:
+        return os.environ.get(self.password_env)
+
+
 class AdaptersConfig(BaseModel):
     """Messaging adapter configuration."""
 
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     discord: DiscordConfig = Field(default_factory=DiscordConfig)
-    line: dict[str, Any] = Field(default_factory=dict)
+    slack: SlackConfig = Field(default_factory=SlackConfig)
+    line: LineConfig = Field(default_factory=LineConfig)
+    email: EmailConfig = Field(default_factory=EmailConfig)
 
 
 class WebUIConfig(BaseModel):

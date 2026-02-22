@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kuro – Collaboration</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #21262d;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-dim: #8b949e;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --yellow: #d29922;
+      --red: #f85149;
+      --purple: #bc8cff;
+    }
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; }
+
+    /* ── Header ── */
+    header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 10px 20px; display: flex; align-items: center; gap: 16px; }
+    header h1 { font-size: 1.1rem; font-weight: 600; color: var(--accent); }
+    header .session-info { font-size: 0.8rem; color: var(--text-dim); }
+    .invite-badge { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 3px 10px; font-size: 0.78rem; font-family: monospace; cursor: pointer; color: var(--text-dim); transition: color .15s; }
+    .invite-badge:hover { color: var(--accent); }
+    .copied-hint { font-size: 0.7rem; color: var(--green); display: none; margin-left: 4px; }
+    .nav-link { margin-left: auto; color: var(--text-dim); text-decoration: none; font-size: 0.82rem; }
+    .nav-link:hover { color: var(--accent); }
+
+    /* ── Main layout ── */
+    main { flex: 1; display: flex; overflow: hidden; }
+
+    /* ── Sidebar ── */
+    aside { width: 220px; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+    aside .panel-title { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--text-dim); padding: 12px 14px 6px; }
+    #participant-list { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
+    .participant { display: flex; align-items: center; gap: 8px; padding: 6px 6px; border-radius: 6px; font-size: 0.85rem; }
+    .participant .avatar { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 700; flex-shrink: 0; }
+    .participant .pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .participant .typing-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); flex-shrink: 0; animation: pulse .8s ease-in-out infinite; display: none; }
+    .participant.typing .typing-dot { display: block; }
+    .participant .offline { width: 8px; height: 8px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
+    .participant .online { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+
+    /* ── Setup panel (before joining) ── */
+    #setup-panel { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; z-index: 100; }
+    .setup-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 28px 32px; width: 380px; max-width: 95vw; }
+    .setup-card h2 { font-size: 1.15rem; font-weight: 600; margin-bottom: 18px; }
+    .form-group { margin-bottom: 14px; }
+    label { display: block; font-size: 0.8rem; color: var(--text-dim); margin-bottom: 4px; }
+    input[type=text] { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; color: var(--text); font-size: 0.9rem; outline: none; transition: border-color .15s; }
+    input[type=text]:focus { border-color: var(--accent); }
+    .btn { border: none; border-radius: 6px; padding: 8px 18px; font-size: 0.87rem; cursor: pointer; font-weight: 500; transition: opacity .15s; }
+    .btn:hover { opacity: .85; }
+    .btn-primary { background: var(--accent); color: #000; }
+    .btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+    .btn-danger { background: var(--red); color: #fff; }
+    .divider { display: flex; align-items: center; gap: 10px; margin: 16px 0; color: var(--text-dim); font-size: 0.8rem; }
+    .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+    .error-msg { color: var(--red); font-size: 0.8rem; margin-top: 8px; display: none; }
+
+    /* ── Chat area ── */
+    #chat-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    #messages { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+    .msg { display: flex; gap: 10px; max-width: 780px; align-self: flex-start; width: 100%; }
+    .msg.self { align-self: flex-end; flex-direction: row-reverse; }
+    .msg .msg-avatar { width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 700; }
+    .msg .bubble { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; font-size: 0.87rem; line-height: 1.55; max-width: 600px; word-break: break-word; }
+    .msg.self .bubble { background: #1c4a7a; border-color: var(--accent); }
+    .msg.assistant .bubble { background: var(--surface); border-color: var(--border); }
+    .msg .meta { font-size: 0.7rem; color: var(--text-dim); margin-bottom: 3px; }
+    .msg.self .meta { text-align: right; }
+    pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; overflow-x: auto; font-size: 0.82rem; margin: 6px 0; }
+    code { font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 0.83em; background: var(--bg); border-radius: 3px; padding: 1px 4px; }
+    pre code { background: none; padding: 0; }
+
+    /* typing indicator */
+    .typing-indicator { font-size: 0.75rem; color: var(--text-dim); padding: 0 20px; height: 20px; transition: opacity .2s; }
+
+    /* vote panel */
+    .vote-panel { background: var(--surface2); border: 1px solid var(--yellow); border-radius: 8px; padding: 12px 16px; font-size: 0.84rem; }
+    .vote-panel .vote-title { font-weight: 600; color: var(--yellow); margin-bottom: 6px; }
+    .vote-panel .vote-params { font-family: monospace; font-size: 0.78rem; color: var(--text-dim); max-height: 60px; overflow: auto; margin-bottom: 8px; }
+    .vote-panel .vote-buttons { display: flex; gap: 8px; }
+    .vote-panel .vote-progress { margin-top: 8px; font-size: 0.77rem; color: var(--text-dim); }
+    .vote-panel .vote-bar { height: 4px; background: var(--border); border-radius: 2px; margin-top: 4px; }
+    .vote-panel .vote-bar-fill { height: 100%; background: var(--green); border-radius: 2px; transition: width .3s; }
+
+    /* input area */
+    #input-area { padding: 12px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: flex-end; background: var(--surface); }
+    #msg-input { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; color: var(--text); font-size: 0.9rem; resize: none; max-height: 140px; outline: none; transition: border-color .15s; font-family: inherit; }
+    #msg-input:focus { border-color: var(--accent); }
+    #msg-input:disabled { opacity: .5; cursor: not-allowed; }
+    #send-btn { background: var(--accent); border: none; border-radius: 8px; width: 38px; height: 38px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: opacity .15s; }
+    #send-btn:hover:not(:disabled) { opacity: .85; }
+    #send-btn:disabled { opacity: .4; cursor: not-allowed; }
+    #send-btn svg { fill: #000; }
+
+    /* system messages */
+    .sys-msg { text-align: center; font-size: 0.73rem; color: var(--text-dim); padding: 4px 0; }
+
+    /* scrollbar */
+    ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<!-- ── Setup panel ── -->
+<div id="setup-panel">
+  <div class="setup-card">
+    <h2>Kuro Collaboration</h2>
+
+    <!-- Create -->
+    <div class="form-group">
+      <label>Your display name</label>
+      <input type="text" id="create-name" placeholder="e.g. Alice" />
+    </div>
+    <div class="form-group">
+      <label>Session name</label>
+      <input type="text" id="session-name" placeholder="e.g. Team AI" />
+    </div>
+    <button class="btn btn-primary" onclick="createSession()" style="width:100%">Create Session</button>
+
+    <div class="divider">or join existing</div>
+
+    <div class="form-group">
+      <label>Your display name</label>
+      <input type="text" id="join-name" placeholder="e.g. Bob" />
+    </div>
+    <div class="form-group">
+      <label>Invite code</label>
+      <input type="text" id="invite-code" placeholder="8-character code" style="font-family:monospace" />
+    </div>
+    <button class="btn btn-secondary" onclick="joinSession()" style="width:100%">Join Session</button>
+    <p class="error-msg" id="setup-error"></p>
+  </div>
+</div>
+
+<!-- ── Header ── -->
+<header>
+  <h1>Kuro – Collaboration</h1>
+  <span class="session-info" id="header-session"></span>
+  <span class="invite-badge" id="invite-badge" onclick="copyInvite()" title="Click to copy invite code"></span>
+  <span class="copied-hint" id="copied-hint">Copied!</span>
+  <a href="/" class="nav-link">← Chat</a>
+</header>
+
+<!-- ── Main ── -->
+<main>
+  <aside>
+    <div class="panel-title">Participants</div>
+    <div id="participant-list"></div>
+  </aside>
+
+  <div id="chat-area">
+    <div id="messages"></div>
+    <div class="typing-indicator" id="typing-indicator"></div>
+    <div id="input-area">
+      <textarea id="msg-input" rows="1" placeholder="Send a message…" disabled></textarea>
+      <button id="send-btn" onclick="sendMessage()" disabled>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+      </button>
+    </div>
+  </div>
+</main>
+
+<script>
+// ── State ──
+let ws = null;
+let myUserId = null;
+let myDisplayName = null;
+let sessionId = null;
+let sessionName = null;
+let inviteCode = null;
+const participants = {};   // user_id -> {display_name, online, is_typing}
+const typingUsers = new Set();
+let typingTimer = null;
+let isTyping = false;
+const colorPalette = ['#58a6ff','#3fb950','#d29922','#bc8cff','#f0883e','#79c0ff','#56d364'];
+const userColors = {};
+
+function userColor(uid) {
+  if (!userColors[uid]) {
+    userColors[uid] = colorPalette[Object.keys(userColors).length % colorPalette.length];
+  }
+  return userColors[uid];
+}
+
+function initials(name) {
+  return (name || '?').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+}
+
+// ── Setup ──
+async function createSession() {
+  const name = document.getElementById('create-name').value.trim();
+  const sname = document.getElementById('session-name').value.trim() || 'Collaboration';
+  if (!name) { showError('Enter your display name'); return; }
+
+  myDisplayName = name;
+  myUserId = 'user_' + Math.random().toString(36).slice(2, 8);
+
+  const res = await fetch('/api/collab/create', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ name: sname, user_id: myUserId, display_name: name }),
+  });
+  if (!res.ok) { showError('Failed to create session'); return; }
+  const data = await res.json();
+  enterSession(data.session_id, data.name, data.invite_code);
+}
+
+async function joinSession() {
+  const name = document.getElementById('join-name').value.trim();
+  const code = document.getElementById('invite-code').value.trim();
+  if (!name) { showError('Enter your display name'); return; }
+  if (!code) { showError('Enter an invite code'); return; }
+
+  myDisplayName = name;
+  myUserId = 'user_' + Math.random().toString(36).slice(2, 8);
+
+  const res = await fetch('/api/collab/join', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ invite_code: code, user_id: myUserId, display_name: name }),
+  });
+  const data = await res.json();
+  if (data.error) { showError(data.error); return; }
+  enterSession(data.session_id, data.name, null);
+}
+
+function enterSession(sid, sname, icode) {
+  sessionId = sid;
+  sessionName = sname;
+  inviteCode = icode;
+
+  document.getElementById('setup-panel').style.display = 'none';
+  document.getElementById('header-session').textContent = sname;
+
+  if (inviteCode) {
+    document.getElementById('invite-badge').textContent = '🔗 ' + inviteCode;
+  } else {
+    document.getElementById('invite-badge').style.display = 'none';
+  }
+
+  connectWs();
+}
+
+function showError(msg) {
+  const el = document.getElementById('setup-error');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function copyInvite() {
+  if (!inviteCode) return;
+  navigator.clipboard.writeText(inviteCode).catch(() => {});
+  const hint = document.getElementById('copied-hint');
+  hint.style.display = 'inline';
+  setTimeout(() => { hint.style.display = 'none'; }, 2000);
+}
+
+// ── WebSocket ──
+function connectWs() {
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${protocol}//${location.host}/ws/collab/${sessionId}`);
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ user_id: myUserId }));
+  };
+
+  ws.onmessage = (ev) => {
+    const data = JSON.parse(ev.data);
+    handleMessage(data);
+  };
+
+  ws.onclose = () => {
+    appendSys('Disconnected. Reconnecting in 3s…');
+    setTimeout(connectWs, 3000);
+  };
+
+  ws.onerror = (e) => {
+    console.error('WS error', e);
+  };
+}
+
+function handleMessage(data) {
+  switch (data.type) {
+    case 'collab_joined':
+      inviteCode = inviteCode || null;  // already set
+      appendSys(`Joined session: ${data.name}`);
+      data.participants.forEach(p => {
+        participants[p.user_id] = p;
+      });
+      renderParticipants();
+      enableInput();
+      break;
+
+    case 'collab_presence':
+      if (!participants[data.user_id]) {
+        participants[data.user_id] = { user_id: data.user_id, display_name: data.display_name, is_online: data.online, is_typing: false, permissions: [] };
+      } else {
+        participants[data.user_id].is_online = data.online;
+        participants[data.user_id].is_typing = false;
+      }
+      renderParticipants();
+      appendSys(`${data.display_name} ${data.online ? 'joined' : 'left'}`);
+      break;
+
+    case 'collab_stream_start':
+      // Another user started a message — show it as a "pending" user message
+      if (data.author_user_id !== myUserId) {
+        appendUserMessage(data.author_user_id, data.author_name, data.text);
+      }
+      appendSys('AI is thinking…');
+      break;
+
+    case 'collab_response':
+      removeLastSys('AI is thinking…');
+      appendAssistantMessage(data.response, data.author_name);
+      break;
+
+    case 'collab_typing':
+      if (data.is_typing) {
+        typingUsers.add(data.display_name);
+      } else {
+        typingUsers.delete(data.display_name);
+      }
+      renderTyping();
+      if (participants[data.user_id]) {
+        participants[data.user_id].is_typing = data.is_typing;
+        renderParticipants();
+      }
+      break;
+
+    case 'collab_approval_request':
+      appendVotePanel(data);
+      break;
+
+    case 'collab_vote_update':
+      updateVotePanel(data);
+      break;
+
+    case 'collab_approval_expired':
+      removeVotePanel(data.approval_id);
+      appendSys(`Vote expired: ${data.tool_name}`);
+      break;
+
+    case 'error':
+      appendSys('⚠ ' + data.message, true);
+      break;
+  }
+}
+
+// ── Rendering ──
+function renderParticipants() {
+  const list = document.getElementById('participant-list');
+  list.innerHTML = '';
+  Object.values(participants).forEach(p => {
+    const el = document.createElement('div');
+    el.className = 'participant' + (p.is_typing ? ' typing' : '');
+    const color = userColor(p.user_id);
+    el.innerHTML = `
+      <div class="avatar" style="background:${color}20;color:${color}">${initials(p.display_name)}</div>
+      <div class="pname" title="${p.display_name}">${p.display_name}${p.user_id === myUserId ? ' (you)' : ''}</div>
+      <div class="typing-dot"></div>
+      <div class="${p.is_online ? 'online' : 'offline'}"></div>
+    `;
+    list.appendChild(el);
+  });
+}
+
+function renderTyping() {
+  const el = document.getElementById('typing-indicator');
+  const names = [...typingUsers];
+  if (names.length === 0) {
+    el.textContent = '';
+  } else if (names.length === 1) {
+    el.textContent = `${names[0]} is typing…`;
+  } else {
+    el.textContent = `${names.slice(0, -1).join(', ')} and ${names[names.length-1]} are typing…`;
+  }
+}
+
+const msgContainer = document.getElementById('messages');
+
+function appendUserMessage(userId, name, text) {
+  const isSelf = userId === myUserId;
+  const color = userColor(userId);
+  const div = document.createElement('div');
+  div.className = 'msg' + (isSelf ? ' self' : '');
+  div.innerHTML = `
+    <div class="msg-avatar" style="background:${color}20;color:${color}">${initials(name)}</div>
+    <div>
+      <div class="meta">${escapeHtml(name)}</div>
+      <div class="bubble">${escapeHtml(text)}</div>
+    </div>
+  `;
+  msgContainer.appendChild(div);
+  scrollBottom();
+}
+
+function appendAssistantMessage(text, triggeredBy) {
+  const div = document.createElement('div');
+  div.className = 'msg assistant';
+  div.innerHTML = `
+    <div class="msg-avatar" style="background:#bc8cff20;color:#bc8cff">AI</div>
+    <div>
+      <div class="meta" style="color:#8b949e">Kuro${triggeredBy ? ' · via ' + escapeHtml(triggeredBy) : ''}</div>
+      <div class="bubble">${renderMarkdown(text)}</div>
+    </div>
+  `;
+  msgContainer.appendChild(div);
+  scrollBottom();
+}
+
+function appendSys(text, isError = false) {
+  const div = document.createElement('div');
+  div.className = 'sys-msg';
+  div.style.color = isError ? 'var(--red)' : 'var(--text-dim)';
+  div.dataset.text = text;
+  div.textContent = text;
+  msgContainer.appendChild(div);
+  scrollBottom();
+}
+
+function removeLastSys(text) {
+  const els = msgContainer.querySelectorAll('.sys-msg');
+  for (let i = els.length - 1; i >= 0; i--) {
+    if (els[i].dataset.text === text) { els[i].remove(); return; }
+  }
+}
+
+function appendVotePanel(data) {
+  const div = document.createElement('div');
+  div.className = 'vote-panel';
+  div.id = 'vote-' + data.approval_id;
+  div.innerHTML = `
+    <div class="vote-title">🗳 Approval needed: ${escapeHtml(data.tool_name)}</div>
+    <div class="vote-params">${escapeHtml(JSON.stringify(data.params, null, 2))}</div>
+    <div class="vote-buttons">
+      <button class="btn btn-secondary" onclick="castVote('${data.approval_id}', true)">Allow</button>
+      <button class="btn btn-danger" onclick="castVote('${data.approval_id}', false)">Deny</button>
+    </div>
+    <div class="vote-progress" id="vote-prog-${data.approval_id}">
+      Waiting for votes… (${data.required_votes}/${data.total_approvers} required)
+    </div>
+    <div class="vote-bar"><div class="vote-bar-fill" id="vote-bar-${data.approval_id}" style="width:0%"></div></div>
+  `;
+  msgContainer.appendChild(div);
+  scrollBottom();
+}
+
+function updateVotePanel(data) {
+  const prog = document.getElementById('vote-prog-' + data.approval_id);
+  const bar = document.getElementById('vote-bar-' + data.approval_id);
+  if (!prog) return;
+  const pct = data.required ? Math.round((data.approve / data.required) * 100) : 0;
+  if (bar) bar.style.width = Math.min(pct, 100) + '%';
+  if (data.status === 'approved') {
+    prog.textContent = '✅ Approved!';
+    removeVotePanel(data.approval_id, 2000);
+  } else if (data.status === 'denied') {
+    prog.textContent = '❌ Denied';
+    removeVotePanel(data.approval_id, 2000);
+  } else {
+    prog.textContent = `${data.voter_name} voted · ${data.approve} approve / ${data.deny} deny · need ${data.required}`;
+  }
+}
+
+function removeVotePanel(approvalId, delay = 0) {
+  setTimeout(() => {
+    const el = document.getElementById('vote-' + approvalId);
+    if (el) el.remove();
+  }, delay);
+}
+
+function castVote(approvalId, approve) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'vote', approval_id: approvalId, approve }));
+}
+
+function scrollBottom() {
+  msgContainer.scrollTop = msgContainer.scrollHeight;
+}
+
+function enableInput() {
+  document.getElementById('msg-input').disabled = false;
+  document.getElementById('send-btn').disabled = false;
+}
+
+// ── Send ──
+function sendMessage() {
+  const input = document.getElementById('msg-input');
+  const text = input.value.trim();
+  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+  // Show own message immediately
+  appendUserMessage(myUserId, myDisplayName, text);
+
+  ws.send(JSON.stringify({ type: 'message', text }));
+  input.value = '';
+  input.style.height = 'auto';
+  sendTyping(false);
+}
+
+function sendTyping(typing) {
+  if (ws && ws.readyState === WebSocket.OPEN && typing !== isTyping) {
+    isTyping = typing;
+    ws.send(JSON.stringify({ type: 'typing', is_typing: typing }));
+  }
+}
+
+// ── Input events ──
+const msgInput = document.getElementById('msg-input');
+msgInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+msgInput.addEventListener('input', () => {
+  // Auto-resize
+  msgInput.style.height = 'auto';
+  msgInput.style.height = Math.min(msgInput.scrollHeight, 140) + 'px';
+
+  // Typing indicator
+  sendTyping(true);
+  clearTimeout(typingTimer);
+  typingTimer = setTimeout(() => sendTyping(false), 2000);
+});
+
+// ── Helpers ──
+function escapeHtml(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function renderMarkdown(text) {
+  // Minimal markdown: code blocks, inline code, bold, italic, newlines
+  let html = escapeHtml(text);
+  // Code blocks
+  html = html.replace(/```[\s\S]*?```/g, m => {
+    const inner = m.slice(3, -3).replace(/^[a-z]+\n/, '');
+    return `<pre><code>${inner}</code></pre>`;
+  });
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Bold
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  // Italic
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  // Newlines
+  html = html.replace(/\n/g, '<br>');
+  return html;
+}
+</script>
+</body>
+</html>

@@ -32,6 +32,7 @@ class Message:
     tool_call_id: str | None = None  # For tool result messages
     tool_calls: list[ToolCall] | None = None  # For assistant messages with tool calls
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    author_user_id: str | None = None  # Tracks message author in collaborative sessions
 
     def to_litellm(self) -> dict[str, Any]:
         """Convert to LiteLLM-compatible message dict."""

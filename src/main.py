@@ -553,6 +553,21 @@ def main() -> None:
         help="Start the Discord adapter",
     )
     parser.add_argument(
+        "--slack",
+        action="store_true",
+        help="Start the Slack adapter (requires KURO_SLACK_BOT_TOKEN + KURO_SLACK_APP_TOKEN)",
+    )
+    parser.add_argument(
+        "--line",
+        action="store_true",
+        help="Start the LINE adapter (requires KURO_LINE_CHANNEL_SECRET + KURO_LINE_ACCESS_TOKEN)",
+    )
+    parser.add_argument(
+        "--email",
+        action="store_true",
+        help="Start the Email adapter (requires KURO_EMAIL_ADDRESS + KURO_EMAIL_PASSWORD)",
+    )
+    parser.add_argument(
         "--adapters",
         action="store_true",
         help="Start all enabled adapters (from config)",
@@ -627,6 +642,12 @@ def main() -> None:
         elif args.discord:
             # Discord-only mode
             asyncio.run(async_adapter_main(config, ["discord"]))
+        elif args.slack:
+            asyncio.run(async_adapter_main(config, ["slack"]))
+        elif args.line:
+            asyncio.run(async_adapter_main(config, ["line"]))
+        elif args.email:
+            asyncio.run(async_adapter_main(config, ["email"]))
         elif args.adapters:
             # All enabled adapters mode
             asyncio.run(async_adapter_main(config, adapter_names=None))

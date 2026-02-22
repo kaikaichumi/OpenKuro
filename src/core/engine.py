@@ -7,6 +7,7 @@ Integrates with the security layer (approval, sandbox, audit, sanitizer).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import time
 from pathlib import Path
@@ -131,6 +132,15 @@ class Engine:
         self.sanitizer = Sanitizer()
         self.audit = audit_log or AuditLog()
 
+        # Per-session locks for collaborative sessions (and general concurrency safety)
+        self._session_locks: dict[str, asyncio.Lock] = {}
+
+    def _get_session_lock(self, session_id: str) -> asyncio.Lock:
+        """Get or create a per-session asyncio lock."""
+        if session_id not in self._session_locks:
+            self._session_locks[session_id] = asyncio.Lock()
+        return self._session_locks[session_id]
+
     async def execute_tool(self, tool_name: str, params: dict[str, Any]) -> str:
         """Execute a tool directly (used by scheduler/workflow).
 
@@ -191,16 +201,32 @@ class Engine:
         user_text: str,
         session: Session,
         model: str | None = None,
+        author_user_id: str | None = None,
     ) -> str:
         """Process a user message and return the assistant's response.
 
         This is the main entry point for the agent loop.
+        Uses per-session locking to safely handle concurrent messages
+        (important for collaborative sessions with multiple users).
         """
+        async with self._get_session_lock(session.id):
+            return await self._process_message_locked(
+                user_text, session, model, author_user_id
+            )
+
+    async def _process_message_locked(
+        self,
+        user_text: str,
+        session: Session,
+        model: str | None = None,
+        author_user_id: str | None = None,
+    ) -> str:
+        """Internal message processing (called with session lock held)."""
         # Sanitize user input
         user_text = self.sanitizer.sanitize_user_input(user_text)
 
-        # Add user message
-        user_msg = Message(role=Role.USER, content=user_text)
+        # Add user message (track author for collaborative sessions)
+        user_msg = Message(role=Role.USER, content=user_text, author_user_id=author_user_id)
         session.add_message(user_msg)
 
         # Log conversation if in full mode
