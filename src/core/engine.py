@@ -131,6 +131,26 @@ class Engine:
         self.sanitizer = Sanitizer()
         self.audit = audit_log or AuditLog()
 
+    async def execute_tool(self, tool_name: str, params: dict[str, Any]) -> str:
+        """Execute a tool directly (used by scheduler/workflow).
+
+        Creates a minimal ToolContext and returns the output string.
+        """
+        context = ToolContext(
+            session_id="scheduler",
+            working_directory=None,
+            allowed_directories=[
+                str(d) for d in self.sandbox.allowed_directories
+            ],
+            max_execution_time=self.config.sandbox.max_execution_time,
+            max_output_size=self.config.sandbox.max_output_size,
+            agent_manager=self.agent_manager,
+        )
+        result = await self.tools.execute(tool_name, params, context)
+        if result.success:
+            return result.output
+        raise RuntimeError(result.error or "Tool execution failed")
+
     def _get_system_message(self) -> Message:
         """Build the system message with security rules."""
         return Message(role=Role.SYSTEM, content=self.config.system_prompt)

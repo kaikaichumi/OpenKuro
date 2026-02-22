@@ -626,7 +626,9 @@ class DiscordAdapter(BaseAdapter):
             return False
 
         try:
-            channel_id = int(user_id)
+            # Handle session key format "channel_id:user_id" from older tasks
+            raw_id = user_id.split(":")[0] if ":" in user_id else user_id
+            channel_id = int(raw_id)
             channel = self._bot.get_channel(channel_id)
             if channel is None:
                 channel = await self._bot.fetch_channel(channel_id)

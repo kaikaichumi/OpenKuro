@@ -82,7 +82,12 @@ class ScheduleAddTool(BaseTool):
                 # Only enable notifications for platform adapters (not CLI)
                 if adapter in ("discord", "telegram"):
                     notify_adapter = adapter
-                    notify_user_id = user_id
+                    # Discord session keys are "channel_id:user_id" — extract channel_id
+                    # since send_notification sends to the channel, not the user
+                    if adapter == "discord" and ":" in user_id:
+                        notify_user_id = user_id.split(":")[0]
+                    else:
+                        notify_user_id = user_id
 
             task = self.scheduler.add_task(
                 task_id=params["task_id"],
