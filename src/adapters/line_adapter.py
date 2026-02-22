@@ -296,6 +296,31 @@ class LineAdapter(BaseAdapter):
 
         return web.Response(text="OK")
 
+    async def _try_quick_command(self, text: str) -> str | None:
+        """Check if text is a quick command. Returns response or None."""
+        cmd = text.strip().lower()
+        max_chars = self.config.adapters.line.max_message_length - 100
+        if cmd in ("#stats", "/stats"):
+            from src.adapters.dashboard_commands import handle_stats_command
+            return await handle_stats_command(max_chars)
+        if cmd in ("#costs", "/costs"):
+            from src.adapters.dashboard_commands import handle_costs_command
+            return await handle_costs_command(max_chars)
+        if cmd in ("#security", "/security"):
+            from src.adapters.dashboard_commands import handle_security_command
+            return await handle_security_command(max_chars)
+        if cmd in ("#help", "/help"):
+            return (
+                "\U0001f3d4 Kuro AI Assistant\n\n"
+                "Commands:\n"
+                "/stats - Dashboard overview\n"
+                "/costs - Token & cost report\n"
+                "/security - Security report\n"
+                "/help - Show this help\n\n"
+                "Or just type naturally to chat!"
+            )
+        return None
+
     async def _process_message(self, event) -> None:
         """Handle a LINE text message."""
         from linebot.v3.messaging import (
@@ -309,6 +334,30 @@ class LineAdapter(BaseAdapter):
 
         if not self._is_user_allowed(user_id):
             logger.debug("line_user_blocked", user_id=user_id)
+            return
+
+        # Quick commands (bypass LLM)
+        cmd_response = await self._try_quick_command(text)
+        if cmd_response is not None:
+            from linebot.v3.messaging import ReplyMessageRequest, TextMessage
+
+            max_len = self.config.adapters.line.max_message_length
+            chunks = split_message(cmd_response, max_len)
+            await self._api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text=chunks[0])],
+                )
+            )
+            for chunk in chunks[1:]:
+                from linebot.v3.messaging import PushMessageRequest
+
+                await self._api.push_message(
+                    PushMessageRequest(
+                        to=user_id,
+                        messages=[TextMessage(text=chunk)],
+                    )
+                )
             return
 
         session = self.get_or_create_session(user_id)

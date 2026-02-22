@@ -355,6 +355,18 @@ class EmailAdapter(BaseAdapter):
             logger.info("email_approval_resolved", sender=sender)
             return
 
+        # Quick dashboard commands via subject keywords
+        cmd_response = await self._try_email_command(subject)
+        if cmd_response is not None:
+            reply_subject = f"Re: {subject}"
+            await self._send_email(
+                to=sender,
+                subject=reply_subject,
+                body=cmd_response,
+                html=self._markdown_to_html(cmd_response),
+            )
+            return
+
         # Regular message — find or create session by normalized subject
         session_key = self._session_key(sender, subject)
         session = self.get_or_create_session(session_key)
@@ -423,6 +435,21 @@ class EmailAdapter(BaseAdapter):
             password=password,
             start_tls=True,
         )
+
+    async def _try_email_command(self, subject: str) -> str | None:
+        """Check if email subject contains a quick command keyword."""
+        normalized = self._normalize_subject(subject).strip().lower()
+        max_chars = self.config.adapters.email.max_message_length - 100
+        if normalized in ("[stats]", "stats"):
+            from src.adapters.dashboard_commands import handle_stats_command
+            return await handle_stats_command(max_chars)
+        if normalized in ("[costs]", "costs"):
+            from src.adapters.dashboard_commands import handle_costs_command
+            return await handle_costs_command(max_chars)
+        if normalized in ("[security]", "security"):
+            from src.adapters.dashboard_commands import handle_security_command
+            return await handle_security_command(max_chars)
+        return None
 
     def _session_key(self, sender: str, subject: str) -> str:
         """Generate session key from sender + normalized subject."""

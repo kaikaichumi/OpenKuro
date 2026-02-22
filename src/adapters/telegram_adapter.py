@@ -237,6 +237,9 @@ class TelegramAdapter(BaseAdapter):
         self._app.add_handler(CommandHandler("model", self._on_model))
         self._app.add_handler(CommandHandler("clear", self._on_clear))
         self._app.add_handler(CommandHandler("trust", self._on_trust))
+        self._app.add_handler(CommandHandler("stats", self._on_stats))
+        self._app.add_handler(CommandHandler("costs", self._on_costs))
+        self._app.add_handler(CommandHandler("security", self._on_security))
         self._app.add_handler(CallbackQueryHandler(self._on_callback_query))
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
@@ -288,6 +291,9 @@ class TelegramAdapter(BaseAdapter):
             "*Commands:*\n"
             "/help - Show help\n"
             "/model - Show/switch model\n"
+            "/stats - Dashboard overview\n"
+            "/costs - Token & cost report\n"
+            "/security - Security report\n"
             "/clear - Clear conversation\n"
             "/trust - Show/set trust level\n",
             parse_mode="Markdown",
@@ -304,6 +310,9 @@ class TelegramAdapter(BaseAdapter):
             "/help - Show this help\n"
             "/model `<name>` - Switch AI model\n"
             "/model - Show current model\n"
+            "/stats - Dashboard overview\n"
+            "/costs - Token usage & cost breakdown\n"
+            "/security - Security report\n"
             "/clear - Reset conversation history\n"
             "/trust `<level>` - Set trust (low/medium/high)\n\n"
             "*Tips:*\n"
@@ -374,6 +383,33 @@ class TelegramAdapter(BaseAdapter):
                 f"Usage: /trust low|medium|high|critical",
                 parse_mode="Markdown",
             )
+
+    async def _on_stats(self, update, context) -> None:
+        """Handle /stats command — dashboard overview."""
+        if not self._is_user_allowed(update.effective_user.id):
+            return
+        from src.adapters.dashboard_commands import handle_stats_command
+        max_chars = self.config.adapters.telegram.max_message_length - 100
+        text = await handle_stats_command(max_chars)
+        await update.message.reply_text(f"```\n{text}\n```", parse_mode="Markdown")
+
+    async def _on_costs(self, update, context) -> None:
+        """Handle /costs command — token usage & cost breakdown."""
+        if not self._is_user_allowed(update.effective_user.id):
+            return
+        from src.adapters.dashboard_commands import handle_costs_command
+        max_chars = self.config.adapters.telegram.max_message_length - 100
+        text = await handle_costs_command(max_chars)
+        await update.message.reply_text(f"```\n{text}\n```", parse_mode="Markdown")
+
+    async def _on_security(self, update, context) -> None:
+        """Handle /security command — security report."""
+        if not self._is_user_allowed(update.effective_user.id):
+            return
+        from src.adapters.dashboard_commands import handle_security_command
+        max_chars = self.config.adapters.telegram.max_message_length - 100
+        text = await handle_security_command(max_chars)
+        await update.message.reply_text(f"```\n{text}\n```", parse_mode="Markdown")
 
     async def _on_message(self, update, context) -> None:
         """Handle regular text messages."""

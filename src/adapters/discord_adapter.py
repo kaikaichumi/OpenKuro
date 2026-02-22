@@ -398,6 +398,9 @@ class DiscordAdapter(BaseAdapter):
                 f"`{prefix}models` — List available models\n"
                 f"`{prefix}agents` — List available sub-agents\n"
                 f"`{prefix}delegate <agent> <task>` — Delegate task to a sub-agent\n"
+                f"`{prefix}stats` — Dashboard overview\n"
+                f"`{prefix}costs` — Token usage & cost breakdown\n"
+                f"`{prefix}security` — Security report\n"
                 f"`{prefix}clear` — Clear conversation history\n"
                 f"`{prefix}trust` — Show/set trust level\n\n"
                 f"**Usage:**\n"
@@ -534,6 +537,25 @@ class DiscordAdapter(BaseAdapter):
                     await message.channel.send(
                         f"\u274c Agent `{agent_name}` failed: {str(e)[:200]}"
                     )
+
+        elif cmd in ("stats", "costs", "security"):
+            from src.adapters.dashboard_commands import (
+                handle_costs_command,
+                handle_security_command,
+                handle_stats_command,
+            )
+
+            max_len = self.config.adapters.discord.max_message_length - 100
+            if cmd == "stats":
+                result = await handle_stats_command(max_len)
+            elif cmd == "costs":
+                result = await handle_costs_command(max_len)
+            else:
+                result = await handle_security_command(max_len)
+
+            chunks = split_message(result, self.config.adapters.discord.max_message_length)
+            for chunk in chunks:
+                await message.channel.send(f"```\n{chunk}\n```")
 
         elif cmd == "clear":
             self.clear_session(session_key)

@@ -238,6 +238,9 @@ class SlackAdapter(BaseAdapter):
                 "🤖 *Kuro Commands*\n"
                 "• `/kuro-help` — Show this help\n"
                 "• `/kuro-model <name>` — Switch AI model\n"
+                "• `/kuro-stats` — Dashboard overview\n"
+                "• `/kuro-costs` — Token usage & cost breakdown\n"
+                "• `/kuro-security` — Security report\n"
                 "• `/kuro-clear` — Clear conversation history\n"
                 "• `/kuro-trust <low|medium|high>` — Set session trust level\n\n"
                 "Mention me in a channel or DM me to chat!"
@@ -279,6 +282,27 @@ class SlackAdapter(BaseAdapter):
             session = self.get_or_create_session(session_key)
             session.trust_level = level_str
             await respond(f"✅ Trust level set to `{level_str}` for this session.")
+
+        @self._app.command("/kuro-stats")
+        async def cmd_stats(ack, respond):
+            await ack()
+            from src.adapters.dashboard_commands import handle_stats_command
+            text = await handle_stats_command(max_chars=3900)
+            await respond(f"```\n{text}\n```")
+
+        @self._app.command("/kuro-costs")
+        async def cmd_costs(ack, respond):
+            await ack()
+            from src.adapters.dashboard_commands import handle_costs_command
+            text = await handle_costs_command(max_chars=3900)
+            await respond(f"```\n{text}\n```")
+
+        @self._app.command("/kuro-security")
+        async def cmd_security(ack, respond):
+            await ack()
+            from src.adapters.dashboard_commands import handle_security_command
+            text = await handle_security_command(max_chars=3900)
+            await respond(f"```\n{text}\n```")
 
         # --- Block Kit Action Handlers ---
 
