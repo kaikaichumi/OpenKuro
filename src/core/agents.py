@@ -120,6 +120,9 @@ class AgentRunner:
                 max_tokens=self.definition.max_tokens,
             )
 
+            # Log token usage for sub-agent
+            await self._log_tokens(response)
+
             if response.has_tool_calls:
                 # Handle tool calls (same security pipeline as main engine)
                 assistant_msg = Message(
@@ -162,6 +165,7 @@ class AgentRunner:
                 model=self.definition.model,
                 tools=None,
             )
+            await self._log_tokens(final)
             content = final.content or ""
         except Exception:
             content = (
@@ -172,6 +176,21 @@ class AgentRunner:
         self._completed = True
         self._result = content
         return content
+
+    async def _log_tokens(self, response: Any) -> None:
+        """Log token usage from a sub-agent LLM response."""
+        if not getattr(response, "usage", None):
+            return
+        try:
+            await self.audit.log_token_usage(
+                session_id=self.session.id,
+                model=response.model or self.definition.model,
+                prompt_tokens=response.usage.get("prompt_tokens", 0),
+                completion_tokens=response.usage.get("completion_tokens", 0),
+                total_tokens=response.usage.get("total_tokens", 0),
+            )
+        except Exception:
+            pass  # Don't let token logging break the agent loop
 
     async def _handle_tool_call(self, tool_call: ToolCall) -> ToolResult:
         """Handle a tool call with the same security pipeline as the main Engine."""
