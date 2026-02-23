@@ -161,6 +161,18 @@ class Engine:
             return result.output
         raise RuntimeError(result.error or "Tool execution failed")
 
+    async def execute_agent(self, agent_name: str, task: str) -> str:
+        """Execute a sub-agent directly (used by scheduler).
+
+        Runs the named agent with the given task description and returns
+        the final text output.
+        """
+        if not self.agent_manager:
+            raise RuntimeError("Agent manager not available")
+
+        result = await self.agent_manager.run_agent(name=agent_name, task=task)
+        return result
+
     def _get_system_message(self) -> Message:
         """Build the system message with security rules."""
         return Message(role=Role.SYSTEM, content=self.config.system_prompt)
@@ -176,6 +188,8 @@ class Engine:
         definitions = self.agent_manager.list_definitions()
         if not definitions:
             return None
+
+        agent_names = [defn.name for defn in definitions]
 
         lines = [
             "[Available Sub-Agents]",
@@ -193,6 +207,20 @@ class Engine:
                 f"- name: \"{defn.name}\" | model: {defn.model} | "
                 f"max_rounds: {defn.max_tool_rounds}{tools_info}"
             )
+
+        # Scheduler integration hint
+        lines.append("")
+        lines.append("[Scheduling Sub-Agents]")
+        lines.append(
+            "Sub-agents can also be scheduled with `schedule_add`. "
+            "Set task_type='agent', tool_name to the agent name "
+            f"(one of: {', '.join(agent_names)}), and agent_task to a "
+            "description of what the agent should do. Example:"
+        )
+        lines.append(
+            '  schedule_add(task_type="agent", tool_name="researcher", '
+            'agent_task="Monitor US market pre-opening for AMD, TSLA", ...)'
+        )
 
         return Message(role=Role.SYSTEM, content="\n".join(lines))
 

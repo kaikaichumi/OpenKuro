@@ -354,6 +354,10 @@ class AgentManager:
             return True
         return False
 
+    def has_agent(self, name: str) -> bool:
+        """Check if an agent with the given name is registered."""
+        return name in self._definitions
+
     def get_definition(self, name: str) -> AgentDefinition | None:
         """Get an agent definition by name."""
         return self._definitions.get(name)

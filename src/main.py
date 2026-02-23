@@ -210,15 +210,28 @@ def build_engine(
 
     # Set up executor function for scheduler
     async def scheduler_executor(tool_name: str, params: dict) -> str:
-        """Execute a tool for the scheduler."""
-        try:
-            result = await engine.execute_tool(tool_name, params)
-            return result
-        except Exception as e:
-            logger.error("scheduler_execution_failed", tool=tool_name, error=str(e))
-            return f"Error: {str(e)}"
+        """Execute a tool for the scheduler.
+
+        Exceptions are intentionally re-raised so that _execute_task()
+        can perform smart detection (auto-correct tool→agent) and
+        proper error notification.
+        """
+        return await engine.execute_tool(tool_name, params)
 
     scheduler.set_executor(scheduler_executor)
+
+    # Set up agent executor for scheduler (run sub-agent tasks)
+    async def scheduler_agent_executor(agent_name: str, task: str) -> str:
+        """Execute a sub-agent for the scheduler."""
+        return await engine.execute_agent(agent_name, task)
+
+    def scheduler_agent_checker(agent_name: str) -> bool:
+        """Check if an agent name is registered."""
+        if not engine.agent_manager:
+            return False
+        return engine.agent_manager.has_agent(agent_name)
+
+    scheduler.set_agent_executor(scheduler_agent_executor, scheduler_agent_checker)
 
     # Register scheduler tools
     tool_system.registry.register(ScheduleAddTool(scheduler))

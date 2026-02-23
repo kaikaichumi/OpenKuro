@@ -14,10 +14,13 @@ class ScheduleAddTool(BaseTool):
     _auto_discover = False  # Requires scheduler dependency injection
     name = "schedule_add"
     description = (
-        "Schedule a tool to run automatically at specific times. "
-        "Supports daily, weekly, hourly, and interval schedules."
+        "Schedule a tool or sub-agent to run automatically at specific times. "
+        "Supports daily, weekly, hourly, interval, and one-time schedules. "
+        "Use task_type='agent' with tool_name set to the agent name "
+        "(e.g. 'researcher') and agent_task describing what the agent should do. "
+        "Use task_type='tool' (default) for regular tool execution."
     )
-    risk_level = RiskLevel.MEDIUM
+    risk_level = RiskLevel.LOW
 
     parameters = {
         "type": "object",
@@ -30,14 +33,24 @@ class ScheduleAddTool(BaseTool):
                 "type": "string",
                 "description": "Human-readable task name"
             },
+            "task_type": {
+                "type": "string",
+                "enum": ["tool", "agent"],
+                "description": "Type of task: 'tool' to run a tool, 'agent' to delegate to a sub-agent",
+                "default": "tool"
+            },
             "tool_name": {
                 "type": "string",
-                "description": "Name of the tool to execute"
+                "description": "Name of the tool or agent to execute"
             },
             "parameters": {
                 "type": "object",
-                "description": "Parameters to pass to the tool (optional)",
+                "description": "Parameters to pass to the tool (ignored for agent tasks)",
                 "default": {}
+            },
+            "agent_task": {
+                "type": "string",
+                "description": "Task description for the agent (required when task_type='agent')"
             },
             "schedule_type": {
                 "type": "string",
@@ -74,6 +87,14 @@ class ScheduleAddTool(BaseTool):
     async def execute(self, params: dict[str, Any], context: ToolContext) -> ToolResult:
         """Add a scheduled task."""
         try:
+            task_type = params.get("task_type", "tool")
+
+            # Validate agent tasks
+            if task_type == "agent" and not params.get("agent_task"):
+                return ToolResult.fail(
+                    "agent_task is required when task_type='agent'"
+                )
+
             # Capture notification target from current session
             notify_adapter = None
             notify_user_id = None
@@ -101,15 +122,23 @@ class ScheduleAddTool(BaseTool):
                 interval_minutes=params.get("interval_minutes"),
                 notify_adapter=notify_adapter,
                 notify_user_id=notify_user_id,
+                task_type=task_type,
+                agent_task=params.get("agent_task"),
             )
 
             schedule_info = self._format_schedule(task)
             next_run = task.next_run.strftime("%Y-%m-%d %H:%M") if task.next_run else "N/A"
             notify_info = f"Notify: {notify_adapter}" if notify_adapter else "Notify: off"
 
+            type_label = "Agent" if task_type == "agent" else "Tool"
+            target = task.tool_name
+            if task_type == "agent":
+                target += f" — {task.agent_task}"
+
             return ToolResult.ok(
-                f"✅ Scheduled task '{task.name}' (ID: {task.id})\n\n"
-                f"Tool: {task.tool_name}\n"
+                f"Scheduled task '{task.name}' (ID: {task.id})\n\n"
+                f"Type: {type_label}\n"
+                f"Target: {target}\n"
                 f"Schedule: {schedule_info}\n"
                 f"Next run: {next_run}\n"
                 f"{notify_info}"
@@ -171,9 +200,14 @@ class ScheduleListTool(BaseTool):
 
             schedule_info = self._format_schedule(task)
 
+            type_label = "Agent" if task.task_type == "agent" else "Tool"
+            target_info = task.tool_name
+            if task.task_type == "agent" and task.agent_task:
+                target_info += f" — {task.agent_task[:60]}"
+
             lines.append(f"{i}. {task.name} ({status})")
             lines.append(f"   ID: {task.id}")
-            lines.append(f"   Tool: {task.tool_name}")
+            lines.append(f"   {type_label}: {target_info}")
             lines.append(f"   Schedule: {schedule_info}")
             lines.append(f"   Next run: {next_run}")
             lines.append(f"   Last run: {last_run}")
@@ -205,7 +239,7 @@ class ScheduleRemoveTool(BaseTool):
     _auto_discover = False
     name = "schedule_remove"
     description = "Remove a scheduled task by its ID."
-    risk_level = RiskLevel.MEDIUM
+    risk_level = RiskLevel.LOW
 
     parameters = {
         "type": "object",

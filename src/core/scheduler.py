@@ -1,6 +1,7 @@
-"""Task scheduler: cron-like scheduling for tools and skills.
+"""Task scheduler: cron-like scheduling for tools and sub-agents.
 
-Allows scheduling recurring tasks to be executed at specific times.
+Allows scheduling recurring tasks — both tool executions and
+sub-agent delegations — at specific times or intervals.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ class ScheduledTask:
 
     id: str  # Unique task ID
     name: str  # Human-readable name
-    tool_name: str  # Tool to execute
+    tool_name: str  # Tool name (task_type="tool") or agent name (task_type="agent")
     parameters: dict[str, Any] = field(default_factory=dict)  # Tool parameters
     schedule_type: ScheduleType = ScheduleType.DAILY
     schedule_time: str | None = None  # "09:00" for daily/weekly
@@ -53,10 +54,12 @@ class ScheduledTask:
     created_at: datetime = field(default_factory=lambda: datetime.now())
     notify_adapter: str | None = None   # "discord" / "telegram" / None
     notify_user_id: str | None = None   # Channel/chat ID for notifications
+    task_type: str = "tool"             # "tool" | "agent"
+    agent_task: str | None = None       # Task description for agent (when task_type="agent")
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
-        return {
+        d: dict[str, Any] = {
             "id": self.id,
             "name": self.name,
             "tool_name": self.tool_name,
@@ -72,7 +75,11 @@ class ScheduledTask:
             "created_at": self.created_at.isoformat(),
             "notify_adapter": self.notify_adapter,
             "notify_user_id": self.notify_user_id,
+            "task_type": self.task_type,
         }
+        if self.agent_task is not None:
+            d["agent_task"] = self.agent_task
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ScheduledTask:
@@ -93,6 +100,8 @@ class ScheduledTask:
             created_at=datetime.fromisoformat(data["created_at"]),
             notify_adapter=data.get("notify_adapter"),
             notify_user_id=data.get("notify_user_id"),
+            task_type=data.get("task_type", "tool"),
+            agent_task=data.get("agent_task"),
         )
 
 
@@ -110,19 +119,37 @@ class TaskScheduler:
         self._running = False
         self._loop_task: asyncio.Task | None = None
         self._executor: Callable | None = None
+        self._agent_executor: Callable | None = None
+        self._agent_checker: Callable | None = None  # Check if name is a registered agent
         self._notification_callback: NotificationCallback | None = None
 
         # Load existing tasks
         self._load_tasks()
 
     def set_executor(self, executor: Callable) -> None:
-        """Set the task executor function.
+        """Set the tool executor function.
 
         Args:
             executor: Async function that executes a tool.
                      Signature: async def executor(tool_name: str, params: dict) -> str
         """
         self._executor = executor
+
+    def set_agent_executor(
+        self,
+        agent_executor: Callable,
+        agent_checker: Callable | None = None,
+    ) -> None:
+        """Set the agent executor function.
+
+        Args:
+            agent_executor: Async function that runs a sub-agent.
+                           Signature: async def(agent_name: str, task: str) -> str
+            agent_checker: Optional sync function to check if a name is a registered agent.
+                          Signature: def(name: str) -> bool
+        """
+        self._agent_executor = agent_executor
+        self._agent_checker = agent_checker
 
     def set_notification_callback(self, callback: NotificationCallback) -> None:
         """Set the notification callback for task results.
@@ -145,18 +172,22 @@ class TaskScheduler:
         interval_minutes: int | None = None,
         notify_adapter: str | None = None,
         notify_user_id: str | None = None,
+        task_type: str = "tool",
+        agent_task: str | None = None,
     ) -> ScheduledTask:
         """Add a new scheduled task.
 
         Args:
             task_id: Unique task identifier
             name: Human-readable task name
-            tool_name: Name of the tool to execute
-            parameters: Parameters to pass to the tool
+            tool_name: Name of the tool to execute, or agent name when task_type="agent"
+            parameters: Parameters to pass to the tool (ignored for agent tasks)
             schedule_type: Type of schedule (daily, weekly, interval, etc.)
             schedule_time: Time string "HH:MM" for daily/weekly tasks
             schedule_days: List of weekday numbers (0=Monday) for weekly tasks
             interval_minutes: Interval in minutes for interval tasks
+            task_type: "tool" to execute a tool, "agent" to delegate to a sub-agent
+            agent_task: Task description for the agent (required when task_type="agent")
 
         Returns:
             The created ScheduledTask
@@ -178,6 +209,8 @@ class TaskScheduler:
             interval_minutes=interval_minutes,
             notify_adapter=notify_adapter,
             notify_user_id=notify_user_id,
+            task_type=task_type,
+            agent_task=agent_task,
         )
 
         # Calculate next run time
@@ -345,12 +378,57 @@ class TaskScheduler:
                 await asyncio.sleep(60)  # Wait a bit before retrying
 
     async def _execute_task(self, task: ScheduledTask) -> None:
-        """Execute a scheduled task."""
-        logger.info("task_executing", task_id=task.id, tool=task.tool_name)
+        """Execute a scheduled task (tool or agent)."""
+        logger.info(
+            "task_executing",
+            task_id=task.id,
+            tool=task.tool_name,
+            task_type=task.task_type,
+        )
 
         try:
-            # Execute the tool
-            result = await self._executor(task.tool_name, task.parameters)
+            if task.task_type == "agent":
+                # --- Agent task ---
+                if self._agent_executor is None:
+                    raise RuntimeError(
+                        "Agent executor not configured. Cannot run agent tasks."
+                    )
+                result = await self._agent_executor(
+                    task.tool_name, task.agent_task or task.name
+                )
+            else:
+                # --- Tool task (with smart detection fallback) ---
+                try:
+                    result = await self._executor(task.tool_name, task.parameters)
+                except RuntimeError as tool_err:
+                    # If tool not found, check if it's a registered agent
+                    if "Unknown tool" in str(tool_err) and self._agent_checker:
+                        if self._agent_checker(task.tool_name):
+                            logger.info(
+                                "task_auto_corrected_to_agent",
+                                task_id=task.id,
+                                name=task.tool_name,
+                            )
+                            # Auto-correct task_type for future runs
+                            task.task_type = "agent"
+                            if not task.agent_task:
+                                # Build agent_task from name + parameters
+                                parts = [task.name]
+                                if task.parameters:
+                                    for k, v in task.parameters.items():
+                                        parts.append(f"{k}: {v}")
+                                task.agent_task = "\n".join(parts)
+                            if self._agent_executor is None:
+                                raise RuntimeError(
+                                    "Agent executor not configured"
+                                ) from tool_err
+                            result = await self._agent_executor(
+                                task.tool_name, task.agent_task
+                            )
+                        else:
+                            raise
+                    else:
+                        raise
 
             # Update task statistics
             task.last_run = datetime.now()
