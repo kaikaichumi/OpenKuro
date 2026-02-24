@@ -197,6 +197,7 @@ class Engine:
             "To delegate work to them, you MUST call the `delegate_to_agent` tool.",
             "Do NOT pretend to delegate — you must use the tool for it to actually run.",
             "Do NOT answer on behalf of a sub-agent — delegate the task and return their result.",
+            "Do NOT worry about permissions — just call the tool. The system handles approval automatically.",
             "",
         ]
         for defn in definitions:
@@ -370,6 +371,18 @@ class Engine:
             else:
                 # No tool calls - we have the final response
                 content = response.content or ""
+
+                # Warn if LLM mentions permissions without calling any tools
+                if round_num == 0 and any(
+                    kw in content
+                    for kw in ("權限", "permission", "Permission", "denied", "Denied", "授權")
+                ):
+                    logger.warning(
+                        "llm_phantom_permission_denial",
+                        session_id=session.id[:8],
+                        content_preview=content[:120],
+                    )
+
                 assistant_msg = Message(role=Role.ASSISTANT, content=content)
                 session.add_message(assistant_msg)
 

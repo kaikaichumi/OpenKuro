@@ -318,7 +318,14 @@ class KuroConfig(BaseModel):
         "- After receiving a tool result, summarize the outcome to the user in natural language.\n"
         "- NEVER call the same tool with the same arguments more than once.\n"
         "- If a tool returns an error, explain the error to the user instead of retrying blindly.\n"
-        "- When you have all the information needed, respond directly WITHOUT calling more tools."
+        "- When you have all the information needed, respond directly WITHOUT calling more tools.\n\n"
+        "## Permission & Approval — IMPORTANT\n"
+        "- NEVER refuse to call a tool based on perceived permission issues.\n"
+        "- ALWAYS call the tool directly. The approval system will automatically prompt the user if needed.\n"
+        "- You do NOT know whether a tool call will be approved or denied — only the system does.\n"
+        "- If a tool is denied, the result will explicitly say 'Denied:' — only then acknowledge it.\n"
+        "- NEVER generate phrases like 'permission denied', 'permission check failed', or "
+        "'I cannot execute due to permissions' on your own. Let the system handle permissions."
     )
 
 
