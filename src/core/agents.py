@@ -52,6 +52,7 @@ class AgentRunner:
         approval_policy: ApprovalPolicy,
         approval_callback: ApprovalCallback,
         audit_log: AuditLog,
+        parent_session: Session | None = None,
     ) -> None:
         self.definition = definition
         self.model = model_router
@@ -60,6 +61,9 @@ class AgentRunner:
         self.approval_policy = approval_policy
         self.approval_cb = approval_callback
         self.audit = audit_log
+        # Parent session used for approval callbacks so the adapter
+        # (e.g. Discord) can find the correct channel to send buttons to.
+        self._parent_session = parent_session
 
         # Sub-agent security
         self.sandbox = Sandbox(config.sandbox)
@@ -236,16 +240,19 @@ class AgentRunner:
                 if not allowed:
                     return ToolResult.denied(reason)
 
-        # Approval check
+        # Approval check — use parent session for channel lookup so
+        # adapter-based callbacks (Discord buttons, Telegram inline, etc.)
+        # can find the correct channel/chat to send the approval prompt to.
+        approval_session = self._parent_session or self.session
         decision = self.approval_policy.check(
-            tool_call.name, tool.risk_level, self.session.id
+            tool_call.name, tool.risk_level, approval_session.id
         )
         if not decision.approved:
             approved = await self.approval_cb.request_approval(
                 tool_call.name,
                 tool_call.arguments,
                 tool.risk_level,
-                self.session,
+                approval_session,
             )
             if not approved:
                 return ToolResult.denied("User denied the action")
@@ -305,6 +312,7 @@ class AgentManager:
         approval_policy: ApprovalPolicy,
         approval_callback: ApprovalCallback,
         audit_log: AuditLog,
+        engine: Any = None,
     ) -> None:
         self.config = config
         self.model = model_router
@@ -312,6 +320,9 @@ class AgentManager:
         self.approval_policy = approval_policy
         self.approval_cb = approval_callback
         self.audit = audit_log
+        # Keep engine reference so we can read the *current* approval_cb
+        # (adapters replace engine.approval_cb after AgentManager is created)
+        self._engine = engine
 
         # Agent definitions registry
         self._definitions: dict[str, AgentDefinition] = {}
@@ -366,10 +377,30 @@ class AgentManager:
         """List all registered agent definitions."""
         return list(self._definitions.values())
 
-    async def run_agent(self, name: str, task: str) -> str:
+    def _get_approval_cb(self) -> ApprovalCallback:
+        """Get the current approval callback.
+
+        Prefers the engine's callback (which adapters update at runtime)
+        over the potentially stale reference stored at construction time.
+        """
+        if self._engine is not None:
+            return self._engine.approval_cb
+        return self.approval_cb
+
+    async def run_agent(
+        self,
+        name: str,
+        task: str,
+        parent_session: Session | None = None,
+    ) -> str:
         """Run a registered agent with the given task.
 
         Creates an AgentRunner, executes the task, and returns the result.
+
+        Args:
+            name: Agent name to run.
+            task: Task description for the agent.
+            parent_session: The caller's session (used for approval channel lookup).
         """
         defn = self._definitions.get(name)
         if defn is None:
@@ -388,8 +419,9 @@ class AgentManager:
             tool_system=self.tools,
             config=self.config,
             approval_policy=self.approval_policy,
-            approval_callback=self.approval_cb,
+            approval_callback=self._get_approval_cb(),
             audit_log=self.audit,
+            parent_session=parent_session,
         )
 
         self._running[name] = runner
@@ -399,9 +431,14 @@ class AgentManager:
         finally:
             self._running.pop(name, None)
 
-    async def delegate(self, agent_name: str, task: str) -> str:
+    async def delegate(
+        self,
+        agent_name: str,
+        task: str,
+        parent_session: Session | None = None,
+    ) -> str:
         """Delegate a task to a named agent. Called by the delegate_to_agent tool."""
-        return await self.run_agent(agent_name, task)
+        return await self.run_agent(agent_name, task, parent_session=parent_session)
 
     @property
     def definition_count(self) -> int:

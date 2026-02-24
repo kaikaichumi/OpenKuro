@@ -193,6 +193,7 @@ def build_engine(
             approval_policy=engine.approval_policy,
             approval_callback=engine.approval_cb,
             audit_log=audit_log,
+            engine=engine,
         )
         engine.agent_manager = agent_manager
 

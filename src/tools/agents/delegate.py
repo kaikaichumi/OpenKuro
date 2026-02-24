@@ -58,7 +58,12 @@ class DelegateToAgentTool(BaseTool):
             return ToolResult.fail("Agent system is not available")
 
         try:
-            result = await agent_manager.delegate(agent_name, task)
+            # Pass parent session so the sub-agent's approval callback
+            # can find the correct channel (Discord/Telegram/etc.)
+            parent_session = getattr(context, "session", None)
+            result = await agent_manager.delegate(
+                agent_name, task, parent_session=parent_session
+            )
             return ToolResult.ok(f"[Agent '{agent_name}' result]\n{result}")
         except Exception as e:
             return ToolResult.fail(f"Agent '{agent_name}' failed: {e}")
