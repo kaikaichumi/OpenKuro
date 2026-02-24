@@ -549,6 +549,12 @@ class Engine:
 
         if not decision.approved:
             # Need human approval
+            logger.info(
+                "tool_approval_requested",
+                tool=tool_call.name,
+                risk=tool.risk_level.value,
+                reason=decision.reason,
+            )
             approved = await self.approval_cb.request_approval(
                 tool_call.name,
                 tool_call.arguments,
@@ -556,6 +562,11 @@ class Engine:
                 session,
             )
             if not approved:
+                logger.warning(
+                    "tool_approval_denied",
+                    tool=tool_call.name,
+                    risk=tool.risk_level.value,
+                )
                 await self.audit.log_tool_execution(
                     session_id=session.id,
                     source=session.adapter,
