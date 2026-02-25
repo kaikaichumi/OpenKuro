@@ -25,6 +25,7 @@ class BrowserManager:
 
     Maintains a single browser + page instance. The browser is launched
     on the first tool call and reused until explicitly closed.
+    Supports both headless (background/scheduled tasks) and visible modes.
     """
 
     _instance: BrowserManager | None = None
@@ -34,6 +35,7 @@ class BrowserManager:
         self._browser = None
         self._page = None
         self._lock = asyncio.Lock()
+        self._headless: bool | None = None  # Track current mode
 
     @classmethod
     def get_instance(cls) -> BrowserManager:
@@ -41,18 +43,33 @@ class BrowserManager:
             cls._instance = cls()
         return cls._instance
 
-    async def ensure_page(self):
-        """Ensure browser and page are initialized. Returns the page."""
+    async def ensure_page(self, headless: bool = False):
+        """Ensure browser and page are initialized. Returns the page.
+
+        Args:
+            headless: If True, run browser without a visible window.
+                      Use True for scheduled/background tasks.
+        """
         async with self._lock:
-            if self._page is not None and not self._page.is_closed():
+            # If browser is alive but in a different mode, close it first
+            if (
+                self._page is not None
+                and not self._page.is_closed()
+                and self._headless == headless
+            ):
                 return self._page
+
+            # Mode changed or no browser — (re)start
+            if self._browser is not None:
+                await self._close_unlocked()
 
             try:
                 from playwright.async_api import async_playwright
 
                 self._playwright = await async_playwright().start()
+                self._headless = headless
                 self._browser = await self._playwright.chromium.launch(
-                    headless=False,  # Visible browser for user interaction
+                    headless=headless,
                     args=[
                         "--disable-blink-features=AutomationControlled",
                         "--no-first-run",
@@ -69,26 +86,30 @@ class BrowserManager:
                 )
                 self._page = await context.new_page()
 
-                logger.info("browser_started", headless=False)
+                logger.info("browser_started", headless=headless)
                 return self._page
 
             except Exception as e:
                 logger.error("browser_start_failed", error=str(e))
                 raise
 
+    async def _close_unlocked(self) -> None:
+        """Close browser resources (caller must hold _lock)."""
+        if self._page and not self._page.is_closed():
+            await self._page.close()
+        if self._browser:
+            await self._browser.close()
+        if self._playwright:
+            await self._playwright.stop()
+        self._page = None
+        self._browser = None
+        self._playwright = None
+        self._headless = None
+
     async def close(self) -> None:
         """Close the browser and cleanup resources."""
         async with self._lock:
-            if self._page and not self._page.is_closed():
-                await self._page.close()
-            if self._browser:
-                await self._browser.close()
-            if self._playwright:
-                await self._playwright.stop()
-
-            self._page = None
-            self._browser = None
-            self._playwright = None
+            await self._close_unlocked()
             logger.info("browser_closed")
 
     @property
@@ -101,6 +122,22 @@ def _truncate_text(text: str, max_len: int = 50_000) -> str:
     if len(text) <= max_len:
         return text
     return text[:max_len] + f"\n\n... (truncated, total {len(text)} chars)"
+
+
+def _should_headless(context: ToolContext) -> bool:
+    """Determine if the browser should run headless based on the calling context.
+
+    Scheduled tasks and sub-agents run in the background, so they should
+    use headless mode to avoid visible windows and firewall popups.
+    """
+    session_id = getattr(context, "session_id", "")
+    if session_id == "scheduler":
+        return True
+    # Sub-agent sessions have adapter="agent"
+    session = getattr(context, "session", None)
+    if session and getattr(session, "adapter", "") == "agent":
+        return True
+    return False
 
 
 class WebNavigateTool(BaseTool):
@@ -143,7 +180,7 @@ class WebNavigateTool(BaseTool):
 
         try:
             manager = BrowserManager.get_instance()
-            page = await manager.ensure_page()
+            page = await manager.ensure_page(headless=_should_headless(context))
 
             await page.goto(url, wait_until=wait_for, timeout=30000)
             title = await page.title()
@@ -197,7 +234,7 @@ class WebGetTextTool(BaseTool):
             if not manager.is_active:
                 return ToolResult.fail("No page is currently loaded. Use web_navigate first.")
 
-            page = await manager.ensure_page()
+            page = await manager.ensure_page(headless=_should_headless(context))
             title = await page.title()
 
             # Try to get text from selector
@@ -267,7 +304,7 @@ class WebClickTool(BaseTool):
             if not manager.is_active:
                 return ToolResult.fail("No page is currently loaded. Use web_navigate first.")
 
-            page = await manager.ensure_page()
+            page = await manager.ensure_page(headless=_should_headless(context))
 
             if text:
                 # Find by text content
@@ -347,7 +384,7 @@ class WebTypeTool(BaseTool):
             if not manager.is_active:
                 return ToolResult.fail("No page is currently loaded. Use web_navigate first.")
 
-            page = await manager.ensure_page()
+            page = await manager.ensure_page(headless=_should_headless(context))
 
             if clear_first:
                 await page.fill(selector, text, timeout=10000)
@@ -405,7 +442,7 @@ class WebScreenshotTool(BaseTool):
             if not manager.is_active:
                 return ToolResult.fail("No page is currently loaded. Use web_navigate first.")
 
-            page = await manager.ensure_page()
+            page = await manager.ensure_page(headless=_should_headless(context))
 
             # Save screenshot
             screenshots_dir = get_kuro_home() / "screenshots"
