@@ -368,6 +368,26 @@ class Engine:
                             )
                         except Exception as cb_err:
                             logger.warning("tool_callback_error", error=str(cb_err))
+
+                    # Code feedback loop: auto-check written code files
+                    if (
+                        tc.name == "file_write"
+                        and result.success
+                        and hasattr(self, "code_feedback")
+                        and self.code_feedback
+                    ):
+                        file_path = tc.arguments.get("path", "")
+                        try:
+                            feedback = await self.code_feedback.post_write_check(file_path)
+                            if feedback:
+                                feedback_msg = Message(
+                                    role=Role.SYSTEM,
+                                    content=f"[Code Quality Feedback]\n{feedback}",
+                                )
+                                session.add_message(feedback_msg)
+                                context_messages.append(feedback_msg)
+                        except Exception as fb_err:
+                            logger.debug("code_feedback_error", error=str(fb_err))
             else:
                 # No tool calls - we have the final response
                 content = response.content or ""

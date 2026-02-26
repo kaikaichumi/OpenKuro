@@ -378,7 +378,7 @@ class TaskScheduler:
                 await asyncio.sleep(60)  # Wait a bit before retrying
 
     async def _execute_task(self, task: ScheduledTask) -> None:
-        """Execute a scheduled task (tool or agent)."""
+        """Execute a scheduled task (tool, agent, or internal)."""
         logger.info(
             "task_executing",
             task_id=task.id,
@@ -387,6 +387,16 @@ class TaskScheduler:
         )
 
         try:
+            # Internal tasks with direct executor (lifecycle, learning, etc.)
+            if hasattr(task, "_direct_executor") and task._direct_executor:
+                result = await task._direct_executor(task.tool_name, task.parameters)
+                task.last_run = datetime.now()
+                task.run_count += 1
+                task.next_run = self._calculate_next_run(task)
+                self._save_tasks()
+                logger.info("internal_task_executed", task_id=task.id, result=str(result)[:200])
+                return
+
             if task.task_type == "agent":
                 # --- Agent task ---
                 if self._agent_executor is None:

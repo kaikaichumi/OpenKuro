@@ -4,6 +4,9 @@ Coordinates:
 - Working memory (current conversation sliding window)
 - Conversation history (SQLite persistence)
 - Long-term memory (ChromaDB RAG + MEMORY.md)
+- Context compression (auto-summarize when approaching token limits)
+- Memory lifecycle (decay, consolidation, pruning)
+- Experience learning (lessons learned from past actions)
 """
 
 from __future__ import annotations
@@ -12,7 +15,7 @@ from typing import Any
 
 import structlog
 
-from src.config import get_kuro_home
+from src.config import KuroConfig, get_kuro_home
 from src.core.memory.history import ConversationHistory
 from src.core.memory.longterm import LongTermMemory
 from src.core.memory.working import WorkingMemory
@@ -29,10 +32,45 @@ class MemoryManager:
         working: WorkingMemory | None = None,
         history: ConversationHistory | None = None,
         longterm: LongTermMemory | None = None,
+        config: KuroConfig | None = None,
     ) -> None:
         self.working = working or WorkingMemory()
         self.history = history or ConversationHistory()
         self.longterm = longterm or LongTermMemory()
+        self._config = config
+
+        # Lazy-initialized components (set up by engine after model_router is ready)
+        self.compressor: Any = None  # ContextCompressor
+        self.lifecycle: Any = None  # MemoryLifecycle
+        self.learning: Any = None  # LearningEngine
+
+    def setup_advanced_features(self, model_router: Any = None) -> None:
+        """Initialize compression, lifecycle, and learning components.
+
+        Called after model_router is available (from build_engine).
+        """
+        if not self._config:
+            return
+
+        # Context compression
+        from src.core.memory.compressor import ContextCompressor
+        self.compressor = ContextCompressor(
+            config=self._config.context_compression,
+            model_router=model_router,
+            longterm_memory=self.longterm,
+        )
+
+        # Memory lifecycle
+        from src.core.memory.lifecycle import MemoryLifecycle
+        self.lifecycle = MemoryLifecycle(
+            config=self._config.memory_lifecycle,
+            longterm_memory=self.longterm,
+            model_router=model_router,
+        )
+
+        # Experience learning
+        from src.core.learning import LearningEngine
+        self.learning = LearningEngine(config=self._config.learning)
 
     async def build_context(
         self,
@@ -49,7 +87,9 @@ class MemoryManager:
         2. Active skills (on-demand, injected between system prompt and memory)
         3. MEMORY.md preferences (injected as system context)
         4. Relevant long-term memories via RAG search
+        4.5. Lessons learned (from experience learning engine)
         5. Recent conversation messages (working memory window)
+        6. Context compression (if approaching token budget)
         """
         context: list[Message] = []
 
@@ -108,8 +148,35 @@ class MemoryManager:
                             role=Role.SYSTEM,
                             content=f"[Relevant Memories]\n{facts}",
                         ))
+
+                    # Track access for lifecycle management
+                    if self.lifecycle:
+                        for m in relevant:
+                            if m.get("distance", 1.0) < 0.8 and m.get("id"):
+                                try:
+                                    await self.lifecycle.track_access(
+                                        m["id"], m.get("metadata", {})
+                                    )
+                                except Exception:
+                                    pass
             except Exception as e:
                 logger.debug("rag_search_failed", error=str(e))
+
+        # 4.5. Inject lessons learned from experience
+        if self.learning and self.learning.config.enabled:
+            try:
+                query_text = recent_user_msgs[-1] if recent_user_msgs else ""
+                lessons = self.learning.get_relevant_lessons(
+                    context=query_text if isinstance(query_text, str) else "",
+                )
+                if lessons:
+                    lessons_text = "\n".join(f"- {l}" for l in lessons)
+                    context.append(Message(
+                        role=Role.SYSTEM,
+                        content=f"[Lessons Learned]\n{lessons_text}",
+                    ))
+            except Exception as e:
+                logger.debug("lessons_inject_failed", error=str(e))
 
         # 5. Working memory: trim conversation to fit
         conversation = [
@@ -118,6 +185,13 @@ class MemoryManager:
         ]
         trimmed = self.working.trim(conversation)
         context.extend(trimmed)
+
+        # 6. Context compression: if approaching token budget, compress
+        if self.compressor:
+            try:
+                context = await self.compressor.compress_if_needed(context)
+            except Exception as e:
+                logger.warning("context_compression_failed", error=str(e))
 
         return context
 

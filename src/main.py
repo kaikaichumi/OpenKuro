@@ -143,7 +143,10 @@ def build_engine(
     tool_system = ToolSystem()
     action_logger = ActionLogger(config.action_log)
     audit_log = AuditLog()
-    memory_manager = MemoryManager()
+    memory_manager = MemoryManager(config=config)
+
+    # Initialize advanced memory features (compression, lifecycle, learning)
+    memory_manager.setup_advanced_features(model_router=model_router)
 
     # Wire memory tools to the memory manager
     set_memory_manager(memory_manager)
@@ -290,7 +293,94 @@ def build_engine(
     # Store in engine for access
     engine.workflow_engine = workflow_engine
 
+    # Initialize code feedback loop
+    if config.code_feedback.enabled:
+        from src.core.code_feedback import CodeFeedbackLoop
+        engine.code_feedback = CodeFeedbackLoop(config.code_feedback)
+    else:
+        engine.code_feedback = None
+
+    # Register lifecycle/learning maintenance tasks in scheduler
+    _register_maintenance_tasks(scheduler, memory_manager, config)
+
     return engine
+
+
+def _register_maintenance_tasks(
+    scheduler: "TaskScheduler",
+    memory_manager: MemoryManager,
+    config: KuroConfig,
+) -> None:
+    """Register automatic maintenance tasks in the scheduler.
+
+    These run daily/weekly to keep memory healthy and learning active.
+    They are internal system tasks (not user-created).
+    """
+    from src.core.scheduler import ScheduleType
+
+    # Daily: memory lifecycle maintenance + learning analysis
+    if config.memory_lifecycle.enabled and memory_manager.lifecycle:
+        lifecycle = memory_manager.lifecycle
+
+        async def _daily_lifecycle(_tool: str, _params: dict) -> str:
+            result = await lifecycle.daily_maintenance()
+            return f"Memory lifecycle daily: {result}"
+
+        if "_kuro_lifecycle_daily" not in scheduler.tasks:
+            try:
+                task = scheduler.add_task(
+                    task_id="_kuro_lifecycle_daily",
+                    name="Memory lifecycle (daily)",
+                    tool_name="_internal",
+                    schedule_type=ScheduleType.DAILY,
+                    schedule_time=config.memory_lifecycle.daily_maintenance_time,
+                )
+                # Override with direct executor (not through tool system)
+                task._direct_executor = _daily_lifecycle
+            except ValueError:
+                pass  # Already exists
+
+    if config.memory_lifecycle.enabled and memory_manager.lifecycle:
+        lifecycle = memory_manager.lifecycle
+
+        async def _weekly_lifecycle(_tool: str, _params: dict) -> str:
+            result = await lifecycle.weekly_consolidation()
+            md_result = await lifecycle.manage_memory_md()
+            return f"Weekly consolidation: {result}\nMEMORY.md: {md_result}"
+
+        if "_kuro_lifecycle_weekly" not in scheduler.tasks:
+            try:
+                task = scheduler.add_task(
+                    task_id="_kuro_lifecycle_weekly",
+                    name="Memory lifecycle (weekly)",
+                    tool_name="_internal",
+                    schedule_type=ScheduleType.WEEKLY,
+                    schedule_time=config.memory_lifecycle.daily_maintenance_time,
+                    schedule_days=[config.memory_lifecycle.weekly_maintenance_day],
+                )
+                task._direct_executor = _weekly_lifecycle
+            except ValueError:
+                pass
+
+    if config.learning.enabled and memory_manager.learning:
+        learning = memory_manager.learning
+
+        async def _daily_learning(_tool: str, _params: dict) -> str:
+            result = await learning.daily_analysis()
+            return f"Learning analysis: {result}"
+
+        if "_kuro_learning_daily" not in scheduler.tasks:
+            try:
+                task = scheduler.add_task(
+                    task_id="_kuro_learning_daily",
+                    name="Experience learning (daily)",
+                    tool_name="_internal",
+                    schedule_type=ScheduleType.DAILY,
+                    schedule_time=config.learning.analysis_time,
+                )
+                task._direct_executor = _daily_learning
+            except ValueError:
+                pass
 
 
 def build_app(config: KuroConfig) -> tuple[Engine, "CLI"]:

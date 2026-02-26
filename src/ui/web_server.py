@@ -315,6 +315,134 @@ class WebServer:
             personality_path.write_text(content, encoding="utf-8")
             return {"status": "ok", "message": "Personality updated"}
 
+        # === Configuration API (hot-reload without restart) ===
+
+        @app.get("/config")
+        async def config_page():
+            """Serve the configuration page."""
+            cfg_file = WEB_DIR / "config.html"
+            if cfg_file.exists():
+                return FileResponse(str(cfg_file), media_type="text/html")
+            return HTMLResponse("<h1>Config</h1><p>config.html not found</p>")
+
+        @app.get("/api/config")
+        async def get_config():
+            """Get current configuration (excluding secrets)."""
+            data = self.config.model_dump(exclude={"core_prompt"})
+            # Mask API keys for security
+            for provider_name, provider_data in data.get("models", {}).get("providers", {}).items():
+                if provider_data.get("api_key"):
+                    provider_data["api_key"] = "***"
+            for adapter_name in ("telegram", "discord", "slack", "line", "email"):
+                adapter_data = data.get("adapters", {}).get(adapter_name, {})
+                for key in list(adapter_data.keys()):
+                    if "token" in key.lower() or "secret" in key.lower() or "password" in key.lower():
+                        if adapter_data[key] and not key.endswith("_env"):
+                            adapter_data[key] = "***"
+            return {"config": data}
+
+        @app.put("/api/config")
+        async def update_config(request):
+            """Update configuration and apply changes live (no restart needed).
+
+            Accepts a partial config dict — only the provided fields are updated.
+            Changes are saved to config.yaml and applied to the running engine.
+            """
+            from src.config import save_config
+
+            data = await request.json()
+            updates = data.get("config", data)
+
+            # Build a new config by merging current + updates
+            current_data = self.config.model_dump(exclude={"core_prompt"})
+            self._deep_merge(current_data, updates)
+
+            try:
+                from src.config import KuroConfig
+                new_config = KuroConfig(**current_data)
+                new_config.core_prompt = self.config.core_prompt  # Preserve encrypted prompt
+            except Exception as e:
+                return {"status": "error", "message": f"Invalid config: {e}"}
+
+            # Save to disk
+            try:
+                save_config(new_config)
+            except Exception as e:
+                return {"status": "error", "message": f"Save failed: {e}"}
+
+            # Hot-reload: apply changes to the running engine
+            applied = self._apply_config_changes(new_config)
+
+            return {
+                "status": "ok",
+                "message": "Configuration updated and applied",
+                "applied": applied,
+            }
+
+        @app.get("/api/config/lessons")
+        async def get_lessons():
+            """Get all stored lessons from the learning engine."""
+            mm = self.engine.memory
+            if mm.learning:
+                return {
+                    "lessons": mm.learning.get_all_lessons(),
+                    "model_stats": mm.learning.get_model_stats(),
+                }
+            return {"lessons": [], "model_stats": {}}
+
+        @app.get("/api/config/memory-stats")
+        async def get_memory_stats():
+            """Get memory system statistics including lifecycle info."""
+            mm = self.engine.memory
+            stats = await mm.get_stats()
+
+            # Add lifecycle-specific stats
+            if mm.lifecycle and mm.lifecycle.config.enabled:
+                try:
+                    all_facts = await mm.longterm.get_all_facts(limit=500)
+                    importance_scores = []
+                    pinned_count = 0
+                    for fact in all_facts:
+                        meta = fact.get("metadata", {})
+                        imp = float(meta.get("importance", 0.5))
+                        importance_scores.append(imp)
+                        if meta.get("is_pinned"):
+                            pinned_count += 1
+
+                    stats["lifecycle"] = {
+                        "total_memories": len(all_facts),
+                        "pinned": pinned_count,
+                        "avg_importance": round(sum(importance_scores) / len(importance_scores), 3) if importance_scores else 0,
+                        "below_threshold": sum(1 for s in importance_scores if s < mm.lifecycle.config.prune_threshold),
+                    }
+                except Exception:
+                    stats["lifecycle"] = {"error": "failed to compute"}
+
+            return stats
+
+        @app.post("/api/config/run-maintenance")
+        async def run_maintenance(request):
+            """Manually trigger memory maintenance or learning analysis."""
+            data = await request.json()
+            action = data.get("action", "")
+
+            mm = self.engine.memory
+
+            if action == "daily_lifecycle" and mm.lifecycle:
+                result = await mm.lifecycle.daily_maintenance()
+                return {"status": "ok", "result": result}
+            elif action == "weekly_lifecycle" and mm.lifecycle:
+                result = await mm.lifecycle.weekly_consolidation()
+                return {"status": "ok", "result": result}
+            elif action == "organize_memory_md" and mm.lifecycle:
+                result = await mm.lifecycle.manage_memory_md()
+                return {"status": "ok", "result": result}
+            elif action == "daily_learning" and mm.learning:
+                result = await mm.learning.daily_analysis()
+                return {"status": "ok", "result": result}
+            else:
+                return {"status": "error", "message": f"Unknown action: {action}"}
+
         # === Security Dashboard API ===
 
         @app.get("/api/security/dashboard")
@@ -487,6 +615,82 @@ class WebServer:
             await self._handle_collab_websocket(ws, session_id)
 
         return app
+
+    @staticmethod
+    def _deep_merge(base: dict, updates: dict) -> None:
+        """Recursively merge updates into base dict (in-place)."""
+        for key, value in updates.items():
+            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                WebServer._deep_merge(base[key], value)
+            else:
+                base[key] = value
+
+    def _apply_config_changes(self, new_config: "KuroConfig") -> list[str]:
+        """Apply config changes to the running engine without restart.
+
+        Returns a list of what was applied.
+        """
+        applied: list[str] = []
+        old = self.config
+
+        # Context compression settings
+        if new_config.context_compression != old.context_compression:
+            mm = self.engine.memory
+            if mm.compressor:
+                mm.compressor.config = new_config.context_compression
+                applied.append("context_compression")
+
+        # Memory lifecycle settings
+        if new_config.memory_lifecycle != old.memory_lifecycle:
+            mm = self.engine.memory
+            if mm.lifecycle:
+                mm.lifecycle.config = new_config.memory_lifecycle
+                applied.append("memory_lifecycle")
+
+        # Learning settings
+        if new_config.learning != old.learning:
+            mm = self.engine.memory
+            if mm.learning:
+                mm.learning.config = new_config.learning
+                applied.append("learning")
+
+        # Code feedback settings
+        if new_config.code_feedback != old.code_feedback:
+            if new_config.code_feedback.enabled:
+                from src.core.code_feedback import CodeFeedbackLoop
+                self.engine.code_feedback = CodeFeedbackLoop(new_config.code_feedback)
+            else:
+                self.engine.code_feedback = None
+            applied.append("code_feedback")
+
+        # Security settings
+        if new_config.security != old.security:
+            self.engine.approval_policy = self.engine.approval_policy.__class__(new_config.security)
+            applied.append("security")
+
+        # Model settings (default model, temperature, etc.)
+        if new_config.models.default != old.models.default:
+            self.engine.model.config.models.default = new_config.models.default
+            applied.append("default_model")
+
+        if new_config.models.temperature != old.models.temperature:
+            self.engine.model.config.models.temperature = new_config.models.temperature
+            applied.append("temperature")
+
+        if new_config.models.max_tokens != old.models.max_tokens:
+            self.engine.model.config.models.max_tokens = new_config.models.max_tokens
+            applied.append("max_tokens")
+
+        # Sandbox settings
+        if new_config.sandbox != old.sandbox:
+            self.engine.sandbox = self.engine.sandbox.__class__(new_config.sandbox)
+            applied.append("sandbox")
+
+        # Update the stored config reference
+        self.config = new_config
+        self.engine.config = new_config
+
+        return applied
 
     async def _handle_websocket(self, ws: WebSocket) -> None:
         await ws.accept()

@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kuro - Settings</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        body { overflow: auto; }
+
+        .config-container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 1.5rem;
+        }
+
+        .nav-bar {
+            display: flex;
+            gap: 0.5rem;
+            padding: 0.75rem 1rem;
+            background: var(--bg-header);
+            border-bottom: 1px solid var(--border);
+            flex-wrap: wrap;
+        }
+        .nav-bar a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            padding: 0.4rem 0.8rem;
+            border-radius: var(--radius);
+            font-size: 0.85rem;
+            transition: var(--transition);
+        }
+        .nav-bar a:hover, .nav-bar a.active {
+            background: var(--accent);
+            color: white;
+        }
+
+        .section {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 1.25rem;
+            margin-bottom: 1rem;
+        }
+        .section h2 {
+            font-size: 1rem;
+            margin-bottom: 0.75rem;
+            color: var(--accent);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .section h2 .badge {
+            font-size: 0.7rem;
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            background: var(--success);
+            color: white;
+        }
+        .section h2 .badge.off {
+            background: var(--text-muted);
+        }
+
+        .field {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid var(--border);
+            gap: 1rem;
+        }
+        .field:last-child { border-bottom: none; }
+        .field-label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            flex: 1;
+            min-width: 0;
+        }
+        .field-label small {
+            display: block;
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            margin-top: 2px;
+        }
+        .field-input {
+            flex: 0 0 auto;
+            min-width: 120px;
+            text-align: right;
+        }
+
+        input[type="text"], input[type="number"], select {
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 0.4rem 0.6rem;
+            border-radius: var(--radius);
+            font-size: 0.85rem;
+            width: 100%;
+            max-width: 200px;
+        }
+        input:focus, select:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        /* Toggle switch */
+        .toggle {
+            position: relative;
+            width: 44px;
+            height: 24px;
+            cursor: pointer;
+        }
+        .toggle input { display: none; }
+        .toggle .slider {
+            position: absolute;
+            inset: 0;
+            background: var(--bg-input);
+            border-radius: 24px;
+            border: 1px solid var(--border);
+            transition: var(--transition);
+        }
+        .toggle .slider::before {
+            content: '';
+            position: absolute;
+            width: 18px;
+            height: 18px;
+            left: 2px;
+            top: 2px;
+            background: var(--text-muted);
+            border-radius: 50%;
+            transition: var(--transition);
+        }
+        .toggle input:checked + .slider {
+            background: var(--accent);
+            border-color: var(--accent);
+        }
+        .toggle input:checked + .slider::before {
+            transform: translateX(20px);
+            background: white;
+        }
+
+        .btn {
+            padding: 0.5rem 1rem;
+            border: none;
+            border-radius: var(--radius);
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: var(--transition);
+            font-weight: 500;
+        }
+        .btn-primary {
+            background: var(--accent);
+            color: white;
+        }
+        .btn-primary:hover { background: var(--accent-hover); }
+        .btn-success {
+            background: var(--success);
+            color: white;
+        }
+        .btn-success:hover { background: var(--success-hover); }
+        .btn-warning {
+            background: var(--warning);
+            color: #1a1a2e;
+        }
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+        .btn-danger:hover { background: var(--danger-hover); }
+        .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.75rem; }
+
+        .actions {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: flex-end;
+            margin-top: 1rem;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 1.5rem;
+            right: 1.5rem;
+            padding: 0.75rem 1.25rem;
+            border-radius: var(--radius);
+            color: white;
+            font-size: 0.85rem;
+            z-index: 1000;
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.3s ease;
+        }
+        .toast.show { transform: translateY(0); opacity: 1; }
+        .toast.success { background: var(--success); }
+        .toast.error { background: var(--danger); }
+
+        /* Lessons table */
+        .lessons-list { margin-top: 0.5rem; }
+        .lesson-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.4rem 0;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.8rem;
+        }
+        .lesson-item .category {
+            font-size: 0.7rem;
+            padding: 0.1rem 0.4rem;
+            border-radius: 4px;
+            background: var(--bg-input);
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+        .lesson-item .text { flex: 1; color: var(--text-secondary); }
+        .lesson-item .hits { color: var(--text-muted); font-size: 0.7rem; flex-shrink: 0; }
+
+        /* Stats cards */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 0.75rem;
+            margin-top: 0.5rem;
+        }
+        .stat-card {
+            background: var(--bg-input);
+            padding: 0.75rem;
+            border-radius: var(--radius);
+            text-align: center;
+        }
+        .stat-card .value { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
+        .stat-card .label { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem; }
+    </style>
+</head>
+<body>
+    <nav class="nav-bar">
+        <a href="/">Chat</a>
+        <a href="/security">Security</a>
+        <a href="/analytics">Analytics</a>
+        <a href="/collab">Collab</a>
+        <a href="/config" class="active">Settings</a>
+    </nav>
+
+    <div class="config-container" id="app">
+        <h1 style="margin-bottom: 1rem; font-size: 1.3rem;">Settings</h1>
+
+        <!-- Memory Stats -->
+        <div class="section" id="stats-section">
+            <h2>Memory & Learning Status</h2>
+            <div class="stats-grid" id="stats-grid">
+                <div class="stat-card"><div class="value" id="stat-facts">-</div><div class="label">Memories</div></div>
+                <div class="stat-card"><div class="value" id="stat-pinned">-</div><div class="label">Pinned</div></div>
+                <div class="stat-card"><div class="value" id="stat-importance">-</div><div class="label">Avg Importance</div></div>
+                <div class="stat-card"><div class="value" id="stat-below">-</div><div class="label">Below Threshold</div></div>
+                <div class="stat-card"><div class="value" id="stat-lessons">-</div><div class="label">Lessons</div></div>
+                <div class="stat-card"><div class="value" id="stat-md-size">-</div><div class="label">MEMORY.md (bytes)</div></div>
+            </div>
+            <div class="actions" style="margin-top: 0.75rem;">
+                <button class="btn btn-sm btn-warning" onclick="runMaintenance('daily_lifecycle')">Run Daily Maintenance</button>
+                <button class="btn btn-sm btn-warning" onclick="runMaintenance('weekly_lifecycle')">Run Weekly Consolidation</button>
+                <button class="btn btn-sm btn-warning" onclick="runMaintenance('organize_memory_md')">Organize MEMORY.md</button>
+                <button class="btn btn-sm btn-warning" onclick="runMaintenance('daily_learning')">Run Learning Analysis</button>
+            </div>
+        </div>
+
+        <!-- Context Compression -->
+        <div class="section">
+            <h2>Context Compression <span class="badge" id="badge-compression">ON</span></h2>
+            <div class="field">
+                <div class="field-label">Enabled<small>Auto-summarize when context fills up</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="cc-enabled" onchange="markDirty()"><span class="slider"></span></label></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Token Budget<small>Total token budget for context window</small></div>
+                <div class="field-input"><input type="number" id="cc-budget" min="10000" max="1000000" step="10000" onchange="markDirty()"></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Trigger Threshold<small>Compress at this % of budget (0.0-1.0)</small></div>
+                <div class="field-input"><input type="number" id="cc-threshold" min="0.5" max="0.95" step="0.05" onchange="markDirty()"></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Keep Recent Turns<small>How many recent turns to keep verbatim</small></div>
+                <div class="field-input"><input type="number" id="cc-recent" min="3" max="50" onchange="markDirty()"></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Summarize Model<small>Cheap/fast model for summarization</small></div>
+                <div class="field-input"><input type="text" id="cc-model" onchange="markDirty()"></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Extract Facts<small>Auto-save key facts to long-term memory</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="cc-extract" onchange="markDirty()"><span class="slider"></span></label></div>
+            </div>
+        </div>
+
+        <!-- Memory Lifecycle -->
+        <div class="section">
+            <h2>Memory Lifecycle <span class="badge" id="badge-lifecycle">ON</span></h2>
+            <div class="field">
+                <div class="field-label">Enabled<small>Decay, consolidation, and pruning</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="ml-enabled" onchange="markDirty()"><span class="slider"></span></label></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Decay Rate (lambda)<small>Higher = faster decay (0.001-0.1)</small></div>
+                <div class="field-input"><input type="number" id="ml-decay" min="0.001" max="0.1" step="0.001" onchange="markDirty()"></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Prune Threshold<small>Remove memories below this importance (0-1)</small></div>
+                <div class="field-input"><input type="number" id="ml-prune" min="0.01" max="0.5" step="0.01" onchange="markDirty()"></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Consolidation Distance<small>Merge memories with cosine distance below this</small></div>
+                <div class="field-input"><input type="number" id="ml-consolidation" min="0.05" max="0.5" step="0.01" onchange="markDirty()"></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Daily Maintenance Time<small>HH:MM format</small></div>
+                <div class="field-input"><input type="text" id="ml-daily-time" placeholder="03:00" onchange="markDirty()"></div>
+            </div>
+            <div class="field">
+                <div class="field-label">MEMORY.md Max Lines<small>Auto-organize when exceeding</small></div>
+                <div class="field-input"><input type="number" id="ml-md-max" min="50" max="1000" onchange="markDirty()"></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Pin User Memories<small>User-stored memories skip decay</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="ml-pin" onchange="markDirty()"><span class="slider"></span></label></div>
+            </div>
+        </div>
+
+        <!-- Learning -->
+        <div class="section">
+            <h2>Experience Learning <span class="badge" id="badge-learning">ON</span></h2>
+            <div class="field">
+                <div class="field-label">Enabled<small>Learn from action logs</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="le-enabled" onchange="markDirty()"><span class="slider"></span></label></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Max Lessons<small>Maximum number of stored lessons</small></div>
+                <div class="field-input"><input type="number" id="le-max" min="5" max="100" onchange="markDirty()"></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Inject Top K<small>Inject this many lessons into context</small></div>
+                <div class="field-input"><input type="number" id="le-topk" min="1" max="20" onchange="markDirty()"></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Error Threshold<small>Similar errors before creating a lesson</small></div>
+                <div class="field-input"><input type="number" id="le-err" min="1" max="10" onchange="markDirty()"></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Analysis Time<small>HH:MM for daily analysis</small></div>
+                <div class="field-input"><input type="text" id="le-time" placeholder="04:00" onchange="markDirty()"></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Track Model Performance<small>Discover which models work best</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="le-track" onchange="markDirty()"><span class="slider"></span></label></div>
+            </div>
+
+            <!-- Current lessons -->
+            <div id="lessons-container" style="margin-top: 0.75rem;">
+                <h3 style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.3rem;">Lessons Learned</h3>
+                <div class="lessons-list" id="lessons-list"><em style="color: var(--text-muted); font-size: 0.8rem;">Loading...</em></div>
+            </div>
+        </div>
+
+        <!-- Code Feedback -->
+        <div class="section">
+            <h2>Code Feedback Loop <span class="badge" id="badge-code">OFF</span></h2>
+            <div class="field">
+                <div class="field-label">Enabled<small>Auto-check code after file_write</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="cf-enabled" onchange="markDirty()"><span class="slider"></span></label></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Lint on Write<small>Run linter (ruff/eslint) automatically</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="cf-lint" onchange="markDirty()"><span class="slider"></span></label></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Type Check on Write<small>Run type checker (pyright/tsc) automatically</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="cf-type" onchange="markDirty()"><span class="slider"></span></label></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Test on Write<small>Run related tests automatically</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="cf-test" onchange="markDirty()"><span class="slider"></span></label></div>
+            </div>
+            <div class="field">
+                <div class="field-label">Max Auto-Fix Rounds<small>Maximum retries for auto-fixing</small></div>
+                <div class="field-input"><input type="number" id="cf-rounds" min="1" max="10" onchange="markDirty()"></div>
+            </div>
+        </div>
+
+        <!-- Save Button -->
+        <div class="actions" style="position: sticky; bottom: 0; background: var(--bg-primary); padding: 1rem 0;">
+            <span id="save-status" style="color: var(--text-muted); font-size: 0.85rem; margin-right: auto;"></span>
+            <button class="btn btn-primary" id="save-btn" onclick="saveConfig()" disabled>Save & Apply</button>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+    let isDirty = false;
+    let currentConfig = {};
+
+    function markDirty() {
+        isDirty = true;
+        document.getElementById('save-btn').disabled = false;
+        document.getElementById('save-status').textContent = 'Unsaved changes';
+        updateBadges();
+    }
+
+    function updateBadges() {
+        setBadge('badge-compression', document.getElementById('cc-enabled').checked);
+        setBadge('badge-lifecycle', document.getElementById('ml-enabled').checked);
+        setBadge('badge-learning', document.getElementById('le-enabled').checked);
+        setBadge('badge-code', document.getElementById('cf-enabled').checked);
+    }
+
+    function setBadge(id, enabled) {
+        const el = document.getElementById(id);
+        el.textContent = enabled ? 'ON' : 'OFF';
+        el.className = 'badge' + (enabled ? '' : ' off');
+    }
+
+    function showToast(message, type = 'success') {
+        const toast = document.getElementById('toast');
+        toast.textContent = message;
+        toast.className = 'toast ' + type + ' show';
+        setTimeout(() => toast.className = 'toast', 3000);
+    }
+
+    // Load config from API
+    async function loadConfig() {
+        try {
+            const resp = await fetch('/api/config');
+            const data = await resp.json();
+            currentConfig = data.config;
+            populateForm(currentConfig);
+        } catch (e) {
+            showToast('Failed to load config', 'error');
+        }
+    }
+
+    function populateForm(cfg) {
+        const cc = cfg.context_compression || {};
+        document.getElementById('cc-enabled').checked = cc.enabled !== false;
+        document.getElementById('cc-budget').value = cc.token_budget || 100000;
+        document.getElementById('cc-threshold').value = cc.trigger_threshold || 0.8;
+        document.getElementById('cc-recent').value = cc.keep_recent_turns || 10;
+        document.getElementById('cc-model').value = cc.summarize_model || 'gemini/gemini-2.0-flash';
+        document.getElementById('cc-extract').checked = cc.extract_facts !== false;
+
+        const ml = cfg.memory_lifecycle || {};
+        document.getElementById('ml-enabled').checked = ml.enabled !== false;
+        document.getElementById('ml-decay').value = ml.decay_lambda || 0.01;
+        document.getElementById('ml-prune').value = ml.prune_threshold || 0.1;
+        document.getElementById('ml-consolidation').value = ml.consolidation_distance || 0.15;
+        document.getElementById('ml-daily-time').value = ml.daily_maintenance_time || '03:00';
+        document.getElementById('ml-md-max').value = ml.memory_md_max_lines || 200;
+        document.getElementById('ml-pin').checked = ml.pin_user_memories !== false;
+
+        const le = cfg.learning || {};
+        document.getElementById('le-enabled').checked = le.enabled !== false;
+        document.getElementById('le-max').value = le.max_lessons || 20;
+        document.getElementById('le-topk').value = le.inject_top_k || 5;
+        document.getElementById('le-err').value = le.error_threshold || 3;
+        document.getElementById('le-time').value = le.analysis_time || '04:00';
+        document.getElementById('le-track').checked = le.track_model_performance !== false;
+
+        const cf = cfg.code_feedback || {};
+        document.getElementById('cf-enabled').checked = cf.enabled === true;
+        document.getElementById('cf-lint').checked = cf.lint_on_write !== false;
+        document.getElementById('cf-type').checked = cf.type_check_on_write === true;
+        document.getElementById('cf-test').checked = cf.test_on_write === true;
+        document.getElementById('cf-rounds').value = cf.max_auto_fix_rounds || 3;
+
+        updateBadges();
+    }
+
+    function collectForm() {
+        return {
+            context_compression: {
+                enabled: document.getElementById('cc-enabled').checked,
+                token_budget: parseInt(document.getElementById('cc-budget').value),
+                trigger_threshold: parseFloat(document.getElementById('cc-threshold').value),
+                keep_recent_turns: parseInt(document.getElementById('cc-recent').value),
+                summarize_model: document.getElementById('cc-model').value,
+                extract_facts: document.getElementById('cc-extract').checked,
+            },
+            memory_lifecycle: {
+                enabled: document.getElementById('ml-enabled').checked,
+                decay_lambda: parseFloat(document.getElementById('ml-decay').value),
+                prune_threshold: parseFloat(document.getElementById('ml-prune').value),
+                consolidation_distance: parseFloat(document.getElementById('ml-consolidation').value),
+                daily_maintenance_time: document.getElementById('ml-daily-time').value,
+                memory_md_max_lines: parseInt(document.getElementById('ml-md-max').value),
+                pin_user_memories: document.getElementById('ml-pin').checked,
+            },
+            learning: {
+                enabled: document.getElementById('le-enabled').checked,
+                max_lessons: parseInt(document.getElementById('le-max').value),
+                inject_top_k: parseInt(document.getElementById('le-topk').value),
+                error_threshold: parseInt(document.getElementById('le-err').value),
+                analysis_time: document.getElementById('le-time').value,
+                track_model_performance: document.getElementById('le-track').checked,
+            },
+            code_feedback: {
+                enabled: document.getElementById('cf-enabled').checked,
+                lint_on_write: document.getElementById('cf-lint').checked,
+                type_check_on_write: document.getElementById('cf-type').checked,
+                test_on_write: document.getElementById('cf-test').checked,
+                max_auto_fix_rounds: parseInt(document.getElementById('cf-rounds').value),
+            },
+        };
+    }
+
+    async function saveConfig() {
+        const updates = collectForm();
+        try {
+            const resp = await fetch('/api/config', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ config: updates }),
+            });
+            const data = await resp.json();
+            if (data.status === 'ok') {
+                isDirty = false;
+                document.getElementById('save-btn').disabled = true;
+                document.getElementById('save-status').textContent = '';
+                showToast('Settings saved and applied! (' + (data.applied || []).join(', ') + ')');
+                loadConfig(); // Refresh
+            } else {
+                showToast(data.message || 'Save failed', 'error');
+            }
+        } catch (e) {
+            showToast('Network error', 'error');
+        }
+    }
+
+    async function loadStats() {
+        try {
+            const resp = await fetch('/api/config/memory-stats');
+            const data = await resp.json();
+            document.getElementById('stat-facts').textContent = data.facts || 0;
+            document.getElementById('stat-md-size').textContent = data.memory_md_size || 0;
+
+            if (data.lifecycle) {
+                document.getElementById('stat-pinned').textContent = data.lifecycle.pinned || 0;
+                document.getElementById('stat-importance').textContent = data.lifecycle.avg_importance || '-';
+                document.getElementById('stat-below').textContent = data.lifecycle.below_threshold || 0;
+            }
+        } catch (e) { /* Silently fail */ }
+    }
+
+    async function loadLessons() {
+        try {
+            const resp = await fetch('/api/config/lessons');
+            const data = await resp.json();
+            const container = document.getElementById('lessons-list');
+
+            if (!data.lessons || data.lessons.length === 0) {
+                container.innerHTML = '<em style="color: var(--text-muted); font-size: 0.8rem;">No lessons yet. The system will learn from your action logs automatically.</em>';
+                document.getElementById('stat-lessons').textContent = '0';
+                return;
+            }
+
+            document.getElementById('stat-lessons').textContent = data.lessons.length;
+
+            container.innerHTML = data.lessons.map((l, i) =>
+                `<div class="lesson-item">
+                    <span class="category">${l.category || 'general'}</span>
+                    <span class="text">${escapeHtml(l.lesson)}</span>
+                    <span class="hits">${l.hit_count || 1}x</span>
+                </div>`
+            ).join('');
+        } catch (e) {
+            document.getElementById('lessons-list').innerHTML = '<em style="color: var(--text-muted);">Failed to load</em>';
+        }
+    }
+
+    async function runMaintenance(action) {
+        try {
+            showToast('Running ' + action + '...');
+            const resp = await fetch('/api/config/run-maintenance', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action }),
+            });
+            const data = await resp.json();
+            if (data.status === 'ok') {
+                showToast(action + ' completed!');
+                loadStats();
+                loadLessons();
+            } else {
+                showToast(data.message || 'Failed', 'error');
+            }
+        } catch (e) {
+            showToast('Network error', 'error');
+        }
+    }
+
+    function escapeHtml(text) {
+        const d = document.createElement('div');
+        d.textContent = text;
+        return d.innerHTML;
+    }
+
+    // Init
+    loadConfig();
+    loadStats();
+    loadLessons();
+
+    // Warn before leaving with unsaved changes
+    window.addEventListener('beforeunload', (e) => {
+        if (isDirty) {
+            e.preventDefault();
+            e.returnValue = '';
+        }
+    });
+    </script>
+</body>
+</html>
