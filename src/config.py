@@ -287,6 +287,53 @@ class AgentsConfig(BaseModel):
     predefined: list[AgentDefinitionConfig] = Field(default_factory=list)
 
 
+class ContextCompressionConfig(BaseModel):
+    """Context compression settings — auto-summarize old messages when context fills up."""
+
+    enabled: bool = True
+    trigger_threshold: float = 0.8  # Trigger compression at 80% of token budget
+    keep_recent_turns: int = 10  # Keep the last N user+assistant turns verbatim
+    summarize_model: str = "gemini/gemini-2.0-flash"  # Cheap fast model for summarization
+    extract_facts: bool = True  # Auto-extract key facts into long-term memory
+    max_summary_tokens: int = 600  # Max tokens for compressed summary
+    token_budget: int = 100000  # Total token budget for context window
+
+
+class MemoryLifecycleConfig(BaseModel):
+    """Memory lifecycle management — prevent infinite memory growth."""
+
+    enabled: bool = True
+    decay_lambda: float = 0.01  # Exponential decay rate (half-life ~69 days)
+    prune_threshold: float = 0.1  # Remove memories with importance below this
+    consolidation_distance: float = 0.15  # Merge memories with cosine distance below this
+    daily_maintenance_time: str = "03:00"  # Time to run daily maintenance (HH:MM)
+    weekly_maintenance_day: int = 0  # Day of week for weekly consolidation (0=Monday)
+    memory_md_max_lines: int = 200  # Auto-organize MEMORY.md when exceeding this
+    pin_user_memories: bool = True  # User-stored memories get pinned (no decay)
+
+
+class LearningConfig(BaseModel):
+    """Experience learning — analyze action logs and learn from mistakes."""
+
+    enabled: bool = True
+    max_lessons: int = 20  # Maximum number of lessons to store
+    inject_top_k: int = 5  # Inject top K relevant lessons into context
+    error_threshold: int = 3  # Number of similar errors before creating a lesson
+    analysis_time: str = "04:00"  # Time to run daily analysis (HH:MM)
+    track_model_performance: bool = True  # Track which models perform best per task type
+
+
+class CodeFeedbackConfig(BaseModel):
+    """Code quality feedback loop — auto-check code after writing."""
+
+    enabled: bool = False  # Disabled by default, opt-in
+    lint_on_write: bool = True
+    type_check_on_write: bool = False  # Slower, disabled by default
+    test_on_write: bool = False  # Slower, disabled by default
+    max_auto_fix_rounds: int = 3
+    file_patterns: list[str] = Field(default_factory=lambda: ["*.py"])
+
+
 class KuroConfig(BaseModel):
     """Root configuration for Kuro assistant."""
 
@@ -299,6 +346,10 @@ class KuroConfig(BaseModel):
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     plugins: PluginsConfig = Field(default_factory=PluginsConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
+    context_compression: ContextCompressionConfig = Field(default_factory=ContextCompressionConfig)
+    memory_lifecycle: MemoryLifecycleConfig = Field(default_factory=MemoryLifecycleConfig)
+    learning: LearningConfig = Field(default_factory=LearningConfig)
+    code_feedback: CodeFeedbackConfig = Field(default_factory=CodeFeedbackConfig)
 
     # Core prompt: encrypted, always present as the first SYSTEM message.
     # Loaded from ~/.kuro/system_prompt.enc at startup. Not user-editable via config.
@@ -359,9 +410,10 @@ def load_config(config_path: Path | None = None) -> KuroConfig:
     return config
 
 
-def save_default_config(config_path: Path | None = None) -> Path:
-    """Save the default configuration to a YAML file.
+def save_config(config: KuroConfig, config_path: Path | None = None) -> Path:
+    """Save a configuration object to YAML file.
 
+    Preserves the core_prompt field (not written to YAML since it's encrypted separately).
     Creates parent directories if needed. Returns the path.
     """
     if config_path is None:
@@ -369,10 +421,17 @@ def save_default_config(config_path: Path | None = None) -> Path:
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
-    config = KuroConfig()
-    data = config.model_dump()
+    data = config.model_dump(exclude={"core_prompt"})
 
     with open(config_path, "w", encoding="utf-8") as f:
         yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     return config_path
+
+
+def save_default_config(config_path: Path | None = None) -> Path:
+    """Save the default configuration to a YAML file.
+
+    Creates parent directories if needed. Returns the path.
+    """
+    return save_config(KuroConfig(), config_path)
