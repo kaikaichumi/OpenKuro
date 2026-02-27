@@ -1,0 +1,37 @@
+/* Kuro - Unified CSS Custom Properties */
+
+:root {
+    /* Background */
+    --bg-primary: #1a1a2e;
+    --bg-secondary: #16213e;
+    --bg-chat: #0f0f23;
+    --bg-user-msg: #2d2d5e;
+    --bg-assistant-msg: #1e1e3e;
+    --bg-input: #252545;
+    --bg-header: #12122a;
+    --bg-surface: #21262d;
+
+    /* Text */
+    --text-primary: #e0e0e0;
+    --text-secondary: #a0a0b8;
+    --text-muted: #6c6c8a;
+
+    /* Accent */
+    --accent: #6c63ff;
+    --accent-hover: #8b83ff;
+
+    /* Semantic */
+    --danger: #e74c3c;
+    --danger-hover: #ff5c4d;
+    --success: #2ecc71;
+    --success-hover: #3ddb80;
+    --warning: #f39c12;
+    --info: #58a6ff;
+
+    /* Structure */
+    --border: #2a2a4a;
+    --shadow: rgba(0, 0, 0, 0.3);
+    --radius: 8px;
+    --radius-lg: 12px;
+    --transition: 0.2s ease;
+}
