@@ -132,6 +132,24 @@ class ActionLogger:
 
         await self._write_entry(entry)
 
+    async def log_complexity(
+        self,
+        session_id: str,
+        complexity_data: dict[str, Any],
+    ) -> None:
+        """Log a task complexity estimation result."""
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "sid": session_id,
+            "type": "complexity",
+            "score": complexity_data.get("score"),
+            "tier": complexity_data.get("tier"),
+            "model": complexity_data.get("suggested_model"),
+            "method": complexity_data.get("estimation_method"),
+            "decompose": complexity_data.get("needs_decomposition", False),
+        }
+        await self._write_entry(entry)
+
     async def _write_entry(self, entry: dict[str, Any]) -> None:
         """Append a JSON entry to the current log file."""
         log_path = self._get_log_path()

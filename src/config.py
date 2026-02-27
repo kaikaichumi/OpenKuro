@@ -334,6 +334,72 @@ class CodeFeedbackConfig(BaseModel):
     file_patterns: list[str] = Field(default_factory=lambda: ["*.py"])
 
 
+class TaskComplexityConfig(BaseModel):
+    """Task complexity estimation and adaptive model routing.
+
+    Estimates task complexity from user messages and routes them to
+    appropriate models. Can decompose overly complex tasks into sub-tasks.
+    """
+
+    enabled: bool = True
+
+    # Trigger mode: "auto" | "manual" | "auto_silent"
+    #   auto:        analyze every message, log result
+    #   manual:      only via /complexity command or analyze_complexity tool
+    #   auto_silent: analyze every message silently, only route
+    trigger_mode: str = "auto"
+
+    # --- Heuristic scoring weights (dimension → weight, sum should be 1.0) ---
+    dimension_weights: dict[str, float] = Field(default_factory=lambda: {
+        "token_length": 0.10,
+        "reasoning_markers": 0.20,
+        "domain_count": 0.15,
+        "step_indicators": 0.15,
+        "code_complexity": 0.15,
+        "context_dependency": 0.10,
+        "constraint_count": 0.10,
+        "ambiguity": 0.05,
+    })
+
+    # --- LLM refinement for ambiguous scores ---
+    llm_refinement: bool = True
+    refinement_model: str = ""  # Empty = use context_compression.summarize_model
+    ambiguity_low: float = 0.35   # Below → trust heuristic
+    ambiguity_high: float = 0.65  # Above → trust heuristic
+
+    # --- Model tier mapping (tier → model name, empty = auto-detect) ---
+    fast_model: str = ""       # e.g., "gemini/gemini-2.5-flash"
+    standard_model: str = ""   # e.g., "anthropic/claude-sonnet-4.5"
+    frontier_model: str = ""   # e.g., "anthropic/claude-opus-4.6"
+
+    # --- Tier boundaries (score thresholds) ---
+    tier_boundaries: dict[str, float] = Field(default_factory=lambda: {
+        "trivial": 0.15,
+        "simple": 0.35,
+        "moderate": 0.60,
+        "complex": 0.85,
+        # "expert" = above 0.85
+    })
+
+    # --- Decomposition ---
+    decomposition_enabled: bool = True
+    decomposition_threshold: float = 0.80  # Decompose tasks above this score
+    max_subtasks: int = 5
+    parallel_subtasks: bool = True  # Run independent sub-tasks in parallel
+
+    # --- Local ML Model (fine-tuned DistilBERT ONNX classifier) ---
+    ml_model_enabled: bool = False  # Disabled by default; enable after installing model
+    ml_model_path: str = ""  # Path to ONNX model file (empty = ~/.kuro/models/complexity_model_int8.onnx)
+    ml_tokenizer_path: str = ""  # Path to tokenizer dir (empty = ~/.kuro/models/complexity_tokenizer/)
+    ml_estimation_mode: str = "hybrid"  # "ml_only" | "hybrid" | "ml_refine"
+    #   ml_only:   Use ML model score exclusively (replaces heuristic)
+    #   hybrid:    Blend ML + heuristic scores (0.6 ML + 0.4 heuristic)
+    #   ml_refine: Use ML model only in ambiguous zone (replaces LLM refinement)
+
+    # --- Feedback ---
+    track_accuracy: bool = True  # Log predicted vs actual complexity for learning
+
+
 class KuroConfig(BaseModel):
     """Root configuration for Kuro assistant."""
 
@@ -350,6 +416,7 @@ class KuroConfig(BaseModel):
     memory_lifecycle: MemoryLifecycleConfig = Field(default_factory=MemoryLifecycleConfig)
     learning: LearningConfig = Field(default_factory=LearningConfig)
     code_feedback: CodeFeedbackConfig = Field(default_factory=CodeFeedbackConfig)
+    task_complexity: TaskComplexityConfig = Field(default_factory=TaskComplexityConfig)
 
     # Core prompt: encrypted, always present as the first SYSTEM message.
     # Loaded from ~/.kuro/system_prompt.enc at startup. Not user-editable via config.

@@ -22,6 +22,8 @@ function updateBadges() {
     setBadge("badge-lifecycle", document.getElementById("ml-enabled").checked);
     setBadge("badge-learning", document.getElementById("le-enabled").checked);
     setBadge("badge-code", document.getElementById("cf-enabled").checked);
+    setBadge("badge-complexity", document.getElementById("tc-enabled").checked);
+    setBadge("badge-ml", document.getElementById("tc-ml-enabled").checked);
 }
 
 function setBadge(id, enabled) {
@@ -75,6 +77,25 @@ function populateForm(cfg) {
     document.getElementById("cf-test").checked = cf.test_on_write === true;
     document.getElementById("cf-rounds").value = cf.max_auto_fix_rounds || 3;
 
+    const tc = cfg.task_complexity || {};
+    document.getElementById("tc-enabled").checked = tc.enabled !== false;
+    document.getElementById("tc-trigger").value = tc.trigger_mode || "auto";
+    document.getElementById("tc-llm-refine").checked = tc.llm_refinement !== false;
+    document.getElementById("tc-refine-model").value = tc.refinement_model || "";
+    document.getElementById("tc-fast-model").value = tc.fast_model || "";
+    document.getElementById("tc-standard-model").value = tc.standard_model || "";
+    document.getElementById("tc-frontier-model").value = tc.frontier_model || "";
+    document.getElementById("tc-decompose").checked = tc.decomposition_enabled !== false;
+    document.getElementById("tc-decompose-threshold").value = tc.decomposition_threshold || 0.80;
+    document.getElementById("tc-max-subtasks").value = tc.max_subtasks || 5;
+    document.getElementById("tc-parallel").checked = tc.parallel_subtasks !== false;
+
+    // ML model settings
+    document.getElementById("tc-ml-enabled").checked = tc.ml_model_enabled === true;
+    document.getElementById("tc-ml-mode").value = tc.ml_estimation_mode || "hybrid";
+    document.getElementById("tc-ml-model-path").value = tc.ml_model_path || "";
+    document.getElementById("tc-ml-tokenizer-path").value = tc.ml_tokenizer_path || "";
+
     updateBadges();
 }
 
@@ -111,6 +132,23 @@ function collectForm() {
             type_check_on_write: document.getElementById("cf-type").checked,
             test_on_write: document.getElementById("cf-test").checked,
             max_auto_fix_rounds: parseInt(document.getElementById("cf-rounds").value),
+        },
+        task_complexity: {
+            enabled: document.getElementById("tc-enabled").checked,
+            trigger_mode: document.getElementById("tc-trigger").value,
+            llm_refinement: document.getElementById("tc-llm-refine").checked,
+            refinement_model: document.getElementById("tc-refine-model").value,
+            fast_model: document.getElementById("tc-fast-model").value,
+            standard_model: document.getElementById("tc-standard-model").value,
+            frontier_model: document.getElementById("tc-frontier-model").value,
+            decomposition_enabled: document.getElementById("tc-decompose").checked,
+            decomposition_threshold: parseFloat(document.getElementById("tc-decompose-threshold").value),
+            max_subtasks: parseInt(document.getElementById("tc-max-subtasks").value),
+            parallel_subtasks: document.getElementById("tc-parallel").checked,
+            ml_model_enabled: document.getElementById("tc-ml-enabled").checked,
+            ml_estimation_mode: document.getElementById("tc-ml-mode").value,
+            ml_model_path: document.getElementById("tc-ml-model-path").value,
+            ml_tokenizer_path: document.getElementById("tc-ml-tokenizer-path").value,
         },
     };
 }

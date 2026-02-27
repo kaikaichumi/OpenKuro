@@ -11,7 +11,7 @@ import asyncio
 import base64
 import time
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 import structlog
 
@@ -26,6 +26,9 @@ from src.core.security.sanitizer import Sanitizer
 from src.core.tool_system import ToolSystem
 from src.core.types import Message, ModelResponse, Role, Session, ToolCall
 from src.tools.base import RiskLevel, ToolContext, ToolResult
+
+if TYPE_CHECKING:
+    from src.core.complexity import ComplexityEstimator, ComplexityResult
 
 logger = structlog.get_logger()
 
@@ -131,6 +134,9 @@ class Engine:
         self.sandbox = Sandbox(config.sandbox)
         self.sanitizer = Sanitizer()
         self.audit = audit_log or AuditLog()
+
+        # Task complexity estimator (set externally after construction)
+        self.complexity_estimator: ComplexityEstimator | None = None
 
         # Per-session locks for collaborative sessions (and general concurrency safety)
         self._session_locks: dict[str, asyncio.Lock] = {}
@@ -253,6 +259,39 @@ class Engine:
         """Internal message processing (called with session lock held)."""
         # Sanitize user input
         user_text = self.sanitizer.sanitize_user_input(user_text)
+
+        # --- Task Complexity Routing ---
+        trigger = self.config.task_complexity.trigger_mode
+        if (
+            self.complexity_estimator
+            and self.config.task_complexity.enabled
+            and trigger in ("auto", "auto_silent")
+        ):
+            try:
+                complexity = await self.complexity_estimator.estimate(user_text, session)
+
+                # Log for learning
+                if self.config.task_complexity.track_accuracy:
+                    try:
+                        await self.action_log.log_complexity(session.id, complexity.to_dict())
+                    except (AttributeError, TypeError):
+                        pass  # action_log may not have log_complexity yet
+
+                # If decomposition needed, delegate to sub-tasks
+                if complexity.needs_decomposition and self.agent_manager:
+                    # Add user message first so session has it
+                    user_msg = Message(role=Role.USER, content=user_text, author_user_id=author_user_id)
+                    session.add_message(user_msg)
+                    await self.action_log.log_conversation(session.id, "user", user_text)
+                    return await self._handle_complex_decomposition(
+                        user_text, complexity, session
+                    )
+
+                # Otherwise, override model selection for this call
+                if complexity.suggested_model:
+                    model = complexity.suggested_model
+            except Exception as e:
+                logger.debug("complexity_estimation_skipped", error=str(e))
 
         # Add user message (track author for collaborative sessions)
         user_msg = Message(role=Role.USER, content=user_text, author_user_id=author_user_id)
@@ -435,6 +474,112 @@ class Engine:
 
         session.add_message(Message(role=Role.ASSISTANT, content=content))
         return content
+
+    async def _handle_complex_decomposition(
+        self,
+        user_text: str,
+        complexity: ComplexityResult,
+        session: Session,
+    ) -> str:
+        """Handle a task that needs decomposition into sub-tasks.
+
+        Uses TaskDecomposer to split the task, then delegates each sub-task
+        to an agent via AgentManager, and finally synthesizes the results.
+        """
+        from src.core.complexity import SubTaskResult, TaskDecomposer
+        from src.core.types import AgentDefinition
+
+        decomposer = TaskDecomposer(self.model, self.config.task_complexity)
+        sub_tasks = await decomposer.decompose(user_text, complexity, session)
+
+        if not sub_tasks:
+            logger.warning("decomposition_empty", task_preview=user_text[:80])
+            # Fall back to normal processing with frontier model
+            return await self._process_message_locked(
+                user_text, session, model=complexity.suggested_model,
+            )
+
+        logger.info(
+            "executing_subtasks",
+            count=len(sub_tasks),
+            parallel=self.config.task_complexity.parallel_subtasks,
+        )
+
+        # Group sub-tasks by execution_order for parallel execution
+        order_groups: dict[int, list] = {}
+        for st in sub_tasks:
+            order_groups.setdefault(st.execution_order, []).append(st)
+
+        results: list[SubTaskResult] = []
+        import time as _time
+
+        for order in sorted(order_groups.keys()):
+            group = order_groups[order]
+
+            async def _run_subtask(task) -> SubTaskResult:
+                """Run a single sub-task via AgentManager."""
+                defn_name = f"_complexity_subtask_{task.id}"
+                defn = AgentDefinition(
+                    name=defn_name,
+                    model=task.suggested_model or complexity.suggested_model or self.model.default_model,
+                    max_tool_rounds=5,
+                    created_by="complexity_decomposer",
+                )
+                self.agent_manager.register(defn)
+                start = _time.monotonic()
+                try:
+                    result_text = await self.agent_manager.delegate(
+                        defn_name, task.description, parent_session=session,
+                    )
+                    duration = int((_time.monotonic() - start) * 1000)
+                    return SubTaskResult(
+                        task=task,
+                        result=result_text,
+                        model_used=defn.model,
+                        duration_ms=duration,
+                        success=True,
+                    )
+                except Exception as e:
+                    duration = int((_time.monotonic() - start) * 1000)
+                    logger.warning("subtask_failed", task_id=task.id, error=str(e))
+                    return SubTaskResult(
+                        task=task,
+                        result=f"Error: {e}",
+                        model_used=defn.model,
+                        duration_ms=duration,
+                        success=False,
+                    )
+                finally:
+                    self.agent_manager.unregister(defn_name)
+
+            if self.config.task_complexity.parallel_subtasks and len(group) > 1:
+                # Run tasks with same execution_order in parallel
+                group_results = await asyncio.gather(
+                    *[_run_subtask(t) for t in group],
+                    return_exceptions=False,
+                )
+                results.extend(group_results)
+            else:
+                # Sequential execution
+                for task in group:
+                    result = await _run_subtask(task)
+                    results.append(result)
+
+        # Synthesize results
+        final = await decomposer.synthesize(user_text, results)
+
+        # Store as assistant message
+        assistant_msg = Message(role=Role.ASSISTANT, content=final)
+        session.add_message(assistant_msg)
+        await self.action_log.log_conversation(session.id, "assistant", final)
+
+        # Persist session
+        try:
+            await self.memory.save_session(session)
+        except Exception as e:
+            logger.warning("session_save_failed", error=str(e))
+
+        return final
 
     async def stream_message(
         self,

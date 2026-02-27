@@ -156,6 +156,89 @@
             </div>
         </div>
 
+        <!-- Task Complexity -->
+        <div class="section">
+            <h2><span data-i18n="config.taskComplexity">Task Complexity</span> <span class="badge" id="badge-complexity">ON</span></h2>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.enabled">Enabled</span><small data-i18n="config.tcDesc">Estimate task complexity and route to appropriate models</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="tc-enabled"><span class="slider"></span></label></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.triggerMode">Trigger Mode</span><small data-i18n="config.triggerModeDesc">When to run complexity analysis</small></div>
+                <div class="field-input">
+                    <select id="tc-trigger">
+                        <option value="auto" data-i18n="config.triggerAuto">Auto (every message)</option>
+                        <option value="manual" data-i18n="config.triggerManual">Manual (on demand)</option>
+                        <option value="auto_silent" data-i18n="config.triggerSilent">Auto Silent (background)</option>
+                    </select>
+                </div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.llmRefinement">LLM Refinement</span><small data-i18n="config.llmRefinementDesc">Use cheap model to refine ambiguous scores</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="tc-llm-refine"><span class="slider"></span></label></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.refinementModel">Refinement Model</span><small data-i18n="config.refinementModelDesc">Cheap model for score refinement (empty = auto)</small></div>
+                <div class="field-input"><input type="text" id="tc-refine-model" placeholder="gemini/gemini-2.5-flash"></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.fastModel">Fast Model</span><small data-i18n="config.fastModelDesc">Model for trivial/simple tasks (empty = auto-detect)</small></div>
+                <div class="field-input"><input type="text" id="tc-fast-model" placeholder="gemini/gemini-2.5-flash"></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.standardModel">Standard Model</span><small data-i18n="config.standardModelDesc">Model for moderate tasks (empty = default)</small></div>
+                <div class="field-input"><input type="text" id="tc-standard-model" placeholder="anthropic/claude-sonnet-4.5"></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.frontierModel">Frontier Model</span><small data-i18n="config.frontierModelDesc">Model for complex/expert tasks (empty = auto-detect)</small></div>
+                <div class="field-input"><input type="text" id="tc-frontier-model" placeholder="anthropic/claude-opus-4.6"></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.decomposition">Task Decomposition</span><small data-i18n="config.decompositionDesc">Split overly complex tasks into sub-tasks</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="tc-decompose"><span class="slider"></span></label></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.decomposeThreshold">Decompose Threshold</span><small data-i18n="config.decomposeThresholdDesc">Score above which tasks are decomposed (0-1)</small></div>
+                <div class="field-input"><input type="number" id="tc-decompose-threshold" min="0.5" max="1.0" step="0.05"></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.maxSubtasks">Max Sub-tasks</span><small data-i18n="config.maxSubtasksDesc">Maximum number of sub-tasks per decomposition</small></div>
+                <div class="field-input"><input type="number" id="tc-max-subtasks" min="2" max="10"></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.parallelSubtasks">Parallel Execution</span><small data-i18n="config.parallelSubtasksDesc">Run independent sub-tasks in parallel</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="tc-parallel"><span class="slider"></span></label></div>
+            </div>
+
+            <!-- ML Model Sub-section -->
+            <h3 style="font-size: 0.9rem; color: var(--text-muted); margin-top: 1rem; margin-bottom: 0.5rem; border-top: 1px solid var(--border-color); padding-top: 0.75rem;">
+                <span data-i18n="config.mlClassifier">Local ML Classifier</span>
+                <span class="badge" id="badge-ml" style="margin-left: 0.5rem;">OFF</span>
+            </h3>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.mlEnabled">ML Model</span><small data-i18n="config.mlEnabledDesc">Use local DistilBERT ONNX model for complexity analysis</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="tc-ml-enabled"><span class="slider"></span></label></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.mlMode">Estimation Mode</span><small data-i18n="config.mlModeDesc">How to combine ML with heuristic scoring</small></div>
+                <div class="field-input">
+                    <select id="tc-ml-mode">
+                        <option value="hybrid" data-i18n="config.mlModeHybrid">Hybrid (ML + Heuristic)</option>
+                        <option value="ml_only" data-i18n="config.mlModeOnly">ML Only</option>
+                        <option value="ml_refine" data-i18n="config.mlModeRefine">ML Refine (ambiguous zone)</option>
+                    </select>
+                </div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.mlModelPath">Model Path</span><small data-i18n="config.mlModelPathDesc">ONNX model file (empty = auto-detect)</small></div>
+                <div class="field-input"><input type="text" id="tc-ml-model-path" placeholder="~/.kuro/models/complexity_model_int8.onnx"></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.mlTokenizerPath">Tokenizer Path</span><small data-i18n="config.mlTokenizerPathDesc">Tokenizer directory (empty = auto-detect)</small></div>
+                <div class="field-input"><input type="text" id="tc-ml-tokenizer-path" placeholder="~/.kuro/models/complexity_tokenizer/"></div>
+            </div>
+        </div>
+
         <!-- Save Button -->
         <div class="actions" style="position: sticky; bottom: 0; background: var(--bg-primary); padding: 1rem 0;">
             <span id="save-status" style="color: var(--text-muted); font-size: 0.85rem; margin-right: auto;"></span>

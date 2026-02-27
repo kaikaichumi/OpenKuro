@@ -300,6 +300,61 @@ def build_engine(
     else:
         engine.code_feedback = None
 
+    # Initialize task complexity estimator
+    if config.task_complexity.enabled:
+        from src.core.complexity import ComplexityEstimator
+
+        # Initialize local ML classifier (if enabled and model exists)
+        ml_classifier = None
+        if config.task_complexity.ml_model_enabled:
+            from src.core.complexity_ml import (
+                MLComplexityClassifier,
+                get_default_model_path,
+                get_default_tokenizer_path,
+            )
+
+            model_path = (
+                Path(config.task_complexity.ml_model_path)
+                if config.task_complexity.ml_model_path
+                else get_default_model_path()
+            )
+            tokenizer_path = (
+                Path(config.task_complexity.ml_tokenizer_path)
+                if config.task_complexity.ml_tokenizer_path
+                else get_default_tokenizer_path()
+            )
+
+            if model_path.exists():
+                ml_classifier = MLComplexityClassifier(
+                    model_path=model_path,
+                    tokenizer_path=tokenizer_path,
+                )
+                logger.info(
+                    "ml_classifier_configured",
+                    model_path=str(model_path),
+                    mode=config.task_complexity.ml_estimation_mode,
+                )
+            else:
+                logger.warning(
+                    "ml_classifier_model_not_found",
+                    expected_path=str(model_path),
+                    hint="Install model with: kuro --install-model complexity",
+                )
+
+        engine.complexity_estimator = ComplexityEstimator(
+            config=config.task_complexity,
+            model_router=model_router,
+            ml_classifier=ml_classifier,
+        )
+        logger.info(
+            "complexity_estimator_initialized",
+            trigger_mode=config.task_complexity.trigger_mode,
+            llm_refinement=config.task_complexity.llm_refinement,
+            decomposition=config.task_complexity.decomposition_enabled,
+            ml_enabled=config.task_complexity.ml_model_enabled,
+            ml_mode=config.task_complexity.ml_estimation_mode if config.task_complexity.ml_model_enabled else None,
+        )
+
     # Register lifecycle/learning maintenance tasks in scheduler
     _register_maintenance_tasks(scheduler, memory_manager, config)
 

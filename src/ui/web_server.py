@@ -686,6 +686,29 @@ class WebServer:
             self.engine.sandbox = self.engine.sandbox.__class__(new_config.sandbox)
             applied.append("sandbox")
 
+        # Task complexity + ML classifier settings
+        if new_config.task_complexity != old.task_complexity:
+            estimator = getattr(self.engine, "complexity_estimator", None)
+            if estimator:
+                # Hot-reload ML classifier (enable/disable/change mode)
+                ml_status = estimator.reload_ml_classifier(new_config.task_complexity)
+                applied.append(f"task_complexity({ml_status})")
+            elif new_config.task_complexity.enabled:
+                # Estimator didn't exist before — create it now
+                from src.core.complexity import ComplexityEstimator
+                self.engine.complexity_estimator = ComplexityEstimator(
+                    config=new_config.task_complexity,
+                    model_router=self.engine.model,
+                )
+                # If ML is also enabled, trigger a reload to load the model
+                if new_config.task_complexity.ml_model_enabled:
+                    ml_status = self.engine.complexity_estimator.reload_ml_classifier(
+                        new_config.task_complexity,
+                    )
+                    applied.append(f"task_complexity(created+{ml_status})")
+                else:
+                    applied.append("task_complexity(created)")
+
         # Update the stored config reference
         self.config = new_config
         self.engine.config = new_config
