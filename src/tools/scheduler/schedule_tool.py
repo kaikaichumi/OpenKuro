@@ -8,6 +8,38 @@ from src.core.scheduler import ScheduleType, TaskScheduler
 from src.tools.base import BaseTool, RiskLevel, ToolContext, ToolResult
 
 
+def _resolve_discord_channel(session) -> str | None:
+    """Extract real Discord channel ID from a session.
+
+    Discord session keys use "channel_id:user_id" format.
+    Returns numeric channel ID string, or None if not a Discord session.
+    """
+    if not session:
+        return None
+    adapter = getattr(session, "adapter", "cli")
+    if adapter != "discord":
+        return None
+    user_id = getattr(session, "user_id", "")
+    # Format: "channel_id:user_id" — extract channel_id
+    raw = user_id.split(":")[0] if ":" in user_id else user_id
+    # Must be numeric to be a valid Discord ID
+    if raw.isdigit():
+        return raw
+    return None
+
+
+def _is_valid_platform_id(adapter: str, channel_id: str) -> bool:
+    """Check if a channel/chat ID looks valid for the given platform."""
+    if not channel_id:
+        return False
+    if adapter == "discord":
+        return channel_id.isdigit()
+    if adapter == "telegram":
+        # Telegram IDs can be negative (groups) or positive
+        return channel_id.lstrip("-").isdigit()
+    return True  # Other adapters: accept any non-empty string
+
+
 class ScheduleAddTool(BaseTool):
     """Add a new scheduled task."""
 
@@ -107,23 +139,27 @@ class ScheduleAddTool(BaseTool):
                 )
 
             # Resolve notification target:
-            # Priority: explicit params > auto-detect from session > scheduler default
+            # Priority: explicit valid params > auto-detect from session > scheduler default
             notify_adapter = params.get("notify_adapter")
             notify_user_id = params.get("notify_channel")
 
-            if not (notify_adapter and notify_user_id):
-                # Auto-detect from current session
-                if params.get("notify", True) and context.session:
-                    adapter = getattr(context.session, "adapter", "cli")
-                    user_id = getattr(context.session, "user_id", "local")
-                    if adapter in ("discord", "telegram"):
-                        notify_adapter = notify_adapter or adapter
-                        if not notify_user_id:
-                            # Discord session keys are "channel_id:user_id" — extract channel_id
-                            if adapter == "discord" and ":" in user_id:
-                                notify_user_id = user_id.split(":")[0]
-                            else:
-                                notify_user_id = user_id
+            # Validate explicit channel ID — LLM may hallucinate fake IDs
+            if notify_user_id and notify_adapter:
+                if not _is_valid_platform_id(notify_adapter, notify_user_id):
+                    notify_user_id = None  # Discard invalid, fall through to auto-detect
+
+            # Auto-detect from current session if still missing
+            if params.get("notify", True) and context.session:
+                session_adapter = getattr(context.session, "adapter", "cli")
+                if not notify_adapter and session_adapter in ("discord", "telegram"):
+                    notify_adapter = session_adapter
+                if not notify_user_id:
+                    if session_adapter == "discord":
+                        notify_user_id = _resolve_discord_channel(context.session)
+                    elif session_adapter == "telegram":
+                        uid = getattr(context.session, "user_id", "")
+                        if uid.lstrip("-").isdigit():
+                            notify_user_id = uid
 
             task = self.scheduler.add_task(
                 task_id=params["task_id"],
@@ -403,26 +439,38 @@ class ScheduleUpdateTool(BaseTool):
             return ToolResult.fail(f"Task '{task_id}' not found")
 
         changes = []
+        target_adapter = params.get("notify_adapter", task.notify_adapter)
 
         if "notify_adapter" in params:
             task.notify_adapter = params["notify_adapter"]
             changes.append(f"notify_adapter → {params['notify_adapter']}")
 
         if "notify_channel" in params:
-            task.notify_user_id = params["notify_channel"]
-            changes.append(f"notify_channel → {params['notify_channel']}")
+            channel = params["notify_channel"]
+            # Validate — LLM may hallucinate fake IDs
+            if target_adapter and _is_valid_platform_id(target_adapter, channel):
+                task.notify_user_id = channel
+                changes.append(f"notify_channel → {channel}")
+            else:
+                # Invalid ID, try auto-detect instead
+                channel = None
 
-        # Auto-detect from session if adapter specified but no channel
-        if "notify_adapter" in params and "notify_channel" not in params and not task.notify_user_id:
-            if context.session:
-                adapter = getattr(context.session, "adapter", "cli")
-                user_id = getattr(context.session, "user_id", "local")
-                if adapter == params["notify_adapter"]:
-                    if adapter == "discord" and ":" in user_id:
-                        task.notify_user_id = user_id.split(":")[0]
-                    else:
-                        task.notify_user_id = user_id
-                    changes.append(f"notify_channel → {task.notify_user_id} (auto-detected)")
+        # Auto-detect from session if channel still missing/invalid
+        needs_channel = (
+            ("notify_adapter" in params or "notify_channel" in params)
+            and not task.notify_user_id
+        )
+        if needs_channel and context.session:
+            if target_adapter == "discord":
+                detected = _resolve_discord_channel(context.session)
+                if detected:
+                    task.notify_user_id = detected
+                    changes.append(f"notify_channel → {detected} (auto-detected)")
+            elif target_adapter == "telegram":
+                uid = getattr(context.session, "user_id", "")
+                if uid.lstrip("-").isdigit():
+                    task.notify_user_id = uid
+                    changes.append(f"notify_channel → {uid} (auto-detected)")
 
         if "schedule_time" in params:
             task.schedule_time = params["schedule_time"]
