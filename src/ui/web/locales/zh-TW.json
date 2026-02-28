@@ -22,7 +22,7 @@
         "refresh": "重新整理"
     },
     "settings": {
-        "title": "設定",
+        "title": "對話選項",
         "model": "模型",
         "trustLevel": "信任等級",
         "low": "低",

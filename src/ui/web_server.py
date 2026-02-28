@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,7 +16,7 @@ from typing import Any
 
 import structlog
 import uvicorn
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -214,6 +215,12 @@ class WebServer:
         self.engine.tool_callback = self._tool_cb
         self._connections: dict[str, ConnectionState] = {}
 
+        # Session cache: keeps sessions alive after WebSocket disconnects
+        # so they can be restored on reconnect (e.g., after page navigation).
+        # Key: session_id, Value: (ConnectionState, disconnect_timestamp)
+        self._session_cache: dict[str, tuple[ConnectionState, float]] = {}
+        self._SESSION_CACHE_TTL = 1800  # 30 minutes
+
         # Collaborative session support
         self.collab_hub = CollaborationHub()
         # session_id -> {user_id -> WebSocket}
@@ -306,7 +313,7 @@ class WebServer:
             return {"content": "", "path": str(personality_path)}
 
         @app.put("/api/personality")
-        async def update_personality(request):
+        async def update_personality(request: Request):
             """Update personality settings."""
             from src.config import get_kuro_home
             data = await request.json()
@@ -342,7 +349,7 @@ class WebServer:
             return {"config": data}
 
         @app.put("/api/config")
-        async def update_config(request):
+        async def update_config(request: Request):
             """Update configuration and apply changes live (no restart needed).
 
             Accepts a partial config dict — only the provided fields are updated.
@@ -421,7 +428,7 @@ class WebServer:
             return stats
 
         @app.post("/api/config/run-maintenance")
-        async def run_maintenance(request):
+        async def run_maintenance(request: Request):
             """Manually trigger memory maintenance or learning analysis."""
             data = await request.json()
             action = data.get("action", "")
@@ -519,6 +526,23 @@ class WebServer:
             from src.core.analytics import get_pricing_info
             return get_pricing_info()
 
+        @app.put("/api/analytics/pricing/{model:path}")
+        async def update_analytics_pricing(model: str, request: Request):
+            """Update pricing for a specific model."""
+            from src.core.analytics import update_model_pricing
+            body = await request.json()
+            input_rate = float(body.get("input", 0))
+            output_rate = float(body.get("output", 0))
+            result = update_model_pricing(model, input_rate, output_rate)
+            return {"model": model, "pricing": result}
+
+        @app.delete("/api/analytics/pricing/{model:path}")
+        async def delete_analytics_pricing(model: str):
+            """Remove custom pricing override, reverting to built-in default."""
+            from src.core.analytics import delete_custom_pricing
+            deleted = delete_custom_pricing(model)
+            return {"model": model, "deleted": deleted}
+
         @app.get("/security")
         async def security_page():
             """Serve the security dashboard page."""
@@ -535,6 +559,72 @@ class WebServer:
                 return FileResponse(str(ana_file), media_type="text/html")
             return HTMLResponse("<h1>Analytics</h1><p>analytics.html not found</p>")
 
+        # === Scheduler Page & API ===
+
+        @app.get("/scheduler")
+        async def scheduler_page():
+            """Serve the scheduler management page."""
+            sched_file = WEB_DIR / "scheduler.html"
+            if sched_file.exists():
+                return FileResponse(str(sched_file), media_type="text/html")
+            return HTMLResponse("<h1>Scheduler</h1><p>scheduler.html not found</p>")
+
+        @app.get("/api/scheduler")
+        async def get_tasks():
+            """List scheduled tasks (excludes completed one-time tasks)."""
+            scheduler = getattr(self.engine, "scheduler", None)
+            if not scheduler:
+                return {"tasks": []}
+            tasks = []
+            for task in scheduler.list_tasks():
+                t = task.to_dict()
+                t["is_enabled"] = task.enabled
+                tasks.append(t)
+            tasks.sort(key=lambda x: x.get("next_run") or "", reverse=False)
+            return {"tasks": tasks}
+
+        @app.put("/api/scheduler/{task_id}")
+        async def update_task(task_id: str, request: Request):
+            """Update a scheduled task's properties."""
+            scheduler = getattr(self.engine, "scheduler", None)
+            if not scheduler:
+                return {"status": "error", "message": "Scheduler not available"}
+
+            task = scheduler.get_task(task_id)
+            if not task:
+                return {"status": "error", "message": f"Task '{task_id}' not found"}
+
+            data = await request.json()
+            changes = []
+
+            if "notify_adapter" in data:
+                task.notify_adapter = data["notify_adapter"] or None
+                changes.append("notify_adapter")
+            if "notify_user_id" in data:
+                task.notify_user_id = data["notify_user_id"] or None
+                changes.append("notify_user_id")
+            if "schedule_time" in data:
+                task.schedule_time = data["schedule_time"]
+                task.next_run = scheduler._calculate_next_run(task)
+                changes.append("schedule_time")
+            if "enabled" in data:
+                task.enabled = bool(data["enabled"])
+                if task.enabled and not task.next_run:
+                    task.next_run = scheduler._calculate_next_run(task)
+                changes.append("enabled")
+            if "agent_task" in data:
+                task.agent_task = data["agent_task"]
+                changes.append("agent_task")
+
+            if changes:
+                scheduler._save_tasks()
+
+            return {
+                "status": "ok",
+                "message": f"Updated: {', '.join(changes)}",
+                "task": task.to_dict(),
+            }
+
         @app.websocket("/ws")
         async def websocket_endpoint(ws: WebSocket):
             await self._handle_websocket(ws)
@@ -550,10 +640,6 @@ class WebServer:
 
         @app.post("/api/collab/create")
         async def create_collab(request_body: dict = None):
-            try:
-                from fastapi import Request
-            except ImportError:
-                pass
             data = request_body or {}
             name = data.get("name", "Collaboration Session")
             user_id = data.get("user_id", f"user_{uuid.uuid4().hex[:6]}")
@@ -715,27 +801,89 @@ class WebServer:
 
         return applied
 
+    def _cache_session(self, session_id: str, conn: ConnectionState) -> None:
+        """Cache a session for later restoration after disconnect."""
+        self._session_cache[session_id] = (conn, time.time())
+        # Evict expired entries
+        now = time.time()
+        expired = [
+            sid for sid, (_, ts) in self._session_cache.items()
+            if now - ts > self._SESSION_CACHE_TTL
+        ]
+        for sid in expired:
+            self._session_cache.pop(sid, None)
+
+    def _restore_session(self, session_id: str) -> ConnectionState | None:
+        """Try to restore a cached session. Returns None if not found or expired."""
+        cached = self._session_cache.pop(session_id, None)
+        if cached is None:
+            return None
+        conn, ts = cached
+        if time.time() - ts > self._SESSION_CACHE_TTL:
+            return None  # Expired
+        return conn
+
     async def _handle_websocket(self, ws: WebSocket) -> None:
         await ws.accept()
 
-        session = Session(adapter="web")
-        conn = ConnectionState(session=session)
+        # Wait for the first message which may contain a session_id for restoration.
+        # The frontend always sends { type: "restore", session_id: ... } as handshake.
+        conn = None
+        restored = False
+        replay_data = None  # non-restore message that arrived first (fallback)
+
+        try:
+            raw = await asyncio.wait_for(ws.receive_text(), timeout=5.0)
+            data = json.loads(raw)
+            if data.get("type") == "restore":
+                sid = data.get("session_id")
+                if sid:
+                    conn = self._restore_session(sid)
+                    if conn:
+                        restored = True
+                        logger.info("session_restored", session_id=conn.session.id)
+            else:
+                # First message was NOT a handshake (old client?) — save for replay
+                replay_data = data
+        except (asyncio.TimeoutError, json.JSONDecodeError, Exception):
+            pass
+
+        if conn is None:
+            session = Session(adapter="web")
+            conn = ConnectionState(session=session)
+
+        session = conn.session
         self._connections[session.id] = conn
         self.approval_cb.register_websocket(session.id, ws)
         self._tool_cb.register_websocket(session.id, ws)
 
-        # Send initial status
+        # Send initial status + history if restored
         try:
-            await ws.send_json({
+            status_msg = {
                 "type": "status",
-                "model": self.engine.model.default_model,
+                "model": conn.model_override or self.engine.model.default_model,
                 "trust_level": session.trust_level,
                 "session_id": session.id,
-            })
+                "restored": restored,
+            }
+            await ws.send_json(status_msg)
+
+            # If restored, send conversation history back to frontend
+            if restored and session.messages:
+                history = []
+                for msg in session.messages:
+                    if msg.role.value in ("user", "assistant") and isinstance(msg.content, str):
+                        history.append({"role": msg.role.value, "content": msg.content})
+                if history:
+                    await ws.send_json({"type": "history", "messages": history})
         except Exception:
             return
 
         try:
+            # If the first message was not a handshake, process it now
+            if replay_data is not None:
+                await self._process_ws_message(ws, conn, replay_data)
+
             while True:
                 raw = await ws.receive_text()
                 try:
@@ -745,6 +893,10 @@ class WebServer:
                     continue
 
                 msg_type = data.get("type")
+
+                if msg_type == "restore":
+                    # Already handled above; ignore duplicates
+                    continue
 
                 if msg_type == "message":
                     text = data.get("text", "").strip()
@@ -788,6 +940,26 @@ class WebServer:
             self.approval_cb.unregister_websocket(session.id)
             self._tool_cb.unregister_websocket(session.id)
             self._connections.pop(session.id, None)
+            # Cache the session for potential reconnection
+            self._cache_session(session.id, conn)
+
+    async def _process_ws_message(
+        self, ws: WebSocket, conn: ConnectionState, data: dict
+    ) -> None:
+        """Process a single parsed WebSocket message (used for replaying non-handshake first messages)."""
+        msg_type = data.get("type")
+        if msg_type == "message":
+            text = data.get("text", "").strip()
+            if text:
+                conn.chat_task = asyncio.create_task(
+                    self._handle_chat_message(ws, conn, text)
+                )
+        elif msg_type == "approval_response":
+            approval_id = data.get("approval_id", "")
+            action = data.get("action", "deny")
+            self.approval_cb.resolve_approval(approval_id, action)
+        elif msg_type == "command":
+            await self._handle_command(ws, conn, data)
 
     async def _handle_chat_message(
         self, ws: WebSocket, conn: ConnectionState, text: str
@@ -840,6 +1012,7 @@ class WebServer:
             self._tool_cb.unregister_websocket(old_id)
             self._tool_cb.register_websocket(conn.session.id, ws)
             self._connections.pop(old_id, None)
+            self._session_cache.pop(old_id, None)  # Remove from cache too
             self._connections[conn.session.id] = conn
             await ws.send_json({
                 "type": "status",

@@ -73,8 +73,19 @@ class ScheduleAddTool(BaseTool):
             "notify": {
                 "type": "boolean",
                 "description": "Send notification when task completes (default: true). "
-                               "Notifications are sent to the adapter/channel where the task was created.",
+                               "Auto-detected from the current session's adapter/channel.",
                 "default": True
+            },
+            "notify_adapter": {
+                "type": "string",
+                "enum": ["discord", "telegram"],
+                "description": "Override notification adapter (e.g., 'discord', 'telegram'). "
+                               "If omitted, auto-detected from the current session."
+            },
+            "notify_channel": {
+                "type": "string",
+                "description": "Override notification channel/chat ID. "
+                               "If omitted, auto-detected from the current session."
             }
         },
         "required": ["task_id", "name", "tool_name", "schedule_type"]
@@ -95,21 +106,24 @@ class ScheduleAddTool(BaseTool):
                     "agent_task is required when task_type='agent'"
                 )
 
-            # Capture notification target from current session
-            notify_adapter = None
-            notify_user_id = None
-            if params.get("notify", True) and context.session:
-                adapter = getattr(context.session, "adapter", "cli")
-                user_id = getattr(context.session, "user_id", "local")
-                # Only enable notifications for platform adapters (not CLI)
-                if adapter in ("discord", "telegram"):
-                    notify_adapter = adapter
-                    # Discord session keys are "channel_id:user_id" — extract channel_id
-                    # since send_notification sends to the channel, not the user
-                    if adapter == "discord" and ":" in user_id:
-                        notify_user_id = user_id.split(":")[0]
-                    else:
-                        notify_user_id = user_id
+            # Resolve notification target:
+            # Priority: explicit params > auto-detect from session > scheduler default
+            notify_adapter = params.get("notify_adapter")
+            notify_user_id = params.get("notify_channel")
+
+            if not (notify_adapter and notify_user_id):
+                # Auto-detect from current session
+                if params.get("notify", True) and context.session:
+                    adapter = getattr(context.session, "adapter", "cli")
+                    user_id = getattr(context.session, "user_id", "local")
+                    if adapter in ("discord", "telegram"):
+                        notify_adapter = notify_adapter or adapter
+                        if not notify_user_id:
+                            # Discord session keys are "channel_id:user_id" — extract channel_id
+                            if adapter == "discord" and ":" in user_id:
+                                notify_user_id = user_id.split(":")[0]
+                            else:
+                                notify_user_id = user_id
 
             task = self.scheduler.add_task(
                 task_id=params["task_id"],
@@ -332,3 +346,105 @@ class ScheduleDisableTool(BaseTool):
             return ToolResult.ok(f"⏸️ Disabled task '{task_id}'")
         else:
             return ToolResult.fail(f"Task '{task_id}' not found")
+
+
+class ScheduleUpdateTool(BaseTool):
+    """Update properties of an existing scheduled task."""
+
+    _auto_discover = False
+    name = "schedule_update"
+    description = (
+        "Update an existing scheduled task's properties: notification target, "
+        "schedule time, agent_task description, or parameters."
+    )
+    risk_level = RiskLevel.LOW
+
+    parameters = {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task ID to update"
+            },
+            "notify_adapter": {
+                "type": "string",
+                "enum": ["discord", "telegram"],
+                "description": "Set notification adapter (e.g., 'discord', 'telegram')"
+            },
+            "notify_channel": {
+                "type": "string",
+                "description": "Set notification channel/chat ID"
+            },
+            "schedule_time": {
+                "type": "string",
+                "description": "New schedule time in HH:MM format"
+            },
+            "agent_task": {
+                "type": "string",
+                "description": "New agent task description"
+            },
+            "parameters": {
+                "type": "object",
+                "description": "New tool parameters"
+            },
+        },
+        "required": ["task_id"]
+    }
+
+    def __init__(self, scheduler: TaskScheduler):
+        super().__init__()
+        self.scheduler = scheduler
+
+    async def execute(self, params: dict[str, Any], context: ToolContext) -> ToolResult:
+        """Update a scheduled task."""
+        task_id = params["task_id"]
+        task = self.scheduler.get_task(task_id)
+        if not task:
+            return ToolResult.fail(f"Task '{task_id}' not found")
+
+        changes = []
+
+        if "notify_adapter" in params:
+            task.notify_adapter = params["notify_adapter"]
+            changes.append(f"notify_adapter → {params['notify_adapter']}")
+
+        if "notify_channel" in params:
+            task.notify_user_id = params["notify_channel"]
+            changes.append(f"notify_channel → {params['notify_channel']}")
+
+        # Auto-detect from session if adapter specified but no channel
+        if "notify_adapter" in params and "notify_channel" not in params and not task.notify_user_id:
+            if context.session:
+                adapter = getattr(context.session, "adapter", "cli")
+                user_id = getattr(context.session, "user_id", "local")
+                if adapter == params["notify_adapter"]:
+                    if adapter == "discord" and ":" in user_id:
+                        task.notify_user_id = user_id.split(":")[0]
+                    else:
+                        task.notify_user_id = user_id
+                    changes.append(f"notify_channel → {task.notify_user_id} (auto-detected)")
+
+        if "schedule_time" in params:
+            task.schedule_time = params["schedule_time"]
+            task.next_run = self.scheduler._calculate_next_run(task)
+            changes.append(f"schedule_time → {params['schedule_time']}")
+
+        if "agent_task" in params:
+            task.agent_task = params["agent_task"]
+            changes.append(f"agent_task updated")
+
+        if "parameters" in params:
+            task.parameters = params["parameters"]
+            changes.append(f"parameters updated")
+
+        if not changes:
+            return ToolResult.fail("No fields to update. Provide at least one field to change.")
+
+        self.scheduler._save_tasks()
+
+        notify_info = f"{task.notify_adapter or 'none'}:{task.notify_user_id or 'none'}"
+        return ToolResult.ok(
+            f"✅ Updated task '{task.name}' (ID: {task_id})\n\n"
+            f"Changes:\n" + "\n".join(f"  • {c}" for c in changes) + "\n\n"
+            f"Notify: {notify_info}"
+        )

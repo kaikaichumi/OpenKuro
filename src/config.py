@@ -100,7 +100,7 @@ class ModelsConfig(BaseModel):
 class SecurityConfig(BaseModel):
     """Security layer configuration."""
 
-    auto_approve_levels: list[str] = Field(default_factory=lambda: ["low", "medium"])
+    auto_approve_levels: list[str] = Field(default_factory=lambda: ["low"])
     require_approval_for: list[str] = Field(default_factory=lambda: [
         "shell_execute", "send_message",
     ])

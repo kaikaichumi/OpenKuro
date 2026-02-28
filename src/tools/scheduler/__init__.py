@@ -6,6 +6,7 @@ from src.tools.scheduler.schedule_tool import (
     ScheduleEnableTool,
     ScheduleListTool,
     ScheduleRemoveTool,
+    ScheduleUpdateTool,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "ScheduleRemoveTool",
     "ScheduleEnableTool",
     "ScheduleDisableTool",
+    "ScheduleUpdateTool",
 ]

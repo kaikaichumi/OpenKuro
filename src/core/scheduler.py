@@ -122,6 +122,8 @@ class TaskScheduler:
         self._agent_executor: Callable | None = None
         self._agent_checker: Callable | None = None  # Check if name is a registered agent
         self._notification_callback: NotificationCallback | None = None
+        self._default_notify_adapter: str | None = None
+        self._default_notify_target: str | None = None
 
         # Load existing tasks
         self._load_tasks()
@@ -159,6 +161,21 @@ class TaskScheduler:
                      (adapter_name: str, user_id: str, message: str) -> bool
         """
         self._notification_callback = callback
+
+    def set_default_notification(self, adapter: str, target: str) -> None:
+        """Set default notification target for tasks without explicit notify settings.
+
+        Args:
+            adapter: Adapter name (e.g., "discord", "telegram").
+            target: Channel/chat ID for notifications.
+        """
+        self._default_notify_adapter = adapter
+        self._default_notify_target = target
+        logger.info(
+            "scheduler_default_notify_set",
+            adapter=adapter,
+            target=target,
+        )
 
     def add_task(
         self,
@@ -266,9 +283,30 @@ class TaskScheduler:
         """Get a task by ID."""
         return self.tasks.get(task_id)
 
-    def list_tasks(self) -> list[ScheduledTask]:
-        """List all scheduled tasks."""
-        return list(self.tasks.values())
+    def list_tasks(self, include_expired_once: bool = False) -> list[ScheduledTask]:
+        """List scheduled tasks.
+
+        By default, excludes completed/expired one-time tasks.
+        Only returns:
+        - Future one-time tasks (next_run is set)
+        - All recurring tasks (daily, weekly, hourly, interval)
+
+        Args:
+            include_expired_once: If True, also include expired once tasks.
+        """
+        if include_expired_once:
+            return list(self.tasks.values())
+
+        result = []
+        for task in self.tasks.values():
+            if task.schedule_type == ScheduleType.ONCE:
+                # Only include if it hasn't run yet (next_run is set)
+                if task.next_run is not None:
+                    result.append(task)
+            else:
+                # Recurring tasks are always shown
+                result.append(task)
+        return result
 
     def _calculate_next_run(self, task: ScheduledTask) -> datetime | None:
         """Calculate the next run time for a task."""
@@ -462,6 +500,10 @@ class TaskScheduler:
             # Send notification on success
             await self._notify_result(task, result)
 
+            # Remove completed one-time tasks
+            if task.schedule_type == ScheduleType.ONCE:
+                self._remove_completed_once_task(task)
+
         except Exception as e:
             logger.error("task_execution_failed", task_id=task.id, error=str(e))
 
@@ -473,9 +515,31 @@ class TaskScheduler:
             # Send error notification
             await self._notify_error(task, e)
 
+            # Even failed one-time tasks should be removed (they won't re-run)
+            if task.schedule_type == ScheduleType.ONCE and task.next_run is None:
+                self._remove_completed_once_task(task)
+
+    def _remove_completed_once_task(self, task: ScheduledTask) -> None:
+        """Remove a completed one-time task from the scheduler."""
+        if task.id in self.tasks:
+            del self.tasks[task.id]
+            self._save_tasks()
+            logger.info(
+                "once_task_removed_after_execution",
+                task_id=task.id,
+                name=task.name,
+            )
+
+    def _resolve_notify_target(self, task: ScheduledTask) -> tuple[str | None, str | None]:
+        """Resolve notification target: task-level first, then default fallback."""
+        adapter = task.notify_adapter or self._default_notify_adapter
+        target = task.notify_user_id or self._default_notify_target
+        return adapter, target
+
     async def _notify_result(self, task: ScheduledTask, result: str) -> None:
         """Send a success notification for a completed task."""
-        if not (task.notify_adapter and task.notify_user_id and self._notification_callback):
+        adapter, target = self._resolve_notify_target(task)
+        if not (adapter and target and self._notification_callback):
             return
 
         try:
@@ -484,13 +548,14 @@ class TaskScheduler:
                 f"\U0001f4cb Scheduled task completed: **{task.name}**\n\n"
                 f"Result:\n{result_preview}"
             )
-            await self._notification_callback(task.notify_adapter, task.notify_user_id, msg)
+            await self._notification_callback(adapter, target, msg)
         except Exception as e:
             logger.error("task_notify_failed", task_id=task.id, error=str(e))
 
     async def _notify_error(self, task: ScheduledTask, error: Exception) -> None:
         """Send an error notification for a failed task."""
-        if not (task.notify_adapter and task.notify_user_id and self._notification_callback):
+        adapter, target = self._resolve_notify_target(task)
+        if not (adapter and target and self._notification_callback):
             return
 
         try:
@@ -498,21 +563,47 @@ class TaskScheduler:
                 f"\u274c Scheduled task failed: **{task.name}**\n\n"
                 f"Error: {str(error)[:500]}"
             )
-            await self._notification_callback(task.notify_adapter, task.notify_user_id, msg)
+            await self._notification_callback(adapter, target, msg)
         except Exception as e:
             logger.error("task_error_notify_failed", task_id=task.id, error=str(e))
 
     def _load_tasks(self) -> None:
-        """Load tasks from storage."""
+        """Load tasks from storage, cleaning up expired one-time tasks."""
         if not self.storage_path.exists():
             return
 
         try:
             data = json.loads(self.storage_path.read_text(encoding="utf-8"))
-            self.tasks = {
-                task_data["id"]: ScheduledTask.from_dict(task_data)
-                for task_data in data.get("tasks", [])
-            }
+            loaded: dict[str, ScheduledTask] = {}
+            removed_count = 0
+            now = datetime.now()
+
+            for task_data in data.get("tasks", []):
+                task = ScheduledTask.from_dict(task_data)
+
+                # Skip one-time tasks that have already executed or are past due
+                if task.schedule_type == ScheduleType.ONCE:
+                    if task.last_run is not None:
+                        # Already executed → discard
+                        removed_count += 1
+                        continue
+                    if task.next_run is not None and task.next_run < now:
+                        # Past due and never ran → discard
+                        removed_count += 1
+                        continue
+
+                loaded[task.id] = task
+
+            self.tasks = loaded
+
+            if removed_count > 0:
+                # Persist the cleaned-up list
+                self._save_tasks()
+                logger.info(
+                    "scheduler_expired_once_tasks_cleaned",
+                    removed=removed_count,
+                )
+
             logger.info("scheduler_tasks_loaded", count=len(self.tasks))
         except Exception as e:
             logger.error("scheduler_load_failed", error=str(e))

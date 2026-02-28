@@ -40,26 +40,85 @@ MODEL_COSTS: dict[str, dict[str, float]] = {
 }
 
 
+_CUSTOM_PRICING_FILE = "custom_pricing.json"
+
+
+def _load_custom_pricing() -> dict[str, dict[str, float]]:
+    """Load user-defined pricing overrides from ~/.kuro/custom_pricing.json."""
+    path = get_kuro_home() / _CUSTOM_PRICING_FILE
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_custom_pricing(pricing: dict[str, dict[str, float]]) -> None:
+    """Persist user-defined pricing overrides to disk."""
+    path = get_kuro_home() / _CUSTOM_PRICING_FILE
+    path.write_text(json.dumps(pricing, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _get_effective_pricing() -> dict[str, dict[str, float]]:
+    """Get merged pricing: built-in defaults overridden by user custom pricing."""
+    merged = {m: dict(c) for m, c in MODEL_COSTS.items()}
+    custom = _load_custom_pricing()
+    for model, cost in custom.items():
+        merged[model] = cost
+    return merged
+
+
 def _get_model_cost(model: str) -> dict[str, float] | None:
     """Get cost per 1K tokens for a model, or None if not in pricing table."""
-    if model in MODEL_COSTS:
-        return MODEL_COSTS[model]
-    # Check prefix match for ollama
+    effective = _get_effective_pricing()
+    if model in effective:
+        return effective[model]
+    # Check prefix match for ollama / openai local models
     provider = model.split("/")[0] if "/" in model else model
-    if provider == "ollama":
+    if provider in ("ollama", "lmstudio"):
         return {"input": 0.0, "output": 0.0}
+    # Check custom pricing prefix wildcard (e.g. "openai/*")
+    wildcard = f"{provider}/*"
+    if wildcard in effective:
+        return effective[wildcard]
     return None  # Unknown model: no cost estimation
 
 
 def get_pricing_info() -> dict[str, Any]:
     """Return pricing table metadata for the frontend."""
+    effective = _get_effective_pricing()
+    custom = _load_custom_pricing()
     return {
         "last_updated": MODEL_COSTS_UPDATED,
         "models": {
-            model: {"input": cost["input"], "output": cost["output"]}
-            for model, cost in MODEL_COSTS.items()
+            model: {
+                "input": cost["input"],
+                "output": cost["output"],
+                "custom": model in custom,
+            }
+            for model, cost in effective.items()
         },
     }
+
+
+def update_model_pricing(model: str, input_rate: float, output_rate: float) -> dict[str, float]:
+    """Update pricing for a specific model. Returns the updated pricing entry."""
+    custom = _load_custom_pricing()
+    custom[model] = {"input": input_rate, "output": output_rate}
+    _save_custom_pricing(custom)
+    return custom[model]
+
+
+def delete_custom_pricing(model: str) -> bool:
+    """Remove custom pricing override for a model, reverting to built-in default."""
+    custom = _load_custom_pricing()
+    if model in custom:
+        del custom[model]
+        _save_custom_pricing(custom)
+        return True
+    return False
 
 
 class UsageAnalyzer:

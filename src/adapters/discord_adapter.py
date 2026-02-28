@@ -260,6 +260,8 @@ class DiscordAdapter(BaseAdapter):
         self._bot = discord.Client(intents=intents)
         self._approval_cb.set_bot(self._bot)
 
+        self._default_channel_id: int | None = None
+
         # Register event handlers
         @self._bot.event
         async def on_ready():
@@ -269,6 +271,15 @@ class DiscordAdapter(BaseAdapter):
                 bot_id=self._bot.user.id if self._bot.user else None,
                 guild_count=len(self._bot.guilds),
             )
+            # Discover a default notification channel
+            for guild in self._bot.guilds:
+                for channel in guild.text_channels:
+                    if self._is_channel_allowed(channel.id):
+                        self._default_channel_id = channel.id
+                        logger.info("discord_default_channel", channel_id=channel.id, channel_name=channel.name)
+                        break
+                if self._default_channel_id:
+                    break
 
         @self._bot.event
         async def on_message(message: discord.Message):
@@ -632,6 +643,11 @@ class DiscordAdapter(BaseAdapter):
                     f"\u274c Error processing message: {str(e)[:200]}"
                 )
 
+
+    @property
+    def default_channel_id(self) -> int | None:
+        """Get the default notification channel ID (first allowed text channel)."""
+        return self._default_channel_id
 
     async def send_notification(self, user_id: str, message: str) -> bool:
         """Send a proactive notification to a Discord channel.

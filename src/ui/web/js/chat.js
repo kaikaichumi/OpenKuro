@@ -14,6 +14,7 @@ let currentApprovalId = null;
 let isStreaming = false;
 let streamBubble = null;
 let streamText = "";
+let currentSessionId = sessionStorage.getItem("kuro_session_id") || null;
 
 // === DOM Elements (resolved after init) ===
 let messagesEl, inputEl, sendBtn, modelBadge, trustBadge, statusDot, statusText;
@@ -66,6 +67,9 @@ function connect() {
             clearTimeout(reconnectTimer);
             reconnectTimer = null;
         }
+        // Always send handshake so backend doesn't block waiting;
+        // include session_id when available for session restore.
+        ws.send(JSON.stringify({ type: "restore", session_id: currentSessionId }));
     };
 
     ws.onmessage = function (event) {
@@ -114,6 +118,7 @@ function handleMessage(data) {
     KuroPlugins.emit("onMessage", data);
     switch (data.type) {
         case "status": updateStatus(data); break;
+        case "history": restoreHistory(data.messages || []); break;
         case "stream_start": startStream(); break;
         case "stream_chunk": appendStream(data.text); break;
         case "stream_end": endStream(); break;
@@ -127,15 +132,38 @@ function handleMessage(data) {
 }
 
 function updateStatus(data) {
-    if (data.model) {
+    if (data.model && modelBadge) {
         const short = data.model.split("/").pop();
         modelBadge.textContent = short;
         modelBadge.title = data.model;
     }
     if (data.trust_level) {
-        trustBadge.textContent = data.trust_level.toUpperCase();
-        trustSelect.value = data.trust_level;
+        if (trustBadge) trustBadge.textContent = data.trust_level.toUpperCase();
+        if (trustSelect) trustSelect.value = data.trust_level;
     }
+    // Persist session ID for restoration after page navigation
+    if (data.session_id) {
+        currentSessionId = data.session_id;
+        sessionStorage.setItem("kuro_session_id", data.session_id);
+    }
+}
+
+// === History Restoration ===
+
+function restoreHistory(messages) {
+    // Clear any existing DOM messages before restoring
+    messagesEl.innerHTML = "";
+    for (const msg of messages) {
+        const div = document.createElement("div");
+        div.className = "message message-" + msg.role;
+        if (msg.role === "assistant") {
+            div.innerHTML = renderMarkdown(msg.content);
+        } else {
+            div.textContent = msg.content;
+        }
+        messagesEl.appendChild(div);
+    }
+    scrollToBottom("chat-container");
 }
 
 // === Streaming ===
@@ -409,6 +437,9 @@ function bindEvents() {
         send({ type: "command", command: "clear" });
         messagesEl.innerHTML = "";
         settingsPanel.classList.add("hidden");
+        // Clear saved session so a fresh one starts
+        currentSessionId = null;
+        sessionStorage.removeItem("kuro_session_id");
     });
 
     document.getElementById("btn-refresh-audit").addEventListener("click", loadAudit);
@@ -420,9 +451,6 @@ async function init() {
     await initLayout({
         activePath: "/",
         rightButtons: [
-            '<a href="/security" class="icon-btn" data-i18n-title="nav.security">&#128737;</a>',
-            '<a href="/analytics" class="icon-btn" data-i18n-title="nav.analytics">&#128200;</a>',
-            '<a href="/config" class="icon-btn" data-i18n-title="nav.settings">&#128736;</a>',
             '<button id="btn-screen" class="icon-btn" data-i18n-title="chat.screenPreview">&#128424;</button>',
             '<button id="btn-settings" class="icon-btn" data-i18n-title="settings.title">&#9881;</button>',
             '<button id="btn-audit" class="icon-btn" data-i18n-title="chat.auditLog">&#128220;</button>',

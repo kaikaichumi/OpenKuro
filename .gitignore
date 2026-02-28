@@ -46,3 +46,6 @@ logs/
 
 # Private documentation
 private_docs/
+
+# Training data & models (local only)
+training/

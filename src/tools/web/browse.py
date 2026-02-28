@@ -165,7 +165,7 @@ class WebNavigateTool(BaseTool):
         },
         "required": ["url"],
     }
-    risk_level = RiskLevel.MEDIUM
+    risk_level = RiskLevel.LOW
 
     async def execute(self, params: dict[str, Any], context: ToolContext) -> ToolResult:
         url = params.get("url", "")

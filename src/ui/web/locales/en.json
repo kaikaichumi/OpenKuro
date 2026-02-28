@@ -22,7 +22,7 @@
         "refresh": "Refresh"
     },
     "settings": {
-        "title": "Settings",
+        "title": "Chat Options",
         "model": "Model",
         "trustLevel": "Trust Level",
         "low": "Low",

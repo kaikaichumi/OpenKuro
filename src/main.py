@@ -208,6 +208,7 @@ def build_engine(
         ScheduleEnableTool,
         ScheduleListTool,
         ScheduleRemoveTool,
+        ScheduleUpdateTool,
     )
 
     scheduler = TaskScheduler()
@@ -243,6 +244,7 @@ def build_engine(
     tool_system.registry.register(ScheduleRemoveTool(scheduler))
     tool_system.registry.register(ScheduleEnableTool(scheduler))
     tool_system.registry.register(ScheduleDisableTool(scheduler))
+    tool_system.registry.register(ScheduleUpdateTool(scheduler))
 
     # Store scheduler in engine for access
     engine.scheduler = scheduler
@@ -498,6 +500,31 @@ async def async_adapter_main(
             return await manager.send_notification(adapter_name, user_id, message)
 
         engine.scheduler.set_notification_callback(scheduler_notification)
+
+        # Set default notification target from existing tasks with Discord/Telegram config
+        _default_set = False
+        for _task in engine.scheduler.tasks.values():
+            if _task.notify_adapter and _task.notify_user_id:
+                channel_id = _task.notify_user_id.split(":")[0]
+                engine.scheduler.set_default_notification(_task.notify_adapter, channel_id)
+                _default_set = True
+                break
+
+        # Fallback: discover default channel from Discord adapter after bot is ready
+        if not _default_set and "discord" in manager.adapter_names:
+            discord_adapter = manager.get("discord")
+
+            async def _set_discord_default():
+                """Wait for Discord bot to be ready, then set default channel."""
+                for _ in range(30):  # Wait up to 30 seconds
+                    await asyncio.sleep(1)
+                    ch = getattr(discord_adapter, "default_channel_id", None)
+                    if ch:
+                        engine.scheduler.set_default_notification("discord", str(ch))
+                        return
+
+            asyncio.create_task(_set_discord_default())
+
         await engine.scheduler.start()
         print("Task scheduler started (with notifications)")
 

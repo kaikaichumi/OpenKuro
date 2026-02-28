@@ -8,6 +8,68 @@ import { escapeHtml, formatTokens } from "./utils.js";
 import KuroPlugins from "./plugins.js";
 
 let lastResults = null;
+let saveTimers = {};  // debounce timers per model
+
+function calcCostDisplay(pt, ct, inputRate, outputRate) {
+    const ir = parseFloat(inputRate);
+    const or_ = parseFloat(outputRate);
+    if (isNaN(ir) && isNaN(or_)) return "N/A";
+    const cost = (isNaN(ir) ? 0 : pt / 1000 * ir) + (isNaN(or_) ? 0 : ct / 1000 * or_);
+    return "$" + cost.toFixed(4);
+}
+
+function savePricing(model, inputRate, outputRate) {
+    // Debounce: save 600ms after last keystroke
+    if (saveTimers[model]) clearTimeout(saveTimers[model]);
+    saveTimers[model] = setTimeout(() => {
+        const ir = parseFloat(inputRate) || 0;
+        const or_ = parseFloat(outputRate) || 0;
+        fetch("/api/analytics/pricing/" + encodeURIComponent(model), {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ input: ir, output: or_ }),
+        }).catch(e => console.error("save pricing error:", e));
+    }, 600);
+}
+
+function recalcTotalCost() {
+    const table = document.getElementById("model-cost-table");
+    if (!table) return;
+    let total = 0;
+    table.querySelectorAll("tbody tr").forEach(tr => {
+        const pt = parseFloat(tr.dataset.pt) || 0;
+        const ct = parseFloat(tr.dataset.ct) || 0;
+        const ir = parseFloat(tr.querySelector(".input-rate")?.value);
+        const or_ = parseFloat(tr.querySelector(".output-rate")?.value);
+        if (!isNaN(ir) || !isNaN(or_)) {
+            total += (isNaN(ir) ? 0 : pt / 1000 * ir) + (isNaN(or_) ? 0 : ct / 1000 * or_);
+        }
+    });
+    // Update summary card
+    const costCard = document.querySelector(".stat-value.yellow");
+    if (costCard) costCard.textContent = "$" + total.toFixed(2);
+}
+
+function bindRateInputs() {
+    const table = document.getElementById("model-cost-table");
+    if (!table) return;
+    table.addEventListener("input", function(e) {
+        if (!e.target.classList.contains("rate-input")) return;
+        const tr = e.target.closest("tr");
+        if (!tr) return;
+        const model = tr.dataset.model;
+        const pt = parseFloat(tr.dataset.pt) || 0;
+        const ct = parseFloat(tr.dataset.ct) || 0;
+        const inputRate = tr.querySelector(".input-rate").value;
+        const outputRate = tr.querySelector(".output-rate").value;
+        // Recalc this row's cost
+        tr.querySelector(".cost-cell").textContent = calcCostDisplay(pt, ct, inputRate, outputRate);
+        // Recalc total
+        recalcTotalCost();
+        // Auto-save
+        savePricing(model, inputRate, outputRate);
+    });
+}
 
 function renderAnalytics(usage, costs, suggestions, pricing) {
     const dashboard = document.getElementById("dashboard");
@@ -66,7 +128,7 @@ function renderAnalytics(usage, costs, suggestions, pricing) {
     });
 
     if (modelList.length > 0) {
-        html += '<div class="table-scroll"><table class="data-table"><thead><tr>';
+        html += '<div class="table-scroll"><table class="data-table" id="model-cost-table"><thead><tr>';
         html += '<th>' + t("analytics.model") + '</th><th>' + t("analytics.calls") + '</th>';
         html += '<th>' + t("analytics.promptTokens") + '</th><th>' + t("analytics.completionTokens") + '</th><th>' + t("analytics.totalTokens") + '</th>';
         html += '<th>' + t("analytics.inputRate") + '</th><th>' + t("analytics.outputRate") + '</th>';
@@ -75,21 +137,19 @@ function renderAnalytics(usage, costs, suggestions, pricing) {
         for (let j = 0; j < modelList.length; j++) {
             const mn = modelList[j][0];
             const info = modelList[j][1];
-            html += '<tr>';
+            const inputRate = (info.has_pricing && info.pricing) ? info.pricing.input : "";
+            const outputRate = (info.has_pricing && info.pricing) ? info.pricing.output : "";
+            const pt = info.prompt_tokens || 0;
+            const ct = info.completion_tokens || 0;
+            html += '<tr data-model="' + escapeHtml(mn) + '" data-pt="' + pt + '" data-ct="' + ct + '">';
             html += '<td class="model-name">' + escapeHtml(mn) + '</td>';
             html += '<td>' + (info.calls || 0) + '</td>';
-            html += '<td class="tokens">' + formatTokens(info.prompt_tokens || 0) + '</td>';
-            html += '<td class="tokens">' + formatTokens(info.completion_tokens || 0) + '</td>';
+            html += '<td class="tokens">' + formatTokens(pt) + '</td>';
+            html += '<td class="tokens">' + formatTokens(ct) + '</td>';
             html += '<td class="tokens">' + formatTokens(info.total_tokens || 0) + '</td>';
-            if (info.has_pricing && info.pricing) {
-                html += '<td class="rate">$' + info.pricing.input + '/1K</td>';
-                html += '<td class="rate">$' + info.pricing.output + '/1K</td>';
-                html += '<td class="cost-val">$' + (info.estimated_cost_usd || 0).toFixed(4) + '</td>';
-            } else {
-                html += '<td class="no-pricing">&mdash;</td>';
-                html += '<td class="no-pricing">&mdash;</td>';
-                html += '<td class="no-pricing">N/A</td>';
-            }
+            html += '<td class="rate"><span class="rate-prefix">$</span><input type="number" class="rate-input input-rate" step="any" min="0" placeholder="—" value="' + inputRate + '"><span class="rate-suffix">/1K</span></td>';
+            html += '<td class="rate"><span class="rate-prefix">$</span><input type="number" class="rate-input output-rate" step="any" min="0" placeholder="—" value="' + outputRate + '"><span class="rate-suffix">/1K</span></td>';
+            html += '<td class="cost-val cost-cell">' + calcCostDisplay(pt, ct, inputRate, outputRate) + '</td>';
             html += '</tr>';
         }
         html += '</tbody></table></div>';
@@ -123,31 +183,39 @@ function renderAnalytics(usage, costs, suggestions, pricing) {
         html += '</div></div>';
     }
 
-    // --- Pricing Reference ---
+    // --- Pricing Reference (only show models NOT already in the cost table) ---
     if (pricing && pricing.models) {
-        html += '<div class="chart-section"><h3>' + t("analytics.pricingReference") + '</h3>';
-        html += '<div class="pricing-meta">';
-        html += '<span>' + t("analytics.lastUpdated") + ':</span>';
-        html += '<span class="badge">' + escapeHtml(pricing.last_updated || "unknown") + '</span>';
-        html += '<span style="margin-left:0.5rem;font-size:0.75rem;color:var(--text-muted)">' + t("analytics.perTokens") + '</span>';
-        html += '</div>';
-        html += '<table class="data-table"><thead><tr>';
-        html += '<th>' + t("analytics.model") + '</th><th>' + t("analytics.input") + '</th><th>' + t("analytics.output") + '</th>';
-        html += '</tr></thead><tbody>';
+        const usedModels = new Set(modelList.map(m => m[0]));
+        const unusedPricing = [];
         for (const pm in pricing.models) {
-            const pi = pricing.models[pm];
-            const isFree = pi.input === 0 && pi.output === 0;
-            html += '<tr>';
-            html += '<td style="color:var(--accent);font-weight:600">' + escapeHtml(pm) + '</td>';
-            if (isFree) {
-                html += '<td class="free">' + t("common.free") + '</td><td class="free">' + t("common.free") + '</td>';
-            } else {
-                html += '<td class="rate">$' + pi.input + '</td>';
-                html += '<td class="rate">$' + pi.output + '</td>';
-            }
-            html += '</tr>';
+            if (!usedModels.has(pm)) unusedPricing.push([pm, pricing.models[pm]]);
         }
-        html += '</tbody></table></div>';
+        if (unusedPricing.length > 0) {
+            html += '<div class="chart-section"><h3>' + t("analytics.pricingReference") + '</h3>';
+            html += '<div class="pricing-meta">';
+            html += '<span>' + t("analytics.lastUpdated") + ':</span>';
+            html += '<span class="badge">' + escapeHtml(pricing.last_updated || "unknown") + '</span>';
+            html += '<span style="margin-left:0.5rem;font-size:0.75rem;color:var(--text-muted)">' + t("analytics.perTokens") + '</span>';
+            html += '</div>';
+            html += '<table class="data-table"><thead><tr>';
+            html += '<th>' + t("analytics.model") + '</th><th>' + t("analytics.input") + '</th><th>' + t("analytics.output") + '</th>';
+            html += '</tr></thead><tbody>';
+            for (let pi = 0; pi < unusedPricing.length; pi++) {
+                const pm = unusedPricing[pi][0];
+                const pv = unusedPricing[pi][1];
+                const isFree = pv.input === 0 && pv.output === 0;
+                html += '<tr>';
+                html += '<td style="color:var(--accent);font-weight:600">' + escapeHtml(pm) + '</td>';
+                if (isFree) {
+                    html += '<td class="free">' + t("common.free") + '</td><td class="free">' + t("common.free") + '</td>';
+                } else {
+                    html += '<td class="rate">$' + pv.input + '</td>';
+                    html += '<td class="rate">$' + pv.output + '</td>';
+                }
+                html += '</tr>';
+            }
+            html += '</tbody></table></div>';
+        }
     }
 
     // --- Avg Duration ---
@@ -186,6 +254,7 @@ function renderAnalytics(usage, costs, suggestions, pricing) {
     }
 
     dashboard.innerHTML = html;
+    bindRateInputs();
 }
 
 function fetchAndRender() {

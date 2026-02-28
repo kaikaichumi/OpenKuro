@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kuro - Scheduler</title>
+    <link rel="stylesheet" href="/static/css/variables.css">
+    <link rel="stylesheet" href="/static/css/base.css">
+    <link rel="stylesheet" href="/static/css/layout.css">
+    <link rel="stylesheet" href="/static/css/components.css">
+</head>
+<body class="page-scroll">
+    <nav id="main-nav"></nav>
+
+    <div class="dashboard" id="dashboard">
+        <div class="loading" id="loading" data-i18n="scheduler.loading">Loading scheduler data</div>
+    </div>
+
+    <!-- Edit Modal -->
+    <div class="modal-overlay" id="edit-modal" style="display:none">
+        <div class="modal">
+            <h3 id="modal-title">Edit Task</h3>
+            <input type="hidden" id="edit-task-id">
+
+            <div class="form-group">
+                <label data-i18n="scheduler.notifyAdapter">Notification Adapter</label>
+                <select id="edit-notify-adapter">
+                    <option value="">None (use default)</option>
+                    <option value="discord">Discord</option>
+                    <option value="telegram">Telegram</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label data-i18n="scheduler.notifyChannel">Channel / Chat ID</label>
+                <input type="text" id="edit-notify-channel" placeholder="e.g. 1471908696761040966">
+            </div>
+
+            <div class="form-group">
+                <label data-i18n="scheduler.scheduleTime">Schedule Time (HH:MM)</label>
+                <input type="text" id="edit-schedule-time" placeholder="09:00">
+            </div>
+
+            <div class="form-group" id="agent-task-group" style="display:none">
+                <label data-i18n="scheduler.agentTask">Agent Task Description</label>
+                <textarea id="edit-agent-task" rows="3"></textarea>
+            </div>
+
+            <div class="modal-actions">
+                <button class="btn" id="modal-cancel" data-i18n="common.cancel">Cancel</button>
+                <button class="btn btn-primary" id="modal-save" data-i18n="common.save">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="/static/js/scheduler.js"></script>
+</body>
+</html>
