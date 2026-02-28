@@ -100,6 +100,18 @@ class MemoryManager:
         # 1. System prompt (user-configurable supplement)
         context.append(Message(role=Role.SYSTEM, content=system_prompt))
 
+        # 1.1 Current date & time (always injected so the LLM knows "now")
+        import datetime as _dt
+        _now = _dt.datetime.now()
+        _weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+        context.append(Message(
+            role=Role.SYSTEM,
+            content=(
+                f"[Current Time]\n"
+                f"{_now.strftime('%Y-%m-%d %H:%M:%S')} {_weekdays[_now.weekday()]}"
+            ),
+        ))
+
         # 1.5 Personality (user-defined character & style)
         try:
             personality_path = get_kuro_home() / "personality.md"
