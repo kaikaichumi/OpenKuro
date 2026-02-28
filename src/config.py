@@ -389,8 +389,8 @@ class TaskComplexityConfig(BaseModel):
 
     # --- Local ML Model (fine-tuned DistilBERT ONNX classifier) ---
     ml_model_enabled: bool = False  # Disabled by default; enable after installing model
-    ml_model_path: str = ""  # Path to ONNX model file (empty = ~/.kuro/models/complexity_model_int8.onnx)
-    ml_tokenizer_path: str = ""  # Path to tokenizer dir (empty = ~/.kuro/models/complexity_tokenizer/)
+    ml_model_path: str = ""  # Path to ONNX model file (empty = <project>/models/complexity_model_int8.onnx)
+    ml_tokenizer_path: str = ""  # Path to tokenizer dir (empty = <project>/models/complexity_tokenizer/)
     ml_estimation_mode: str = "hybrid"  # "ml_only" | "hybrid" | "ml_refine"
     #   ml_only:   Use ML model score exclusively (replaces heuristic)
     #   hybrid:    Blend ML + heuristic scores (0.6 ML + 0.4 heuristic)

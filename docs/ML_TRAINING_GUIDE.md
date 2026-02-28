@@ -323,7 +323,7 @@ Convert the trained PyTorch model to ONNX format with INT8 quantization for fast
 # Export to ONNX + INT8 quantization
 python -m training.export_onnx --model training/output
 
-# Export and install to ~/.kuro/models/ (ready to use)
+# Export and install to project models/ directory (ready to use)
 python -m training.export_onnx --model training/output --install
 ```
 
@@ -335,7 +335,7 @@ python -m training.export_onnx --model training/output --install
 | `--output` / `-o` | same as model dir | Output directory |
 | `--weights` | `best_model.pt` | Which weights to export |
 | `--no-quantize` | `false` | Skip INT8 quantization |
-| `--install` | `false` | Copy to `~/.kuro/models/` |
+| `--install` | `false` | Copy to project `models/` directory |
 
 ### What Happens During Export
 
@@ -343,7 +343,7 @@ python -m training.export_onnx --model training/output --install
 2. **Export to ONNX** with dynamic batch size support
 3. **INT8 dynamic quantization** reduces size ~75% (260MB -> 65MB)
 4. **Verification** runs a dummy inference to check output shapes
-5. **(Optional) Install** copies model + tokenizer to `~/.kuro/models/`
+5. **(Optional) Install** copies model + tokenizer to project `models/` directory
 
 ### Output Files
 
@@ -353,7 +353,7 @@ training/output/
 ├── complexity_model_int8.onnx    # INT8 quantized (~65 MB)
 └── ...
 
-~/.kuro/models/                   # (with --install flag)
+models/                           # (with --install flag)
 ├── complexity_model_int8.onnx    # Model file
 └── complexity_tokenizer/         # Tokenizer files
     ├── tokenizer.json
@@ -374,12 +374,12 @@ python -m training.evaluate \
 
 # Evaluate installed model
 python -m training.evaluate \
-  --onnx ~/.kuro/models/complexity_model_int8.onnx \
+  --onnx models/complexity_model_int8.onnx \
   --data training/data/test.jsonl
 
 # Compare ML vs heuristic baseline
 python -m training.evaluate \
-  --onnx ~/.kuro/models/complexity_model_int8.onnx \
+  --onnx models/complexity_model_int8.onnx \
   --data training/data/test.jsonl \
   --compare
 ```
@@ -451,17 +451,17 @@ task_complexity:
   enabled: true
   ml_model_enabled: true
   ml_estimation_mode: hybrid    # hybrid | ml_only | ml_refine
-  # Optional: override default paths
-  # ml_model_path: ~/.kuro/models/complexity_model_int8.onnx
-  # ml_tokenizer_path: ~/.kuro/models/complexity_tokenizer
+  # Optional: override default paths (relative to project root)
+  # ml_model_path: models/complexity_model_int8.onnx
+  # ml_tokenizer_path: models/complexity_tokenizer
 ```
 
 ### Verify It Works
 
 Check Kuro logs for:
 ```
-ml_classifier_loaded    model=~/.kuro/models/complexity_model_int8.onnx  size_mb=65.2
-ml_tokenizer_loaded     path=~/.kuro/models/complexity_tokenizer
+ml_classifier_loaded    model=models/complexity_model_int8.onnx  size_mb=65.2
+ml_tokenizer_loaded     path=models/complexity_tokenizer
 ```
 
 ---
@@ -562,10 +562,10 @@ python -m training.export_onnx --model training/output --no-quantize
 
 ### Model Not Loading in Kuro
 
-1. Check the model file exists:
+1. Check the model file exists (from project root):
    ```bash
-   ls -la ~/.kuro/models/complexity_model_int8.onnx
-   ls -la ~/.kuro/models/complexity_tokenizer/
+   ls -la models/complexity_model_int8.onnx
+   ls -la models/complexity_tokenizer/
    ```
 
 2. Check `onnxruntime` is installed:
@@ -620,12 +620,12 @@ python -m training.export_onnx --model training/output --no-quantize
 | `src/core/complexity.py` | Integration with heuristic estimator |
 | `src/config.py` | ML config fields |
 
-### Deployed Model Files
+### Deployed Model Files (in project root)
 
 | File | Description |
 |------|-------------|
-| `~/.kuro/models/complexity_model_int8.onnx` | Production model |
-| `~/.kuro/models/complexity_tokenizer/` | Production tokenizer |
+| `models/complexity_model_int8.onnx` | Production model |
+| `models/complexity_tokenizer/` | Production tokenizer |
 
 ---
 
@@ -648,6 +648,6 @@ python -m training.export_onnx --model training/output --install
 
 # 4. Evaluate
 python -m training.evaluate \
-  --onnx ~/.kuro/models/complexity_model_int8.onnx \
+  --onnx models/complexity_model_int8.onnx \
   --data training/data/test.jsonl --compare
 ```

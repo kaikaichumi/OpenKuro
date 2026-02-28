@@ -11,8 +11,8 @@ Requirements (inference only):
     pip install onnxruntime  # ~15MB, CPU-only
 
 The model file (~65MB after INT8 quantization) is stored at:
-    ~/.kuro/models/complexity_model_int8.onnx
-    ~/.kuro/models/complexity_tokenizer/
+    <project_root>/models/complexity_model_int8.onnx
+    <project_root>/models/complexity_tokenizer/
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ class MLComplexityClassifier:
     and domain detection.
 
     Usage:
-        classifier = MLComplexityClassifier("~/.kuro/models/complexity_model_int8.onnx")
+        classifier = MLComplexityClassifier("models/complexity_model_int8.onnx")
         prediction = classifier.predict("分析這個程式的效能瓶頸")
         print(prediction.score, prediction.tier, prediction.domains)
     """
@@ -324,15 +324,16 @@ def _sigmoid(x):
     return 1.0 / (1.0 + np.exp(-x))
 
 
-def get_default_model_path() -> Path:
-    """Return the default model file path (~/.kuro/models/complexity_model_int8.onnx)."""
-    from src.config import get_kuro_home
+def _get_project_root() -> Path:
+    """Return the project root directory."""
+    return Path(__file__).parent.parent.parent
 
-    return get_kuro_home() / _DEFAULT_MODEL_DIR / _DEFAULT_MODEL_NAME
+
+def get_default_model_path() -> Path:
+    """Return the default model file path (<project_root>/models/complexity_model_int8.onnx)."""
+    return _get_project_root() / _DEFAULT_MODEL_DIR / _DEFAULT_MODEL_NAME
 
 
 def get_default_tokenizer_path() -> Path:
     """Return the default tokenizer directory path."""
-    from src.config import get_kuro_home
-
-    return get_kuro_home() / _DEFAULT_MODEL_DIR / _DEFAULT_TOKENIZER_DIR
+    return _get_project_root() / _DEFAULT_MODEL_DIR / _DEFAULT_TOKENIZER_DIR
