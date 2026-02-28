@@ -595,28 +595,36 @@ class ModelCapabilityMap:
         return None
 
     def _auto_detect_fast(self) -> str | None:
-        """Try to auto-detect the cheapest available model."""
-        # Priority order: local → gemini-flash → haiku
+        """Try to auto-detect the cheapest available model.
+
+        Prioritizes cloud models with verified API keys over local models
+        (Ollama) that may not be running.
+        """
         providers = self.model_router.config.models.providers
         fast_candidates = [
-            # Local models (free)
-            "ollama/llama3.2:3b",
-            "ollama/mistral-nemo",
-            "ollama/qwen3:32b",
-            # Cloud flash/haiku models (cheap)
+            # Cloud flash/haiku models first (cheap, reliable if API key exists)
             "gemini/gemini-3-flash",
             "gemini/gemini-2.5-flash",
             "anthropic/claude-haiku-4.5",
             "openai/gpt-oss-20b",
+            # Local models last (may not be running)
+            "ollama/llama3.2:3b",
+            "ollama/mistral-nemo",
+            "ollama/qwen3:32b",
         ]
         for candidate in fast_candidates:
             provider = candidate.split("/")[0]
-            if provider in providers:
-                provider_cfg = providers[provider]
-                if provider_cfg.base_url or provider_cfg.get_api_key():
-                    # Check if the model is in known_models
-                    if candidate in provider_cfg.known_models or provider == "ollama":
-                        return candidate
+            if provider not in providers:
+                continue
+            provider_cfg = providers[provider]
+            # Cloud providers: require a valid API key
+            if provider != "ollama":
+                if provider_cfg.get_api_key() and candidate in provider_cfg.known_models:
+                    return candidate
+            else:
+                # Ollama: only select if it's in known_models (user configured it)
+                if candidate in provider_cfg.known_models:
+                    return candidate
         return None
 
     def _auto_detect_frontier(self) -> str | None:
@@ -631,11 +639,11 @@ class ModelCapabilityMap:
         ]
         for candidate in frontier_candidates:
             provider = candidate.split("/")[0]
-            if provider in providers:
-                provider_cfg = providers[provider]
-                if provider_cfg.get_api_key():
-                    if candidate in provider_cfg.known_models:
-                        return candidate
+            if provider not in providers:
+                continue
+            provider_cfg = providers[provider]
+            if provider_cfg.get_api_key() and candidate in provider_cfg.known_models:
+                return candidate
         return None
 
 

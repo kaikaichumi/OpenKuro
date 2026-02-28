@@ -1,6 +1,7 @@
 {
     "nav": {
         "chat": "對話",
+        "scheduler": "排程",
         "security": "安全",
         "analytics": "分析",
         "collab": "協作",
@@ -135,6 +136,7 @@
         "maxSubtasksDesc": "每次拆解的最大子任務數量",
         "parallelSubtasks": "平行執行",
         "parallelSubtasksDesc": "平行執行獨立的子任務",
+        "modelAuto": "自動 / 預設",
         "mlClassifier": "本地 ML 分類器",
         "mlEnabled": "ML 模型",
         "mlEnabledDesc": "使用本地 DistilBERT ONNX 模型進行複雜度分析",
@@ -221,6 +223,28 @@
         "allow": "允許",
         "copied": "已複製！"
     },
+    "scheduler": {
+        "loading": "載入排程資料中",
+        "loadFailed": "無法載入排程資料",
+        "totalTasks": "排程總數",
+        "enabled": "已啟用",
+        "withNotify": "有通知設定",
+        "taskList": "排程任務列表",
+        "noTasks": "尚無排程任務。透過對話讓 Kuro 建立排程。",
+        "colStatus": "狀態",
+        "colName": "名稱",
+        "colType": "類型",
+        "colSchedule": "排程",
+        "colNotify": "通知",
+        "colNextRun": "下次執行",
+        "colRuns": "執行次數",
+        "editTask": "編輯任務",
+        "notifyAdapter": "通知接口",
+        "notifyChannel": "頻道 / 聊天 ID",
+        "scheduleTime": "排程時間（HH:MM）",
+        "agentTask": "Agent 任務描述",
+        "saved": "任務已更新"
+    },
     "common": {
         "loading": "載入中...",
         "error": "錯誤",
@@ -228,6 +252,9 @@
         "on": "開啟",
         "off": "關閉",
         "default": "預設",
-        "free": "免費"
+        "free": "免費",
+        "edit": "編輯",
+        "save": "儲存",
+        "cancel": "取消"
     }
 }

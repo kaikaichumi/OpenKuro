@@ -10,6 +10,60 @@ import KuroPlugins from "./plugins.js";
 let isDirty = false;
 let currentConfig = {};
 
+/**
+ * Collect all known model names from providers config.
+ * Returns a sorted array of "provider/model" strings.
+ */
+function getAllKnownModels(cfg) {
+    const models = [];
+    const providers = (cfg.models && cfg.models.providers) || {};
+    for (const [, providerCfg] of Object.entries(providers)) {
+        if (providerCfg.known_models) {
+            models.push(...providerCfg.known_models);
+        }
+    }
+    return models;
+}
+
+/**
+ * Populate a <select> element with model options.
+ * Includes an empty "Auto / Default" option at the top.
+ */
+function populateModelSelect(selectId, models, currentValue) {
+    const el = document.getElementById(selectId);
+    if (!el) return;
+
+    // Preserve current value
+    const val = currentValue || "";
+
+    // Clear existing options
+    el.innerHTML = "";
+
+    // Add empty/auto option
+    const autoOpt = document.createElement("option");
+    autoOpt.value = "";
+    autoOpt.textContent = t("config.modelAuto") || "Auto / Default";
+    el.appendChild(autoOpt);
+
+    // Add known models
+    for (const model of models) {
+        const opt = document.createElement("option");
+        opt.value = model;
+        opt.textContent = model;
+        el.appendChild(opt);
+    }
+
+    // If current value is not in the list but is non-empty, add it as a custom option
+    if (val && !models.includes(val)) {
+        const customOpt = document.createElement("option");
+        customOpt.value = val;
+        customOpt.textContent = val + " (custom)";
+        el.appendChild(customOpt);
+    }
+
+    el.value = val;
+}
+
 function markDirty() {
     isDirty = true;
     document.getElementById("save-btn").disabled = false;
@@ -81,10 +135,14 @@ function populateForm(cfg) {
     document.getElementById("tc-enabled").checked = tc.enabled !== false;
     document.getElementById("tc-trigger").value = tc.trigger_mode || "auto";
     document.getElementById("tc-llm-refine").checked = tc.llm_refinement !== false;
-    document.getElementById("tc-refine-model").value = tc.refinement_model || "";
-    document.getElementById("tc-fast-model").value = tc.fast_model || "";
-    document.getElementById("tc-standard-model").value = tc.standard_model || "";
-    document.getElementById("tc-frontier-model").value = tc.frontier_model || "";
+
+    // Populate model dropdowns from providers
+    const knownModels = getAllKnownModels(cfg);
+    populateModelSelect("tc-refine-model", knownModels, tc.refinement_model || "");
+    populateModelSelect("tc-fast-model", knownModels, tc.fast_model || "");
+    populateModelSelect("tc-standard-model", knownModels, tc.standard_model || "");
+    populateModelSelect("tc-frontier-model", knownModels, tc.frontier_model || "");
+
     document.getElementById("tc-decompose").checked = tc.decomposition_enabled !== false;
     document.getElementById("tc-decompose-threshold").value = tc.decomposition_threshold || 0.80;
     document.getElementById("tc-max-subtasks").value = tc.max_subtasks || 5;

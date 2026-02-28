@@ -1,6 +1,7 @@
 {
     "nav": {
         "chat": "Chat",
+        "scheduler": "Scheduler",
         "security": "Security",
         "analytics": "Analytics",
         "collab": "Collaboration",
@@ -135,6 +136,7 @@
         "maxSubtasksDesc": "Maximum number of sub-tasks per decomposition",
         "parallelSubtasks": "Parallel Execution",
         "parallelSubtasksDesc": "Run independent sub-tasks in parallel",
+        "modelAuto": "Auto / Default",
         "mlClassifier": "Local ML Classifier",
         "mlEnabled": "ML Model",
         "mlEnabledDesc": "Use local DistilBERT ONNX model for complexity analysis",
@@ -221,6 +223,28 @@
         "allow": "Allow",
         "copied": "Copied!"
     },
+    "scheduler": {
+        "loading": "Loading scheduler data",
+        "loadFailed": "Failed to load tasks",
+        "totalTasks": "Total Tasks",
+        "enabled": "Enabled",
+        "withNotify": "With Notification",
+        "taskList": "Scheduled Tasks",
+        "noTasks": "No scheduled tasks. Create one by chatting with Kuro.",
+        "colStatus": "Status",
+        "colName": "Name",
+        "colType": "Type",
+        "colSchedule": "Schedule",
+        "colNotify": "Notify",
+        "colNextRun": "Next Run",
+        "colRuns": "Runs",
+        "editTask": "Edit Task",
+        "notifyAdapter": "Notification Adapter",
+        "notifyChannel": "Channel / Chat ID",
+        "scheduleTime": "Schedule Time (HH:MM)",
+        "agentTask": "Agent Task Description",
+        "saved": "Task updated"
+    },
     "common": {
         "loading": "Loading...",
         "error": "Error",
@@ -228,6 +252,9 @@
         "on": "ON",
         "off": "OFF",
         "default": "Default",
-        "free": "Free"
+        "free": "Free",
+        "edit": "Edit",
+        "save": "Save",
+        "cancel": "Cancel"
     }
 }

@@ -179,19 +179,19 @@
             </div>
             <div class="field">
                 <div class="field-label"><span data-i18n="config.refinementModel">Refinement Model</span><small data-i18n="config.refinementModelDesc">Cheap model for score refinement (empty = auto)</small></div>
-                <div class="field-input"><input type="text" id="tc-refine-model" placeholder="gemini/gemini-2.5-flash"></div>
+                <div class="field-input"><select id="tc-refine-model" class="model-select"></select></div>
             </div>
             <div class="field">
                 <div class="field-label"><span data-i18n="config.fastModel">Fast Model</span><small data-i18n="config.fastModelDesc">Model for trivial/simple tasks (empty = auto-detect)</small></div>
-                <div class="field-input"><input type="text" id="tc-fast-model" placeholder="gemini/gemini-2.5-flash"></div>
+                <div class="field-input"><select id="tc-fast-model" class="model-select"></select></div>
             </div>
             <div class="field">
                 <div class="field-label"><span data-i18n="config.standardModel">Standard Model</span><small data-i18n="config.standardModelDesc">Model for moderate tasks (empty = default)</small></div>
-                <div class="field-input"><input type="text" id="tc-standard-model" placeholder="anthropic/claude-sonnet-4.5"></div>
+                <div class="field-input"><select id="tc-standard-model" class="model-select"></select></div>
             </div>
             <div class="field">
                 <div class="field-label"><span data-i18n="config.frontierModel">Frontier Model</span><small data-i18n="config.frontierModelDesc">Model for complex/expert tasks (empty = auto-detect)</small></div>
-                <div class="field-input"><input type="text" id="tc-frontier-model" placeholder="anthropic/claude-opus-4.6"></div>
+                <div class="field-input"><select id="tc-frontier-model" class="model-select"></select></div>
             </div>
             <div class="field">
                 <div class="field-label"><span data-i18n="config.decomposition">Task Decomposition</span><small data-i18n="config.decompositionDesc">Split overly complex tasks into sub-tasks</small></div>
