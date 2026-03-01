@@ -319,6 +319,10 @@ def _register_maintenance_tasks(
     from src.core.scheduler import ScheduleType
 
     # Daily: memory lifecycle maintenance + learning analysis
+    # NOTE: _direct_executor is a Python function that cannot be serialized to JSON.
+    # On restart, tasks loaded from scheduler.json lose their _direct_executor.
+    # We must ALWAYS re-attach the executor, whether the task is new or already exists.
+
     if config.memory_lifecycle.enabled and memory_manager.lifecycle:
         lifecycle = memory_manager.lifecycle
 
@@ -326,7 +330,14 @@ def _register_maintenance_tasks(
             result = await lifecycle.daily_maintenance()
             return f"Memory lifecycle daily: {result}"
 
-        if "_kuro_lifecycle_daily" not in scheduler.tasks:
+        async def _weekly_lifecycle(_tool: str, _params: dict) -> str:
+            result = await lifecycle.weekly_consolidation()
+            md_result = await lifecycle.manage_memory_md()
+            return f"Weekly consolidation: {result}\nMEMORY.md: {md_result}"
+
+        # Daily lifecycle
+        task = scheduler.tasks.get("_kuro_lifecycle_daily")
+        if task is None:
             try:
                 task = scheduler.add_task(
                     task_id="_kuro_lifecycle_daily",
@@ -335,20 +346,14 @@ def _register_maintenance_tasks(
                     schedule_type=ScheduleType.DAILY,
                     schedule_time=config.memory_lifecycle.daily_maintenance_time,
                 )
-                # Override with direct executor (not through tool system)
-                task._direct_executor = _daily_lifecycle
             except ValueError:
-                pass  # Already exists
+                pass
+        if task:
+            task._direct_executor = _daily_lifecycle
 
-    if config.memory_lifecycle.enabled and memory_manager.lifecycle:
-        lifecycle = memory_manager.lifecycle
-
-        async def _weekly_lifecycle(_tool: str, _params: dict) -> str:
-            result = await lifecycle.weekly_consolidation()
-            md_result = await lifecycle.manage_memory_md()
-            return f"Weekly consolidation: {result}\nMEMORY.md: {md_result}"
-
-        if "_kuro_lifecycle_weekly" not in scheduler.tasks:
+        # Weekly lifecycle
+        task = scheduler.tasks.get("_kuro_lifecycle_weekly")
+        if task is None:
             try:
                 task = scheduler.add_task(
                     task_id="_kuro_lifecycle_weekly",
@@ -358,9 +363,10 @@ def _register_maintenance_tasks(
                     schedule_time=config.memory_lifecycle.daily_maintenance_time,
                     schedule_days=[config.memory_lifecycle.weekly_maintenance_day],
                 )
-                task._direct_executor = _weekly_lifecycle
             except ValueError:
                 pass
+        if task:
+            task._direct_executor = _weekly_lifecycle
 
     if config.learning.enabled and memory_manager.learning:
         learning = memory_manager.learning
@@ -369,7 +375,8 @@ def _register_maintenance_tasks(
             result = await learning.daily_analysis()
             return f"Learning analysis: {result}"
 
-        if "_kuro_learning_daily" not in scheduler.tasks:
+        task = scheduler.tasks.get("_kuro_learning_daily")
+        if task is None:
             try:
                 task = scheduler.add_task(
                     task_id="_kuro_learning_daily",
@@ -378,9 +385,10 @@ def _register_maintenance_tasks(
                     schedule_type=ScheduleType.DAILY,
                     schedule_time=config.learning.analysis_time,
                 )
-                task._direct_executor = _daily_learning
             except ValueError:
                 pass
+        if task:
+            task._direct_executor = _daily_learning
 
 
 def build_app(config: KuroConfig) -> tuple[Engine, "CLI"]:
