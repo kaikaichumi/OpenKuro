@@ -18,7 +18,7 @@ import structlog
 from src.config import KuroConfig
 from src.core.action_log import ActionLogger
 from src.core.memory.manager import MemoryManager
-from src.core.model_router import ModelRouter
+from src.core.model_router import ContextOverflowError, ModelRouter
 from src.core.security.approval import ApprovalPolicy
 from src.core.security.audit import AuditLog
 from src.core.security.sandbox import Sandbox
@@ -231,6 +231,119 @@ class Engine:
 
         return Message(role=Role.SYSTEM, content="\n".join(lines))
 
+    # ------------------------------------------------------------------
+    # Emergency context compression (triggered by ContextOverflowError)
+    # ------------------------------------------------------------------
+
+    async def _emergency_compress(
+        self,
+        messages: list[Message],
+        limit_tokens: int | None,
+    ) -> list[Message]:
+        """Force-compress context after the LLM returned a context overflow error.
+
+        1. First tries the existing ContextCompressor (LLM-based summarization).
+        2. If the compressor is unavailable or the result is still too large,
+           falls back to aggressive truncation (trim tool results + drop old msgs).
+        """
+        _CHARS_PER_TOKEN = 4
+
+        # --- Try the existing compressor first ---
+        if hasattr(self.memory, "compressor") and self.memory.compressor:
+            try:
+                compressed = await self.memory.compressor.compress_if_needed(messages)
+                # Force a compress even if compress_if_needed thought it wasn't needed
+                if compressed is messages:
+                    # Override: temporarily lower the budget to force compression
+                    orig_budget = self.memory.compressor.config.token_budget
+                    self.memory.compressor.config.token_budget = limit_tokens or 4096
+                    self.memory.compressor.config.trigger_threshold = 0.0
+                    compressed = await self.memory.compressor.compress_if_needed(messages)
+                    self.memory.compressor.config.token_budget = orig_budget
+                    self.memory.compressor.config.trigger_threshold = 0.8
+
+                est = sum(
+                    len(m.content) if isinstance(m.content, str) else 0
+                    for m in compressed
+                ) // _CHARS_PER_TOKEN
+                target = int((limit_tokens or 8192) * 0.75)
+
+                if est <= target:
+                    logger.info(
+                        "engine_overflow_compressed",
+                        strategy="compressor",
+                        est_tokens=est,
+                        target=target,
+                    )
+                    return compressed
+            except Exception as e:
+                logger.warning("engine_emergency_compress_failed", error=str(e))
+
+        # --- Fallback: aggressive truncation (same approach as AgentRunner) ---
+        budget = limit_tokens or 8192
+        target = int(budget * 0.75)
+
+        # Step 1: truncate long tool results
+        truncated: list[Message] = []
+        for m in messages:
+            if m.role == Role.TOOL and isinstance(m.content, str) and len(m.content) > 800:
+                short = m.content[:400] + "\n...(truncated)...\n" + m.content[-200:]
+                truncated.append(
+                    Message(
+                        role=m.role, content=short,
+                        name=m.name, tool_call_id=m.tool_call_id,
+                    )
+                )
+            else:
+                truncated.append(m)
+
+        est = sum(
+            len(m.content) if isinstance(m.content, str) else 0
+            for m in truncated
+        ) // _CHARS_PER_TOKEN
+        if est <= target:
+            logger.info("engine_overflow_compressed", strategy="truncate_tool_results", est_tokens=est)
+            return truncated
+
+        # Step 2: drop old middle messages
+        system_msgs: list[Message] = []
+        first_user: Message | None = None
+        rest: list[Message] = []
+        for m in truncated:
+            if m.role == Role.SYSTEM:
+                system_msgs.append(m)
+            elif first_user is None and m.role == Role.USER:
+                first_user = m
+            else:
+                rest.append(m)
+
+        keep_recent = max(6, len(rest) // 2)
+        while keep_recent > 2:
+            candidate = system_msgs[:]
+            if first_user:
+                candidate.append(first_user)
+            candidate.extend(rest[-keep_recent:])
+            est = sum(
+                len(m.content) if isinstance(m.content, str) else 0
+                for m in candidate
+            ) // _CHARS_PER_TOKEN
+            if est <= target:
+                logger.info(
+                    "engine_overflow_compressed",
+                    strategy="drop_old_messages",
+                    est_tokens=est,
+                    kept_recent=keep_recent,
+                )
+                return candidate
+            keep_recent -= 2
+
+        # Last resort
+        final = system_msgs[:]
+        if first_user:
+            final.append(first_user)
+        logger.warning("engine_overflow_compressed_aggressive")
+        return final
+
     async def process_message(
         self,
         user_text: str,
@@ -335,11 +448,29 @@ class Engine:
             messages = [m.to_litellm() for m in context_messages]
             tools = self.tools.registry.get_openai_tools() or None
 
-            response = await self.model.complete(
-                messages=messages,
-                model=model,
-                tools=tools,
-            )
+            try:
+                response = await self.model.complete(
+                    messages=messages,
+                    model=model,
+                    tools=tools,
+                )
+            except ContextOverflowError as exc:
+                # Auto-compress context and retry once
+                logger.info(
+                    "engine_context_overflow_compressing",
+                    request_tokens=exc.token_count,
+                    limit_tokens=exc.limit,
+                    model=exc.model,
+                )
+                context_messages = await self._emergency_compress(
+                    context_messages, exc.limit
+                )
+                messages = [m.to_litellm() for m in context_messages]
+                response = await self.model.complete(
+                    messages=messages,
+                    model=model,
+                    tools=tools,
+                )
 
             # Log token usage
             if response.usage:

@@ -164,6 +164,10 @@ class MLComplexityClassifier:
             logger.warning("ml_classifier_load_failed", error=str(e))
             return False
 
+        # Try loading tokenizer: prefer `transformers`, fall back to `tokenizers`
+        tokenizer_loaded = False
+
+        # Attempt 1: transformers (full-featured)
         try:
             from transformers import AutoTokenizer
 
@@ -171,21 +175,40 @@ class MLComplexityClassifier:
                 str(self.tokenizer_path),
                 local_files_only=True,
             )
-            logger.info("ml_tokenizer_loaded", path=str(self.tokenizer_path))
-
+            self._tokenizer_backend = "transformers"
+            tokenizer_loaded = True
+            logger.info("ml_tokenizer_loaded", path=str(self.tokenizer_path), backend="transformers")
         except ImportError:
-            # Fallback: try to use a basic tokenizer without transformers
+            pass  # transformers not installed, try fallback
+        except Exception as e:
+            logger.debug("ml_tokenizer_transformers_failed", error=str(e))
+
+        # Attempt 2: tokenizers (lightweight, ~5MB vs ~500MB for transformers)
+        if not tokenizer_loaded:
+            try:
+                from tokenizers import Tokenizer as HFTokenizer
+
+                tokenizer_json = self.tokenizer_path / "tokenizer.json"
+                if tokenizer_json.exists():
+                    raw_tokenizer = HFTokenizer.from_file(str(tokenizer_json))
+                    # Wrap in a callable that mimics the transformers API
+                    self._tokenizer = _TokenizersWrapper(raw_tokenizer, self.max_length)
+                    self._tokenizer_backend = "tokenizers"
+                    tokenizer_loaded = True
+                    logger.info("ml_tokenizer_loaded", path=str(tokenizer_json), backend="tokenizers")
+                else:
+                    logger.warning("ml_tokenizer_json_not_found", path=str(tokenizer_json))
+            except ImportError:
+                pass  # tokenizers not installed either
+            except Exception as e:
+                logger.debug("ml_tokenizer_tokenizers_failed", error=str(e))
+
+        if not tokenizer_loaded:
             self._load_error = (
-                "transformers not installed for tokenizer. "
-                "Install with: pip install transformers"
+                "No tokenizer backend available. "
+                "Install one of: pip install tokenizers  OR  pip install transformers"
             )
             logger.warning("ml_tokenizer_unavailable", reason=self._load_error)
-            # Clean up session
-            self._session = None
-            return False
-        except Exception as e:
-            self._load_error = f"Failed to load tokenizer: {e}"
-            logger.warning("ml_tokenizer_load_failed", error=str(e))
             self._session = None
             return False
 
@@ -301,6 +324,54 @@ class MLComplexityClassifier:
             info["input_names"] = [inp.name for inp in self._session.get_inputs()]
             info["output_names"] = [out.name for out in self._session.get_outputs()]
         return info
+
+
+# ── Tokenizer Wrapper ────────────────────────────────────────────────
+
+
+class _TokenizersWrapper:
+    """Lightweight wrapper around `tokenizers.Tokenizer`.
+
+    Provides a ``__call__`` interface compatible with what the ONNX model
+    expects (the same as ``transformers.AutoTokenizer.__call__``).
+
+    This avoids the ~500 MB ``transformers`` dependency — the standalone
+    ``tokenizers`` package is only ~5 MB.
+    """
+
+    def __init__(self, tokenizer: Any, max_length: int) -> None:
+        self._tok = tokenizer
+        self._max_length = max_length
+        # Enable padding + truncation once
+        self._tok.enable_padding(length=max_length, pad_id=0, pad_token="[PAD]")
+        self._tok.enable_truncation(max_length=max_length)
+
+    def __call__(
+        self,
+        text: str,
+        max_length: int | None = None,
+        truncation: bool = True,
+        padding: str = "max_length",
+        return_tensors: str = "np",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        import numpy as np
+
+        ml = max_length or self._max_length
+        # Re-configure if caller overrides max_length
+        if ml != self._max_length:
+            self._tok.enable_padding(length=ml, pad_id=0, pad_token="[PAD]")
+            self._tok.enable_truncation(max_length=ml)
+            self._max_length = ml
+
+        encoding = self._tok.encode(text)
+        ids = encoding.ids
+        mask = encoding.attention_mask
+
+        return {
+            "input_ids": np.array([ids], dtype=np.int64),
+            "attention_mask": np.array([mask], dtype=np.int64),
+        }
 
 
 # ── Utility Functions ─────────────────────────────────────────────────────

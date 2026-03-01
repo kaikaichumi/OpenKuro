@@ -38,7 +38,7 @@ class DelegateToAgentTool(BaseTool):
         },
         "required": ["agent_name", "task"],
     }
-    risk_level = RiskLevel.MEDIUM  # Medium because it triggers a sub-agent loop
+    risk_level = RiskLevel.LOW  # Delegation is just routing; sub-agent tools have their own risk levels
 
     async def execute(
         self, params: dict[str, Any], context: ToolContext

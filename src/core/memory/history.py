@@ -86,10 +86,16 @@ class ConversationHistory:
 
             # Insert all messages
             for msg in user_messages:
+                # content can be str or list[dict] (multimodal); SQLite needs str
+                if isinstance(msg.content, list):
+                    content_str = json.dumps(msg.content, ensure_ascii=False)
+                else:
+                    content_str = msg.content or ""
+
                 await db.execute(
                     """INSERT INTO messages (session_id, role, content, name, tool_call_id, timestamp)
                        VALUES (?, ?, ?, ?, ?, ?)""",
-                    (session.id, msg.role.value, msg.content or "",
+                    (session.id, msg.role.value, content_str,
                      msg.name, msg.tool_call_id,
                      msg.timestamp.isoformat()),
                 )
@@ -128,9 +134,17 @@ class ConversationHistory:
 
         for mr in msg_rows:
             mr_dict = dict(mr)
+            # Restore multimodal content: if stored as JSON list, parse it back
+            raw_content = mr_dict["content"]
+            if isinstance(raw_content, str) and raw_content.startswith("["):
+                try:
+                    raw_content = json.loads(raw_content)
+                except (json.JSONDecodeError, ValueError):
+                    pass  # Not valid JSON, keep as string
+
             msg = Message(
                 role=Role(mr_dict["role"]),
-                content=mr_dict["content"],
+                content=raw_content,
                 name=mr_dict["name"],
                 tool_call_id=mr_dict["tool_call_id"],
                 timestamp=datetime.fromisoformat(mr_dict["timestamp"]),

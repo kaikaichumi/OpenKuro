@@ -7,6 +7,7 @@ with automatic fallback chain.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, AsyncIterator
 
 import litellm
@@ -19,6 +20,65 @@ logger = structlog.get_logger()
 
 # Suppress LiteLLM's verbose logging
 litellm.suppress_debug_info = True
+
+
+# ---------------------------------------------------------------------------
+# Context overflow detection
+# ---------------------------------------------------------------------------
+
+# Patterns that indicate a context-window overflow from various providers
+_CONTEXT_OVERFLOW_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"exceeds?\s+(the\s+)?(available\s+)?context\s+size", re.I),
+    re.compile(r"maximum\s+context\s+length", re.I),
+    re.compile(r"context[_ ]?window", re.I),
+    re.compile(r"token\s+limit\s+exceeded", re.I),
+    re.compile(r"request\s+too\s+large", re.I),
+    re.compile(r"input.*too\s+long", re.I),
+    re.compile(r"exceeds?\s+.*\btoken", re.I),
+    re.compile(r"reduce\s+(the\s+)?(length|size)\s+of\s+(the\s+)?messages?", re.I),
+]
+
+# Extract numeric token counts from error messages
+_TOKEN_COUNT_RE = re.compile(
+    r"(?:request|input|prompt)\s*\(?\s*(\d[\d,]*)\s*tokens?\s*\)?", re.I
+)
+_TOKEN_LIMIT_RE = re.compile(
+    r"(?:context|limit|maximum|max|available)\s*(?:size|length|window)?\s*(?:of|is|:)?\s*\(?\s*(\d[\d,]*)\s*tokens?\s*\)?",
+    re.I,
+)
+
+
+def _is_context_overflow(error_str: str) -> bool:
+    """Return True if the error message indicates a context-window overflow."""
+    return any(p.search(error_str) for p in _CONTEXT_OVERFLOW_PATTERNS)
+
+
+def _parse_overflow_tokens(error_str: str) -> tuple[int | None, int | None]:
+    """Try to extract (request_tokens, limit_tokens) from an overflow error."""
+    req = _TOKEN_COUNT_RE.search(error_str)
+    lim = _TOKEN_LIMIT_RE.search(error_str)
+    req_val = int(req.group(1).replace(",", "")) if req else None
+    lim_val = int(lim.group(1).replace(",", "")) if lim else None
+    return req_val, lim_val
+
+
+class ContextOverflowError(Exception):
+    """Raised when the request exceeds the model's context window.
+
+    Callers should catch this, compress the context, and retry.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        token_count: int | None = None,
+        limit: int | None = None,
+        model: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.token_count = token_count
+        self.limit = limit
+        self.model = model
 
 
 class ModelRouter:
@@ -102,6 +162,25 @@ class ModelRouter:
                 return self._parse_response(response, model_name)
 
             except Exception as e:
+                error_str = str(e)
+
+                # Context overflow: don't try fallback models — the caller
+                # should compress and retry with the *same* model.
+                if _is_context_overflow(error_str):
+                    req_tokens, lim_tokens = _parse_overflow_tokens(error_str)
+                    logger.warning(
+                        "context_overflow",
+                        model=model_name,
+                        request_tokens=req_tokens,
+                        limit_tokens=lim_tokens,
+                    )
+                    raise ContextOverflowError(
+                        error_str,
+                        token_count=req_tokens,
+                        limit=lim_tokens,
+                        model=model_name,
+                    ) from e
+
                 last_error = e
                 logger.warning(
                     "model_fallback",

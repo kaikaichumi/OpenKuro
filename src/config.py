@@ -349,16 +349,17 @@ class TaskComplexityConfig(BaseModel):
     #   auto_silent: analyze every message silently, only route
     trigger_mode: str = "auto"
 
-    # --- Heuristic scoring weights (dimension → weight, sum should be 1.0) ---
+    # --- Heuristic scoring weights (dimension → weight, sum should be ~1.0) ---
     dimension_weights: dict[str, float] = Field(default_factory=lambda: {
-        "token_length": 0.10,
-        "reasoning_markers": 0.20,
-        "domain_count": 0.15,
-        "step_indicators": 0.15,
-        "code_complexity": 0.15,
-        "context_dependency": 0.10,
-        "constraint_count": 0.10,
+        "token_length": 0.08,
+        "reasoning_markers": 0.18,
+        "domain_count": 0.13,
+        "step_indicators": 0.12,
+        "code_complexity": 0.13,
+        "context_dependency": 0.08,
+        "constraint_count": 0.08,
         "ambiguity": 0.05,
+        "external_tool_need": 0.15,
     })
 
     # --- LLM refinement for ambiguous scores ---

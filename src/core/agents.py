@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from src.config import KuroConfig
-from src.core.model_router import ModelRouter
+from src.core.model_router import ContextOverflowError, ModelRouter
 from src.core.security.approval import ApprovalPolicy
 from src.core.security.audit import AuditLog
 from src.core.security.sandbox import Sandbox
@@ -116,13 +116,31 @@ class AgentRunner:
         for _round_num in range(max_rounds):
             litellm_msgs = [m.to_litellm() for m in messages]
 
-            response = await self.model.complete(
-                messages=litellm_msgs,
-                model=self.definition.model,
-                tools=tools,
-                temperature=self.definition.temperature,
-                max_tokens=self.definition.max_tokens,
-            )
+            try:
+                response = await self.model.complete(
+                    messages=litellm_msgs,
+                    model=self.definition.model,
+                    tools=tools,
+                    temperature=self.definition.temperature,
+                    max_tokens=self.definition.max_tokens,
+                )
+            except ContextOverflowError as exc:
+                # Auto-compress: trim tool results & old messages, then retry
+                logger.info(
+                    "agent_context_overflow_compressing",
+                    agent=self.definition.name,
+                    request_tokens=exc.token_count,
+                    limit_tokens=exc.limit,
+                )
+                messages = self._compress_for_overflow(messages, exc.limit)
+                litellm_msgs = [m.to_litellm() for m in messages]
+                response = await self.model.complete(
+                    messages=litellm_msgs,
+                    model=self.definition.model,
+                    tools=tools,
+                    temperature=self.definition.temperature,
+                    max_tokens=self.definition.max_tokens,
+                )
 
             # Log token usage for sub-agent
             await self._log_tokens(response)
@@ -164,11 +182,20 @@ class AgentRunner:
         )
         try:
             litellm_msgs = [m.to_litellm() for m in messages]
-            final = await self.model.complete(
-                messages=litellm_msgs,
-                model=self.definition.model,
-                tools=None,
-            )
+            try:
+                final = await self.model.complete(
+                    messages=litellm_msgs,
+                    model=self.definition.model,
+                    tools=None,
+                )
+            except ContextOverflowError as exc:
+                messages = self._compress_for_overflow(messages, exc.limit)
+                litellm_msgs = [m.to_litellm() for m in messages]
+                final = await self.model.complete(
+                    messages=litellm_msgs,
+                    model=self.definition.model,
+                    tools=None,
+                )
             await self._log_tokens(final)
             content = final.content or ""
         except Exception:
@@ -195,6 +222,107 @@ class AgentRunner:
             )
         except Exception:
             pass  # Don't let token logging break the agent loop
+
+    # ------------------------------------------------------------------
+    # Context overflow auto-compression
+    # ------------------------------------------------------------------
+
+    _CHARS_PER_TOKEN = 4  # heuristic matching compressor.py
+
+    def _compress_for_overflow(
+        self, messages: list[Message], limit_tokens: int | None
+    ) -> list[Message]:
+        """Emergency-compress messages after a context overflow error.
+
+        Strategy (from lightest to most aggressive):
+        1. Truncate long tool-result messages (> 800 chars → keep first 400 + last 200).
+        2. If still over budget, drop old middle messages keeping system + task + recent.
+        """
+        # --- Step 1: truncate long tool results ---
+        compressed = []
+        for m in messages:
+            if m.role == Role.TOOL and isinstance(m.content, str) and len(m.content) > 800:
+                truncated = m.content[:400] + "\n...(truncated)...\n" + m.content[-200:]
+                compressed.append(
+                    Message(
+                        role=m.role,
+                        content=truncated,
+                        name=m.name,
+                        tool_call_id=m.tool_call_id,
+                    )
+                )
+            else:
+                compressed.append(m)
+
+        # Estimate tokens
+        est = sum(
+            len(m.content) if isinstance(m.content, str) else 0
+            for m in compressed
+        ) // self._CHARS_PER_TOKEN
+
+        budget = limit_tokens or 8192  # conservative fallback
+        target = int(budget * 0.75)  # leave 25% headroom for completion
+
+        if est <= target:
+            logger.info(
+                "agent_overflow_compressed",
+                strategy="truncate_tool_results",
+                est_tokens=est,
+                target=target,
+            )
+            return compressed
+
+        # --- Step 2: drop old middle messages ---
+        # Keep: system msgs + first user msg (task) + last N messages
+        system_msgs: list[Message] = []
+        first_user: Message | None = None
+        rest: list[Message] = []
+
+        for m in compressed:
+            if m.role == Role.SYSTEM:
+                system_msgs.append(m)
+            elif first_user is None and m.role == Role.USER:
+                first_user = m
+            else:
+                rest.append(m)
+
+        # Keep trimming from the front of `rest` until under budget
+        keep_recent = max(6, len(rest) // 2)
+        while keep_recent > 2:
+            candidate = system_msgs[:]
+            if first_user:
+                candidate.append(first_user)
+            candidate.extend(rest[-keep_recent:])
+
+            est = sum(
+                len(m.content) if isinstance(m.content, str) else 0
+                for m in candidate
+            ) // self._CHARS_PER_TOKEN
+
+            if est <= target:
+                logger.info(
+                    "agent_overflow_compressed",
+                    strategy="drop_old_messages",
+                    est_tokens=est,
+                    target=target,
+                    kept_recent=keep_recent,
+                    dropped=len(rest) - keep_recent,
+                )
+                return candidate
+            keep_recent -= 2
+
+        # Last resort: system + task only
+        final = system_msgs[:]
+        if first_user:
+            final.append(first_user)
+        logger.warning(
+            "agent_overflow_compressed_aggressive",
+            est_tokens=sum(
+                len(m.content) if isinstance(m.content, str) else 0
+                for m in final
+            ) // self._CHARS_PER_TOKEN,
+        )
+        return final
 
     async def _handle_tool_call(self, tool_call: ToolCall) -> ToolResult:
         """Handle a tool call with the same security pipeline as the main Engine."""

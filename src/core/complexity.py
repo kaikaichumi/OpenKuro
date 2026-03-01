@@ -139,6 +139,19 @@ _DOMAIN_KEYWORDS: dict[str, list[str]] = {
         "write", "story", "poem", "寫", "文章", "創作",
         "translate", "翻譯", "summarize", "摘要",
     ],
+    "finance": [
+        "股", "股票", "美股", "台股", "虛擬貨幣", "加密貨幣", "幣",
+        "crypto", "bitcoin", "btc", "eth", "投資", "市場",
+        "漲", "跌", "行情", "k線", "技術分析", "基本面",
+        "stock", "market", "trading", "portfolio", "hedge",
+        "etf", "fund", "bond", "forex", "期貨", "選擇權",
+        "財報", "殖利率", "本益比", "營收",
+    ],
+    "research": [
+        "新聞", "搜尋", "查詢", "news", "search", "research",
+        "找", "look up", "查一下", "幫我查", "最新", "最近",
+        "趨勢", "trend", "report", "報告", "update", "動態",
+    ],
 }
 
 # Step indicator patterns (regex)
@@ -162,6 +175,21 @@ _CONSTRAINT_WORDS = [
     "must", "should", "cannot", "必須", "不能", "限制",
     "requirement", "constraint", "at most", "at least",
     "不可以", "需要", "確保", "ensure", "required",
+]
+
+# External tool / information retrieval signals
+# Messages matching these likely require web search, API calls, or multi-step tool use
+_EXTERNAL_TOOL_SIGNALS: list[str] = [
+    # Chinese
+    "新聞", "搜尋", "查詢", "查一下", "幫我查", "幫我找",
+    "最新", "最近", "目前", "現在", "即時", "今天",
+    "行情", "走勢", "趨勢", "預測", "接下來",
+    "漲跌", "漲還是跌", "會漲", "會跌",
+    # English
+    "news", "latest", "current", "recent", "today",
+    "search for", "look up", "find out", "what's happening",
+    "price", "forecast", "predict", "trend",
+    "real-time", "live", "up-to-date",
 ]
 
 # Specificity markers (lower ambiguity)
@@ -381,14 +409,17 @@ class ComplexityEstimator:
         text_lower = text.lower()
         dims: list[ComplexityDimension] = []
 
-        # 1. Token length (proxy via char count / 4)
-        est_tokens = len(text) / 4
+        # 1. Token length (proxy via character count)
+        # CJK characters are ~1.5-2 tokens each; ASCII ~0.25 tokens/char
+        cjk_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff' or '\u3400' <= c <= '\u4dbf')
+        ascii_chars = len(text) - cjk_chars
+        est_tokens = cjk_chars * 1.5 + ascii_chars / 4
         length_score = min(est_tokens / 2000, 1.0)
         dims.append(ComplexityDimension(
             name="token_length",
             score=length_score,
             weight=weights.get("token_length", 0.10),
-            detail=f"~{int(est_tokens)} tokens",
+            detail=f"~{int(est_tokens)} tokens (cjk={cjk_chars})",
         ))
 
         # 2. Reasoning markers
@@ -476,6 +507,20 @@ class ComplexityEstimator:
             score=ambiguity_score,
             weight=weights.get("ambiguity", 0.05),
             detail=f"vague={vagueness}, specific={specificity}",
+        ))
+
+        # 9. External tool / information retrieval requirement
+        # Tasks needing web search, real-time data, or multi-step tool use
+        # are inherently more complex than pure Q&A.
+        tool_signals = sum(
+            1 for s in _EXTERNAL_TOOL_SIGNALS if s.lower() in text_lower
+        )
+        tool_need_score = min(tool_signals / 3, 1.0)
+        dims.append(ComplexityDimension(
+            name="external_tool_need",
+            score=tool_need_score,
+            weight=weights.get("external_tool_need", 0.15),
+            detail=f"{tool_signals} tool signals",
         ))
 
         return dims
