@@ -326,7 +326,7 @@ class TestBrowserTools:
         from src.tools.web.browse import WebNavigateTool
         tool = WebNavigateTool()
         assert tool.name == "web_navigate"
-        assert tool.risk_level == RiskLevel.MEDIUM
+        assert tool.risk_level == RiskLevel.LOW
 
     def test_get_text_tool_metadata(self):
         from src.tools.web.browse import WebGetTextTool

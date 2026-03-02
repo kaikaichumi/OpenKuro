@@ -11,24 +11,29 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 ## Features
 
 - **Multi-Agent System** - Delegate tasks to sub-agents with different models (local/cloud)
+- **Task Complexity Estimation** - ML-based complexity scoring with adaptive model routing; routes simple tasks to fast/cheap models, complex tasks to frontier models
 - **Task Scheduler + Proactive Notifications** - Cron-like scheduling with auto-push results to Discord/Telegram
 - **Multi-model support** - Anthropic Claude, OpenAI GPT, Google Gemini, Ollama local models via LiteLLM
 - **Workflow Engine** - Composable multi-step automation with YAML definitions, agent chaining, and template variables
+- **Context Overflow Auto-Compression** - Automatically compresses context when hitting token limits; truncates old tool results and drops stale messages
 - **Self-Update** - Update Kuro with a single command (`/update`), no reinstall or reconfiguration needed
 - **Customizable Personality** - Define Kuro's character via `~/.kuro/personality.md`
 - **Security Dashboard** - Real-time security visualization, posture scoring, integrity verification
 - **Usage Analytics** - Tool usage statistics, cost estimation, smart optimization suggestions
-- **30+ built-in tools** - Files, shell, screenshots, clipboard, calendar, browser automation, memory, time, scheduling, agent delegation, workflows, version check, self-update
+- **Experience Learning** - Learns from past interactions; extracts error patterns, tool usage optimizations, and model performance insights
+- **30+ built-in tools** - Files, shell, screenshots, clipboard, desktop control, calendar, browser automation, memory, time, scheduling, agent delegation, workflows, version check, self-update
 - **10+ Built-in Skills** - Translator, code reviewer, git helper, debug assistant, data analyst, and more
 - **Skills + Plugins** - On-demand SKILL.md instructions, external Python tool plugins, one-click install
 - **Messaging integration** - Telegram, Discord, Slack (Socket Mode), LINE (webhook), Email (IMAP IDLE + SMTP)
 - **Live Collaboration** - Multi-user shared AI sessions with role-based permissions, real-time presence, and majority-vote approval for sensitive tools
-- **Web GUI** - Dark-themed browser interface at `localhost:7860` with WebSocket streaming, collaboration page at `/collab`
+- **Web GUI** - Dark-themed browser interface at `localhost:7860` with WebSocket streaming, i18n support (English, Traditional Chinese), collaboration page at `/collab`
 - **CLI** - Rich terminal with markdown rendering, streaming, slash commands
 - **5-layer security** - Approval, sandbox, credentials, audit, sanitizer
-- **3-tier memory** - Working memory, conversation history (SQLite), long-term RAG (ChromaDB)
+- **3-tier memory** - Working memory, conversation history (SQLite), long-term RAG (ChromaDB) with lifecycle management (decay, consolidation, pruning)
+- **Memory Lifecycle** - Importance scoring, time-based decay, automatic consolidation and pruning to prevent infinite memory growth
 - **System prompt encryption** - Protect AI guidance from casual reading
 - **Zero-token action logging** - JSONL operation history without LLM cost
+- **Auto Date/Time Context** - Current date and time automatically injected into LLM context for temporal awareness
 
 ---
 
@@ -363,6 +368,52 @@ Main Agent:
 
 ---
 
+## Task Complexity Estimation
+
+Kuro uses a two-phase system to estimate task complexity and route to the best model:
+
+### Phase 1: Heuristic Scoring (Zero-cost)
+
+Analyzes 8 text dimensions including reasoning markers, code tokens, domain count, external tool needs, and CJK/multilingual support. Produces a score from 0.0 to 1.0.
+
+### Phase 2: ML Classifier (Optional)
+
+For ambiguous scores, a local ONNX model (fine-tuned DistilBERT, ~130MB) provides:
+
+| Output | Description |
+|---|---|
+| Score | 0.0–1.0 complexity regression |
+| Tier | trivial / simple / moderate / complex / expert |
+| Domains | code, math, data, system, creative, finance, research |
+| Intent | greeting, question, code_gen, analysis, debug, planning, creative, multi_step |
+
+### Adaptive Model Routing
+
+Based on complexity tier:
+
+- **Trivial/Simple** → fast/cheap model (e.g., Ollama local, Gemini Flash)
+- **Moderate** → default model
+- **Complex/Expert** → frontier model (e.g., Claude Opus, GPT-5)
+
+### Task Decomposition
+
+Overly complex tasks (expert tier) are automatically broken into sub-tasks and delegated to sub-agents for parallel execution.
+
+---
+
+## Experience Learning
+
+Kuro learns from past interactions by analyzing action logs:
+
+- **Error pattern recognition** — identifies recurring tool failures
+- **Tool usage optimization** — finds slow or redundant tool sequences
+- **Model performance tracking** — tracks which models work best for which tasks
+- **Lesson generation** — creates actionable "lessons learned" injected into future context
+
+Lessons are stored at `~/.kuro/memory/lessons.json` and automatically loaded into relevant conversations.
+
+---
+
 ## Configuration
 
 Config file: `~/.kuro/config.yaml` (created by `kuro --init`)
@@ -511,6 +562,25 @@ poetry run kuro --encrypt-prompt
 | Working Memory | In-memory | Current conversation context (sliding window) |
 | Conversation History | SQLite | Past conversations, searchable |
 | Long-term Memory | ChromaDB + MEMORY.md | Facts, preferences, RAG retrieval |
+
+### Memory Lifecycle
+
+Kuro automatically manages memory growth with:
+
+- **Importance scoring** — recency × frequency × source weight (user > system > compression)
+- **Time-based decay** — exponential decay on unused memories
+- **Consolidation** — merges similar memories to reduce redundancy
+- **Pruning** — removes memories that fall below importance threshold
+- **MEMORY.md auto-organization** — keeps the file manageable as it grows
+
+### Context Compression
+
+When a conversation approaches the model's token limit, Kuro automatically:
+
+1. Summarizes older messages to reduce token count
+2. Truncates large tool outputs
+3. Drops stale context while preserving key information
+4. Retries with the same model (avoids unnecessary fallback)
 
 ### MEMORY.md
 
@@ -738,16 +808,18 @@ PUT  /api/personality   # Update personality (JSON body: {"content": "..."})
 | `file_search` | LOW | Search/glob files |
 | **Shell** |||
 | `shell_execute` | HIGH | Execute shell commands |
-| **Screen** |||
+| **Screen & Desktop** |||
 | `screenshot` | LOW | Capture screen (mss + Pillow) |
 | `clipboard_read` | LOW | Read clipboard |
 | `clipboard_write` | MEDIUM | Write clipboard |
+| `desktop_control` | MEDIUM | Mouse/keyboard control via pyautogui |
+| `computer_use` | MEDIUM | Vision-based screen analysis |
 | **Calendar & Time** |||
 | `calendar_read` | LOW | Read local ICS calendar |
 | `calendar_write` | MEDIUM | Add calendar events |
 | `get_time` | LOW | Get current date, time, timezone |
 | **Web** |||
-| `web_navigate` | MEDIUM | Open URL in browser |
+| `web_navigate` | LOW | Open URL in browser |
 | `web_get_text` | LOW | Get page text content |
 | `web_click` | MEDIUM | Click page element |
 | `web_type` | MEDIUM | Type in input field |
@@ -757,7 +829,7 @@ PUT  /api/personality   # Update personality (JSON body: {"content": "..."})
 | `memory_search` | LOW | Search long-term memory |
 | `memory_store` | LOW | Store fact to memory |
 | **Agents** |||
-| `delegate_to_agent` | MEDIUM | Delegate task to sub-agent |
+| `delegate_to_agent` | LOW | Delegate task to sub-agent (sub-agent tools have their own risk) |
 | `list_agents` | LOW | List available agents |
 | **Scheduling** |||
 | `schedule_add` | MEDIUM | Add a scheduled task |
@@ -768,6 +840,8 @@ PUT  /api/personality   # Update personality (JSON body: {"content": "..."})
 | `workflow_run` | MEDIUM | Run a registered workflow |
 | `workflow_list` | LOW | List workflows and recent runs |
 | `workflow_delete` | MEDIUM | Delete a workflow |
+| **Session** |||
+| `session_clear` | LOW | Clear conversation history |
 | **System** |||
 | `get_version` | LOW | Show current Kuro version |
 | `check_update` | LOW | Check if updates are available |
@@ -868,6 +942,11 @@ src/
     tool_system.py            # Plugin auto-discovery
     action_log.py             # JSONL operation logger
     analytics.py              # Usage analytics + cost estimator + smart advisor
+    complexity.py             # Task complexity estimation (heuristic + ML)
+    complexity_ml.py          # ONNX ML classifier for complexity scoring
+    learning.py               # Experience learning engine (error patterns, lessons)
+    code_feedback.py          # Code quality feedback system
+    collaboration.py          # Multi-user shared AI sessions
     types.py                  # Message, Session, ToolCall, AgentDefinition
     agents.py                 # AgentRunner, AgentManager (multi-agent)
     skills.py                 # SkillsManager (with install/search)
@@ -878,20 +957,22 @@ src/
     security/
       approval.py             # Risk-based approval policy
       sandbox.py              # Execution sandbox
-      credentials.py          # OS keychain
-      audit.py                # HMAC audit log
-      sanitizer.py            # Input sanitization
-      prompt_protector.py     # System prompt encryption
+      credentials.py          # OS keychain (keyring)
+      audit.py                # HMAC-verified audit log (SQLite)
+      sanitizer.py            # Input/output sanitization + injection detection
+      prompt_protector.py     # System prompt encryption (AES-128-CBC)
     memory/
-      manager.py              # Context builder
+      manager.py              # Context builder + auto date/time injection
       working.py              # Sliding window
       history.py              # SQLite persistence
       longterm.py             # ChromaDB + MEMORY.md
+      compressor.py           # Auto-summarization on context overflow
+      lifecycle.py            # Memory decay, consolidation, pruning
   tools/
     base.py                   # BaseTool ABC + RiskLevel
     filesystem/               # file_read, file_write, file_search
     shell/                    # shell_execute
-    screen/                   # screenshot, clipboard
+    screen/                   # screenshot, clipboard, desktop_control, computer_use
     calendar/                 # calendar_read, calendar_write, get_time
     web/                      # browser automation (Playwright)
     memory_tools/             # memory_search, memory_store
@@ -904,18 +985,35 @@ src/
     manager.py                # Adapter lifecycle
     telegram_adapter.py       # Telegram (full)
     discord_adapter.py        # Discord (full)
-    line_adapter.py           # LINE (stub)
+    line_adapter.py           # LINE (webhook)
+    slack_adapter.py          # Slack (Socket Mode)
+    email_adapter.py          # Email (IMAP IDLE + SMTP)
   ui/
     cli.py                    # Rich terminal interface
     web_server.py             # FastAPI + WebSocket
-    web/                      # Static HTML/CSS/JS
-tests/
+    web/                      # Static HTML/CSS/JS (modular architecture)
+      index.html              # Main chat interface
+      config.html             # Settings/configuration
+      analytics.html          # Usage statistics
+      collab.html             # Multi-user collaboration
+      security.html           # Security dashboard
+      scheduler.html          # Task scheduling UI
+      css/                    # Modular CSS (variables, base, components, layout)
+      js/                     # Modular JS (chat, config, analytics, scheduler, i18n, ...)
+      locales/                # i18n translations (en.json, zh-TW.json)
+models/
+  complexity_model_int8.onnx  # ONNX INT8 quantized complexity classifier
+  complexity_tokenizer/       # DistilBERT tokenizer files
+tests/                        # 17 test files, 451 test cases
   test_phase4.py              # Computer control tests
   test_phase5.py              # Messaging adapter tests
   test_phase7.py              # Encryption + tool restriction tests
   test_discord.py             # Discord adapter tests
-  test_skills.py              # Skills + Plugins tests (45)
-  test_agents.py              # Multi-agent tests (35)
+  test_skills.py              # Skills + Plugins tests
+  test_agents.py              # Multi-agent tests
+  test_collaboration.py       # Multi-user session tests
+  test_workflow.py            # Workflow engine tests
+  ...
 ```
 
 ### Adding a New Tool
@@ -934,7 +1032,7 @@ tests/
 ### Running Tests
 
 ```bash
-# All tests (367 total)
+# All tests (451 total)
 poetry run pytest tests/ -v
 
 # Specific test file
