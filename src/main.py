@@ -485,7 +485,7 @@ async def async_adapter_main(
     """Async entry point for adapter mode.
 
     Starts the specified adapters and the Web GUI dashboard concurrently.
-    The web server always runs so the dashboard (security, analytics, collab)
+    The web server always runs so the dashboard (security, analytics)
     is accessible regardless of which adapter is active.
     """
     from src.adapters.manager import AdapterManager

@@ -62,6 +62,63 @@ def _parse_overflow_tokens(error_str: str) -> tuple[int | None, int | None]:
     return req_val, lim_val
 
 
+# ---------------------------------------------------------------------------
+# Vision capability detection
+# ---------------------------------------------------------------------------
+
+# Known vision-capable model families
+_VISION_CAPABLE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"claude-(sonnet|opus|haiku)", re.I),
+    re.compile(r"gpt-4o", re.I),
+    re.compile(r"gpt-5", re.I),
+    re.compile(r"gemini", re.I),
+    re.compile(r"llava", re.I),
+    re.compile(r"minicpm-v", re.I),
+    re.compile(r"qwen.*vl", re.I),
+    re.compile(r"internvl", re.I),
+    re.compile(r"cogvlm", re.I),
+    re.compile(r"phi-3.*vision", re.I),
+]
+
+# Known text-only model families (higher priority than vision patterns)
+_TEXT_ONLY_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"glm-4(?!v)", re.I),
+    re.compile(r"qwen3(?!.*vl)", re.I),
+    re.compile(r"deepseek", re.I),
+    re.compile(r"mistral(?!.*pixtral)", re.I),
+    re.compile(r"llama3\.\d", re.I),
+    re.compile(r"codestral", re.I),
+    re.compile(r"phi-3(?!.*vision)", re.I),
+    re.compile(r"command-r", re.I),
+    re.compile(r"mixtral", re.I),
+]
+
+# Patterns matching errors when a model does not support image input
+_VISION_ERROR_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"image\s+input\s+(is\s+)?not\s+supported", re.I),
+    re.compile(r"does\s+not\s+support\s+(image|vision|multimodal)", re.I),
+    re.compile(r"cannot\s+process\s+image", re.I),
+    re.compile(r"invalid.*content.*type.*image", re.I),
+    re.compile(r"provide\s+the\s+mmproj", re.I),
+]
+
+
+def _is_vision_error(error_str: str) -> bool:
+    """Return True if the error indicates the model cannot handle images."""
+    return any(p.search(error_str) for p in _VISION_ERROR_PATTERNS)
+
+
+class VisionNotSupportedError(Exception):
+    """Raised when a model cannot handle image/vision inputs.
+
+    The engine should catch this, convert images to OCR text, and retry.
+    """
+
+    def __init__(self, message: str, model: str | None = None) -> None:
+        super().__init__(message)
+        self.model = model
+
+
 class ContextOverflowError(Exception):
     """Raised when the request exceeds the model's context window.
 
@@ -86,6 +143,7 @@ class ModelRouter:
 
     def __init__(self, config: KuroConfig) -> None:
         self.config = config
+        self._text_only_cache: set[str] = set()  # runtime cache from vision errors
         self._setup_provider_keys()
 
     def _setup_provider_keys(self) -> None:
@@ -109,6 +167,40 @@ class ModelRouter:
     @property
     def default_model(self) -> str:
         return self.config.models.default
+
+    def supports_vision(self, model: str | None = None) -> bool:
+        """Check whether a model supports image/vision inputs.
+
+        Uses (in priority order):
+        1. Runtime cache (models that failed with vision errors)
+        2. Explicit config overrides (vision.vision_models / text_only_models)
+        3. Static pattern matching on known model families
+        4. Default: False (safe — assumes text-only)
+        """
+        target = model or self.default_model
+
+        # 1. Runtime cache: we already know this model is text-only
+        if target in self._text_only_cache:
+            return False
+
+        # 2. Config overrides
+        vision_cfg = getattr(self.config, "vision", None)
+        if vision_cfg:
+            if target in vision_cfg.vision_models:
+                return True
+            if target in vision_cfg.text_only_models:
+                return False
+
+        # 3. Pattern matching (text-only has higher priority)
+        for pattern in _TEXT_ONLY_PATTERNS:
+            if pattern.search(target):
+                return False
+        for pattern in _VISION_CAPABLE_PATTERNS:
+            if pattern.search(target):
+                return True
+
+        # 4. Default: assume text-only (safe fallback)
+        return False
 
     async def complete(
         self,
@@ -179,6 +271,19 @@ class ModelRouter:
                         token_count=req_tokens,
                         limit=lim_tokens,
                         model=model_name,
+                    ) from e
+
+                # Vision error: no point trying other models in the chain
+                # — they will likely fail the same way.
+                if _is_vision_error(error_str):
+                    self._text_only_cache.add(model_name)
+                    logger.warning(
+                        "vision_not_supported",
+                        model=model_name,
+                        error=error_str,
+                    )
+                    raise VisionNotSupportedError(
+                        error_str, model=model_name
                     ) from e
 
                 last_error = e

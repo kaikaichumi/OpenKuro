@@ -27,6 +27,32 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
+# Minimum response length after tool use to trigger result reporting enforcement
+_MIN_REPORT_LENGTH = 5
+
+# Known vague placeholder responses
+_VAGUE_RESPONSES = {
+    "done", "ok", "okay", "got it", "sure", "completed", "finished",
+    "完成", "好的", "已完成", "好了", "做完了", "搞定", "可以了", "了解",
+    "done!", "ok!", "okay!", "完成！", "好的！", "已完成！", "好了！",
+}
+
+
+def _is_vague_response(content: str) -> bool:
+    """Check if a response is too vague to serve as a proper result report."""
+    stripped = content.strip()
+    if not stripped:
+        return True
+    if len(stripped) < _MIN_REPORT_LENGTH:
+        normalized = stripped.lower().rstrip("!！。.~～?？")
+        if normalized in _VAGUE_RESPONSES:
+            return True
+        for vague in _VAGUE_RESPONSES:
+            if normalized.endswith(vague):
+                return True
+    return False
+
+
 
 class AgentRunner:
     """Runs a single sub-agent task.
@@ -160,6 +186,16 @@ class AgentRunner:
                     output = result.output if result.success else (result.error or "Error")
                     output = self.sanitizer.sanitize_tool_output(output)
 
+                    # Vision fallback for sub-agents: convert images to text
+                    if result.image_path:
+                        try:
+                            from src.tools.screen.analyze_image import run_image_analysis
+
+                            analysis = run_image_analysis(result.image_path)
+                            output = f"{output}\n\n{analysis}"
+                        except Exception:
+                            output = f"{output}\n\n[Image at: {result.image_path}]"
+
                     tool_msg = Message(
                         role=Role.TOOL,
                         content=output,
@@ -170,6 +206,39 @@ class AgentRunner:
                     self.session.add_message(tool_msg)
             else:
                 content = response.content or ""
+
+                # Enforce result reporting for sub-agents too:
+                # if tools were used but the final response is vague, retry once.
+                if _round_num > 0 and _is_vague_response(content):
+                    logger.info(
+                        "agent_enforcing_result_report",
+                        agent=self.definition.name,
+                        vague_content=content[:60],
+                    )
+                    messages.append(Message(role=Role.ASSISTANT, content=content))
+                    messages.append(
+                        Message(
+                            role=Role.SYSTEM,
+                            content=(
+                                "[Result Reporting Required] Your response was too brief. "
+                                "Report the specific results of the tools you used. "
+                                "Include concrete outcomes and data."
+                            ),
+                        )
+                    )
+                    try:
+                        retry_msgs = [m.to_litellm() for m in messages]
+                        retry_resp = await self.model.complete(
+                            messages=retry_msgs,
+                            model=self.definition.model,
+                            tools=None,
+                        )
+                        retry_content = retry_resp.content or ""
+                        if len(retry_content.strip()) > len(content.strip()):
+                            content = retry_content
+                    except Exception:
+                        pass  # Keep original content
+
                 self._completed = True
                 self._result = content
                 return content

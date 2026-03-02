@@ -18,7 +18,11 @@ import structlog
 from src.config import KuroConfig
 from src.core.action_log import ActionLogger
 from src.core.memory.manager import MemoryManager
-from src.core.model_router import ContextOverflowError, ModelRouter
+from src.core.model_router import (
+    ContextOverflowError,
+    ModelRouter,
+    VisionNotSupportedError,
+)
 from src.core.security.approval import ApprovalPolicy
 from src.core.security.audit import AuditLog
 from src.core.security.sandbox import Sandbox
@@ -34,6 +38,16 @@ logger = structlog.get_logger()
 
 # Default maximum number of tool call rounds (overridable via config.max_tool_rounds)
 _DEFAULT_MAX_TOOL_ROUNDS = 10
+
+# Result reporting enforcement: minimum response length after tool use
+_MIN_REPORT_LENGTH = 5  # characters — responses shorter than this trigger a retry
+
+# Vague response patterns (stripped of trailing punctuation)
+_VAGUE_RESPONSES = {
+    "done", "ok", "okay", "got it", "sure", "completed", "finished",
+    "完成", "好的", "已完成", "好了", "做完了", "搞定", "可以了", "了解",
+    "done!", "ok!", "okay!", "完成！", "好的！", "已完成！", "好了！",
+}
 
 # Maximum image size for vision (resize if larger to save tokens)
 _MAX_SCREENSHOT_DIMENSION = 1280
@@ -138,7 +152,7 @@ class Engine:
         # Task complexity estimator (set externally after construction)
         self.complexity_estimator: ComplexityEstimator | None = None
 
-        # Per-session locks for collaborative sessions (and general concurrency safety)
+        # Per-session locks for concurrency safety
         self._session_locks: dict[str, asyncio.Lock] = {}
 
     def _get_session_lock(self, session_id: str) -> asyncio.Lock:
@@ -232,8 +246,129 @@ class Engine:
         return Message(role=Role.SYSTEM, content="\n".join(lines))
 
     # ------------------------------------------------------------------
+    # Result reporting enforcement
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_vague_response(content: str) -> bool:
+        """Check if a response is too vague to serve as a proper result report.
+
+        Returns True when the response is very short or matches known
+        placeholder patterns like "Done!", "OK", "完成", etc.
+        """
+        stripped = content.strip()
+        if not stripped:
+            return True
+        if len(stripped) < _MIN_REPORT_LENGTH:
+            # Normalize for comparison: lowercase, strip punctuation
+            normalized = stripped.lower().rstrip("!！。.~～?？")
+            if normalized in _VAGUE_RESPONSES:
+                return True
+            # Also catch short responses that are just a greeting + vague word
+            # e.g., "好的，完成了"
+            for vague in _VAGUE_RESPONSES:
+                if normalized.endswith(vague):
+                    return True
+        return False
+
+    # ------------------------------------------------------------------
     # Emergency context compression (triggered by ContextOverflowError)
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Vision fallback helpers
+    # ------------------------------------------------------------------
+
+    def _build_image_content(
+        self,
+        text_output: str,
+        image_path: str,
+        model: str | None,
+    ) -> str | list[dict[str, Any]]:
+        """Build content for a tool result that includes an image.
+
+        Respects ``config.vision.image_analysis_mode``:
+          - auto:     vision model → raw image; text-only → OCR/SVG analysis
+          - always:   vision model → raw image + analysis; text-only → analysis
+          - disabled: vision model → raw image; text-only → text only (skip image)
+        """
+        vision_cfg = self.config.vision
+        mode = vision_cfg.image_analysis_mode  # auto | always | disabled
+        has_vision = self.model.supports_vision(model)
+
+        if mode == "disabled":
+            if has_vision:
+                return self._multimodal_content(text_output, image_path)
+            return text_output  # skip image entirely
+
+        if mode == "always":
+            analysis = self._run_image_analysis(image_path)
+            combined_text = f"{text_output}\n\n{analysis}"
+            if has_vision:
+                return self._multimodal_content(combined_text, image_path)
+            return combined_text
+
+        # mode == "auto" (default)
+        if has_vision:
+            return self._multimodal_content(text_output, image_path)
+
+        # Text-only model: auto-convert via OCR/SVG
+        analysis = self._run_image_analysis(image_path)
+        logger.info(
+            "vision_fallback_ocr",
+            image_path=image_path,
+            analysis_length=len(analysis),
+        )
+        return f"{text_output}\n\n{analysis}"
+
+    @staticmethod
+    def _multimodal_content(text: str, image_path: str) -> str | list[dict[str, Any]]:
+        """Create multimodal content with text + base64 image."""
+        data_uri = _encode_image_base64(image_path)
+        if data_uri:
+            return [
+                {"type": "text", "text": text},
+                {"type": "image_url", "image_url": {"url": data_uri}},
+            ]
+        return text  # encoding failed, fall back to text only
+
+    def _run_image_analysis(self, image_path: str) -> str:
+        """Run OCR + OpenCV analysis on an image, returning text description."""
+        from src.tools.screen.analyze_image import run_image_analysis
+
+        vision_cfg = self.config.vision
+        return run_image_analysis(
+            image_path,
+            fallback_format=vision_cfg.fallback_format,
+            detail_level=vision_cfg.fallback_detail_level,
+            grid_size=vision_cfg.grid_size,
+            max_elements=vision_cfg.max_elements,
+        )
+
+    def _convert_images_to_text(self, messages: list[Message]) -> list[Message]:
+        """Strip image content from multimodal messages (for vision error retry)."""
+        converted = []
+        for m in messages:
+            if isinstance(m.content, list):
+                text_parts = []
+                for part in m.content:
+                    if isinstance(part, dict):
+                        if part.get("type") == "text":
+                            text_parts.append(part["text"])
+                        elif part.get("type") == "image_url":
+                            text_parts.append(
+                                "[Image removed — model does not support vision]"
+                            )
+                converted.append(Message(
+                    role=m.role,
+                    content="\n".join(text_parts),
+                    name=m.name,
+                    tool_call_id=m.tool_call_id,
+                    tool_calls=m.tool_calls,
+                ))
+            else:
+                converted.append(m)
+        return converted
 
     async def _emergency_compress(
         self,
@@ -349,17 +484,15 @@ class Engine:
         user_text: str,
         session: Session,
         model: str | None = None,
-        author_user_id: str | None = None,
     ) -> str:
         """Process a user message and return the assistant's response.
 
         This is the main entry point for the agent loop.
-        Uses per-session locking to safely handle concurrent messages
-        (important for collaborative sessions with multiple users).
+        Uses per-session locking to safely handle concurrent messages.
         """
         async with self._get_session_lock(session.id):
             return await self._process_message_locked(
-                user_text, session, model, author_user_id
+                user_text, session, model
             )
 
     async def _process_message_locked(
@@ -367,7 +500,6 @@ class Engine:
         user_text: str,
         session: Session,
         model: str | None = None,
-        author_user_id: str | None = None,
     ) -> str:
         """Internal message processing (called with session lock held)."""
         # Sanitize user input
@@ -393,7 +525,7 @@ class Engine:
                 # If decomposition needed, delegate to sub-tasks
                 if complexity.needs_decomposition and self.agent_manager:
                     # Add user message first so session has it
-                    user_msg = Message(role=Role.USER, content=user_text, author_user_id=author_user_id)
+                    user_msg = Message(role=Role.USER, content=user_text)
                     session.add_message(user_msg)
                     await self.action_log.log_conversation(session.id, "user", user_text)
                     return await self._handle_complex_decomposition(
@@ -406,8 +538,8 @@ class Engine:
             except Exception as e:
                 logger.debug("complexity_estimation_skipped", error=str(e))
 
-        # Add user message (track author for collaborative sessions)
-        user_msg = Message(role=Role.USER, content=user_text, author_user_id=author_user_id)
+        # Add user message
+        user_msg = Message(role=Role.USER, content=user_text)
         session.add_message(user_msg)
 
         # Log conversation if in full mode
@@ -471,6 +603,21 @@ class Engine:
                     model=model,
                     tools=tools,
                 )
+            except VisionNotSupportedError as exc:
+                # Model can't handle images — strip images and retry
+                logger.info(
+                    "engine_vision_fallback",
+                    model=exc.model,
+                )
+                context_messages = self._convert_images_to_text(
+                    context_messages
+                )
+                messages = [m.to_litellm() for m in context_messages]
+                response = await self.model.complete(
+                    messages=messages,
+                    model=model,
+                    tools=tools,
+                )
 
             # Log token usage
             if response.usage:
@@ -514,12 +661,9 @@ class Engine:
                     # Build tool result message (multimodal if screenshot)
                     content_value: str | list[dict[str, Any]] = output
                     if result.image_path:
-                        data_uri = _encode_image_base64(result.image_path)
-                        if data_uri:
-                            content_value = [
-                                {"type": "text", "text": output},
-                                {"type": "image_url", "image_url": {"url": data_uri}},
-                            ]
+                        content_value = self._build_image_content(
+                            output, result.image_path, model
+                        )
 
                     tool_msg = Message(
                         role=Role.TOOL,
@@ -561,6 +705,42 @@ class Engine:
             else:
                 # No tool calls - we have the final response
                 content = response.content or ""
+
+                # Enforce result reporting: if tools were used but response
+                # is too brief or vague, inject a reminder and retry ONCE.
+                if round_num > 0 and self._is_vague_response(content):
+                    logger.info(
+                        "enforcing_result_report",
+                        session_id=session.id[:8],
+                        vague_content=content[:60],
+                        round_num=round_num,
+                    )
+                    # Add the vague response so the LLM sees it tried to be lazy
+                    context_messages.append(
+                        Message(role=Role.ASSISTANT, content=content)
+                    )
+                    context_messages.append(
+                        Message(
+                            role=Role.SYSTEM,
+                            content=(
+                                "[Result Reporting Required] Your response was too brief. "
+                                "You MUST report the specific results of the tools you used. "
+                                "Include: what was done, what data was returned, and the "
+                                "concrete outcome. Re-answer now with full details."
+                            ),
+                        )
+                    )
+                    try:
+                        retry_messages = [m.to_litellm() for m in context_messages]
+                        retry_resp = await self.model.complete(
+                            messages=retry_messages, model=model, tools=None,
+                        )
+                        retry_content = retry_resp.content or ""
+                        if len(retry_content.strip()) > len(content.strip()):
+                            content = retry_content
+                    except Exception as retry_err:
+                        logger.debug("result_report_retry_failed", error=str(retry_err))
+                        # Keep original content if retry fails
 
                 # Warn if LLM mentions permissions without calling any tools
                 if round_num == 0 and any(

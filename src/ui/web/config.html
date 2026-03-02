@@ -156,6 +156,56 @@
             </div>
         </div>
 
+        <!-- Vision / Image Analysis -->
+        <div class="section">
+            <h2><span data-i18n="config.visionAnalysis">Vision / Image Analysis</span> <span class="badge" id="badge-vision">ON</span></h2>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.analysisMode">Analysis Mode</span><small data-i18n="config.analysisModeDesc">When to run OCR/CV image analysis for text-only models</small></div>
+                <div class="field-input">
+                    <select id="vi-mode">
+                        <option value="auto" data-i18n="config.viModeAuto">Auto (when model can't handle images)</option>
+                        <option value="always" data-i18n="config.viModeAlways">Always (attach analysis to all images)</option>
+                        <option value="disabled" data-i18n="config.viModeDisabled">Disabled (skip images for text-only)</option>
+                    </select>
+                </div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.fallbackFormat">Fallback Format</span><small data-i18n="config.fallbackFormatDesc">Output format for image analysis</small></div>
+                <div class="field-input">
+                    <select id="vi-format">
+                        <option value="text" data-i18n="config.viFormatText">Structured Text</option>
+                        <option value="svg" data-i18n="config.viFormatSvg">Simplified SVG</option>
+                    </select>
+                </div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.detailLevel">Detail Level</span><small data-i18n="config.detailLevelDesc">How much detail to include in analysis</small></div>
+                <div class="field-input">
+                    <select id="vi-detail">
+                        <option value="brief" data-i18n="config.viDetailBrief">Brief</option>
+                        <option value="standard" data-i18n="config.viDetailStandard">Standard</option>
+                        <option value="detailed" data-i18n="config.viDetailDetailed">Detailed</option>
+                    </select>
+                </div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.gridSize">Grid Size</span><small data-i18n="config.gridSizeDesc">Spatial grid size for coordinate mapping (2-8)</small></div>
+                <div class="field-input"><input type="number" id="vi-grid" min="2" max="8"></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.maxElements">Max Elements</span><small data-i18n="config.maxElementsDesc">Maximum UI elements to include in analysis</small></div>
+                <div class="field-input"><input type="number" id="vi-max-elements" min="10" max="200"></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.visionModels">Vision Models Override</span><small data-i18n="config.visionModelsDesc">Comma-separated list of models to force as vision-capable</small></div>
+                <div class="field-input"><input type="text" id="vi-vision-models" placeholder="e.g. ollama/llava:latest"></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.textOnlyModels">Text-Only Models Override</span><small data-i18n="config.textOnlyModelsDesc">Comma-separated list of models to force as text-only</small></div>
+                <div class="field-input"><input type="text" id="vi-text-only-models" placeholder="e.g. ollama/qwen3-coder"></div>
+            </div>
+        </div>
+
         <!-- Task Complexity -->
         <div class="section">
             <h2><span data-i18n="config.taskComplexity">Task Complexity</span> <span class="badge" id="badge-complexity">ON</span></h2>

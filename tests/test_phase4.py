@@ -482,12 +482,13 @@ class TestToolDiscovery:
         #          web_navigate, web_get_text, web_click, web_type,
         #          web_screenshot, web_close = 12
         # Phase 8 (agents): delegate_to_agent, list_agents = 2
-        # Screen: screen_info, computer_use, keyboard_action, mouse_action = 4
+        # Screen: screen_info, computer_use, keyboard_action, mouse_action,
+        #         analyze_image = 5
         # Session: session_clear = 1
         # System: check_update, perform_update, get_version = 3
         # Analytics: dashboard_summary, token_usage_report, security_report = 3
-        # Grand total: 31
-        assert len(ts.registry.get_names()) == 31
+        # Grand total: 32
+        assert len(ts.registry.get_names()) == 32
 
     def test_openai_tool_format(self):
         """All tools should produce valid OpenAI-compatible schemas."""
@@ -496,7 +497,7 @@ class TestToolDiscovery:
         ts.discover_tools()
 
         schemas = ts.registry.get_openai_tools()
-        assert len(schemas) == 31
+        assert len(schemas) == 32
 
         for schema in schemas:
             assert schema["type"] == "function"

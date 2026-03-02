@@ -38,6 +38,8 @@ line-bot-sdk = "^3.14"
 aiohttp = "^3.9"
 aiosmtplib = "^3.0"
 aioimaplib = "^2.0"
+rapidocr-onnxruntime = "^1.4"
+opencv-python-headless = "^4.8"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

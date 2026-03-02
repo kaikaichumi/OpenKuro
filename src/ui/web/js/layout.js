@@ -12,7 +12,6 @@ const NAV_LINKS = [
     { href: "/scheduler", key: "nav.scheduler", label: "Scheduler" },
     { href: "/security", key: "nav.security", label: "Security" },
     { href: "/analytics", key: "nav.analytics", label: "Analytics" },
-    { href: "/collab", key: "nav.collab", label: "Collaboration" },
     { href: "/config", key: "nav.settings", label: "Settings" },
 ];
 

@@ -1,0 +1,48 @@
+# Kuro - Personal AI Assistant
+# Core dependencies
+
+litellm>=1.81.8
+rich>=14.3.2
+prompt-toolkit>=3.0.52
+pydantic>=2.12.5
+pydantic-settings>=2.12.0
+pyyaml>=6.0.3
+aiosqlite>=0.22.1
+aiofiles>=25.1.0
+structlog>=25.5.0
+keyring>=25.7.0
+python-dotenv>=1.2.1
+chromadb>=1.4.1
+
+# Screen capture & automation
+mss>=10.1.0
+pillow>=12.1.0
+pyautogui>=0.9.54
+
+# Vision / Image analysis (OCR + UI detection for text-only LLMs)
+rapidocr-onnxruntime>=1.4
+opencv-python-headless>=4.8
+
+# Web browser automation
+playwright>=1.58.0
+
+# Calendar
+icalendar>=6.3.2
+
+# Messaging adapters
+python-telegram-bot[ext]>=22.6
+discord.py>=2.4
+slack-bolt>=1.22
+line-bot-sdk>=3.14
+
+# Web server
+fastapi>=0.128.5
+uvicorn[standard]>=0.40.0
+
+# Networking & email
+aiohttp>=3.9
+aiosmtplib>=3.0
+aioimaplib>=2.0
+
+# Security
+cryptography>=42.0

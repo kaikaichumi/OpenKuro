@@ -334,6 +334,39 @@ class CodeFeedbackConfig(BaseModel):
     file_patterns: list[str] = Field(default_factory=lambda: ["*.py"])
 
 
+class VisionConfig(BaseModel):
+    """Vision and image analysis configuration.
+
+    Controls how Kuro handles image/screenshot content when the LLM model
+    does not support vision (multimodal) inputs.
+
+    Modes:
+      - "auto"     : (default) Only activate OCR/SVG conversion when the model
+                      cannot handle images. Vision models receive raw images.
+      - "always"   : Always run OCR/SVG analysis. Vision models get both the
+                      raw image AND the text analysis. Text-only models get
+                      the text analysis only.
+      - "disabled" : Never convert images. Vision models receive raw images;
+                      text-only models simply skip image content.
+    """
+
+    image_analysis_mode: str = "auto"  # auto | always | disabled
+
+    # Output format for the image analysis
+    fallback_format: str = "text"  # text | svg
+    # Detail level for text output
+    fallback_detail_level: str = "standard"  # brief | standard | detailed
+
+    # Spatial grid size (NxN) for layout description
+    grid_size: int = 4
+    # Maximum UI elements to include in output (keeps token cost manageable)
+    max_elements: int = 50
+
+    # Explicit model capability overrides (model names like "ollama/qwen3:32b")
+    vision_models: list[str] = Field(default_factory=list)
+    text_only_models: list[str] = Field(default_factory=list)
+
+
 class TaskComplexityConfig(BaseModel):
     """Task complexity estimation and adaptive model routing.
 
@@ -417,6 +450,7 @@ class KuroConfig(BaseModel):
     memory_lifecycle: MemoryLifecycleConfig = Field(default_factory=MemoryLifecycleConfig)
     learning: LearningConfig = Field(default_factory=LearningConfig)
     code_feedback: CodeFeedbackConfig = Field(default_factory=CodeFeedbackConfig)
+    vision: VisionConfig = Field(default_factory=VisionConfig)
     task_complexity: TaskComplexityConfig = Field(default_factory=TaskComplexityConfig)
 
     # Core prompt: encrypted, always present as the first SYSTEM message.
@@ -434,10 +468,18 @@ class KuroConfig(BaseModel):
         "you are about to do before using a tool. Respond in the user's language.\n\n"
         "## Tool Usage Rules\n"
         "- Call each tool ONCE per step and wait for its result before deciding the next action.\n"
-        "- After receiving a tool result, summarize the outcome to the user in natural language.\n"
         "- NEVER call the same tool with the same arguments more than once.\n"
         "- If a tool returns an error, explain the error to the user instead of retrying blindly.\n"
         "- When you have all the information needed, respond directly WITHOUT calling more tools.\n\n"
+        "## Result Reporting — MANDATORY\n"
+        "- After EVERY task completion, you MUST report the concrete results to the user.\n"
+        "- NEVER respond with just 'Done', 'OK', 'Completed', or similar vague confirmations.\n"
+        "- Always include WHAT was done and WHAT the outcome was (e.g., specific data, "
+        "file paths, command output, analysis results).\n"
+        "- When relaying a sub-agent's result, include the agent's actual findings — "
+        "do NOT just say 'the agent completed the task'.\n"
+        "- If a tool returned data, summarize the key information in your response.\n"
+        "- If multiple tools were called, summarize ALL results, not just the last one.\n\n"
         "## Permission & Approval — IMPORTANT\n"
         "- NEVER refuse to call a tool based on perceived permission issues.\n"
         "- ALWAYS call the tool directly. The approval system will automatically prompt the user if needed.\n"

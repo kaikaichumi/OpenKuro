@@ -25,8 +25,7 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 - **10+ Built-in Skills** - Translator, code reviewer, git helper, debug assistant, data analyst, and more
 - **Skills + Plugins** - On-demand SKILL.md instructions, external Python tool plugins, one-click install
 - **Messaging integration** - Telegram, Discord, Slack (Socket Mode), LINE (webhook), Email (IMAP IDLE + SMTP)
-- **Live Collaboration** - Multi-user shared AI sessions with role-based permissions, real-time presence, and majority-vote approval for sensitive tools
-- **Web GUI** - Dark-themed browser interface at `localhost:7860` with WebSocket streaming, i18n support (English, Traditional Chinese), collaboration page at `/collab`
+- **Web GUI** - Dark-themed browser interface at `localhost:7860` with WebSocket streaming, i18n support (English, Traditional Chinese)
 - **CLI** - Rich terminal with markdown rendering, streaming, slash commands
 - **5-layer security** - Approval, sandbox, credentials, audit, sanitizer
 - **3-tier memory** - Working memory, conversation history (SQLite), long-term RAG (ChromaDB) with lifecycle management (decay, consolidation, pruning)
@@ -616,54 +615,6 @@ Notifications include both **success results** and **error alerts** if a task fa
 
 ---
 
-## Live Collaboration
-
-Kuro supports real-time multi-user AI sessions where multiple people share the same conversation and AI context.
-
-### Features
-
-- **Shared context** — all participants see the same conversation history and AI responses
-- **Role-based permissions** — READ, WRITE, EXECUTE_TOOLS, APPROVE_ACTIONS per participant
-- **Real-time presence** — online/offline status, typing indicators
-- **Majority-vote approval** — for high-risk tools, all approvers must vote (>50% required)
-- **Concurrency safety** — per-session asyncio lock prevents simultaneous message race conditions
-- **Author attribution** — each message shows who sent it
-
-### Quick Start
-
-1. Open `http://localhost:7860/collab` in your browser
-2. Click **Create Session** and set your display name + session name
-3. Share the **invite code** with teammates
-4. Others open the same URL, click **Join Session**, and enter the invite code
-
-### WebSocket Protocol
-
-```
-Client → Server: {"user_id": "alice"}        // Auth (first message)
-Server → Client: {"type": "collab_joined", "participants": [...]}
-
-Client → Server: {"type": "message", "text": "What is..."}
-Server → All:    {"type": "collab_response", "response": "...", "author_name": "alice"}
-
-Client → Server: {"type": "typing", "is_typing": true}
-Server → Others: {"type": "collab_typing", "user_id": "...", "is_typing": true}
-
-Client → Server: {"type": "vote", "approval_id": "...", "approve": true}
-Server → All:    {"type": "collab_vote_update", "status": "pending", "approve": 1, ...}
-```
-
-### REST API
-
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/collab/create` | POST | Create session (returns session_id + invite_code) |
-| `/api/collab/join` | POST | Join via invite_code |
-| `/api/collab/sessions?user_id=` | GET | List user's sessions |
-| `/api/collab/{session_id}` | GET | Session details |
-| `/ws/collab/{session_id}` | WS | Real-time WebSocket |
-
----
-
 ## Messaging Adapters
 
 ### Supported Platforms
@@ -946,7 +897,6 @@ src/
     complexity_ml.py          # ONNX ML classifier for complexity scoring
     learning.py               # Experience learning engine (error patterns, lessons)
     code_feedback.py          # Code quality feedback system
-    collaboration.py          # Multi-user shared AI sessions
     types.py                  # Message, Session, ToolCall, AgentDefinition
     agents.py                 # AgentRunner, AgentManager (multi-agent)
     skills.py                 # SkillsManager (with install/search)
@@ -995,7 +945,6 @@ src/
       index.html              # Main chat interface
       config.html             # Settings/configuration
       analytics.html          # Usage statistics
-      collab.html             # Multi-user collaboration
       security.html           # Security dashboard
       scheduler.html          # Task scheduling UI
       css/                    # Modular CSS (variables, base, components, layout)
@@ -1011,7 +960,6 @@ tests/                        # 17 test files, 451 test cases
   test_discord.py             # Discord adapter tests
   test_skills.py              # Skills + Plugins tests
   test_agents.py              # Multi-agent tests
-  test_collaboration.py       # Multi-user session tests
   test_workflow.py            # Workflow engine tests
   ...
 ```

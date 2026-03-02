@@ -76,6 +76,7 @@ function updateBadges() {
     setBadge("badge-lifecycle", document.getElementById("ml-enabled").checked);
     setBadge("badge-learning", document.getElementById("le-enabled").checked);
     setBadge("badge-code", document.getElementById("cf-enabled").checked);
+    setBadge("badge-vision", document.getElementById("vi-mode").value !== "disabled");
     setBadge("badge-complexity", document.getElementById("tc-enabled").checked);
     setBadge("badge-ml", document.getElementById("tc-ml-enabled").checked);
 }
@@ -130,6 +131,15 @@ function populateForm(cfg) {
     document.getElementById("cf-type").checked = cf.type_check_on_write === true;
     document.getElementById("cf-test").checked = cf.test_on_write === true;
     document.getElementById("cf-rounds").value = cf.max_auto_fix_rounds || 3;
+
+    const vi = cfg.vision || {};
+    document.getElementById("vi-mode").value = vi.image_analysis_mode || "auto";
+    document.getElementById("vi-format").value = vi.fallback_format || "text";
+    document.getElementById("vi-detail").value = vi.fallback_detail_level || "standard";
+    document.getElementById("vi-grid").value = vi.grid_size || 4;
+    document.getElementById("vi-max-elements").value = vi.max_elements || 50;
+    document.getElementById("vi-vision-models").value = (vi.vision_models || []).join(", ");
+    document.getElementById("vi-text-only-models").value = (vi.text_only_models || []).join(", ");
 
     const tc = cfg.task_complexity || {};
     document.getElementById("tc-enabled").checked = tc.enabled !== false;
@@ -190,6 +200,15 @@ function collectForm() {
             type_check_on_write: document.getElementById("cf-type").checked,
             test_on_write: document.getElementById("cf-test").checked,
             max_auto_fix_rounds: parseInt(document.getElementById("cf-rounds").value),
+        },
+        vision: {
+            image_analysis_mode: document.getElementById("vi-mode").value,
+            fallback_format: document.getElementById("vi-format").value,
+            fallback_detail_level: document.getElementById("vi-detail").value,
+            grid_size: parseInt(document.getElementById("vi-grid").value),
+            max_elements: parseInt(document.getElementById("vi-max-elements").value),
+            vision_models: document.getElementById("vi-vision-models").value.split(",").map(s => s.trim()).filter(Boolean),
+            text_only_models: document.getElementById("vi-text-only-models").value.split(",").map(s => s.trim()).filter(Boolean),
         },
         task_complexity: {
             enabled: document.getElementById("tc-enabled").checked,
