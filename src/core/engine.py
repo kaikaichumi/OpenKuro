@@ -142,6 +142,7 @@ class Engine:
         self.memory = memory_manager or MemoryManager()
         self.skills = skills_manager
         self.agent_manager = agent_manager
+        self.team_manager: Any = None  # Set externally after construction (Phase 2)
 
         # Security components
         self.approval_policy = ApprovalPolicy(config.security)
@@ -175,6 +176,7 @@ class Engine:
             max_execution_time=self.config.sandbox.max_execution_time,
             max_output_size=self.config.sandbox.max_output_size,
             agent_manager=self.agent_manager,
+            team_manager=self.team_manager,
         )
         result = await self.tools.execute(tool_name, params, context)
         if result.success:
@@ -229,6 +231,15 @@ class Engine:
                 f"max_rounds: {defn.max_tool_rounds}{tools_info}"
             )
 
+        # Dynamic creation hint
+        lines.append("")
+        lines.append("[Dynamic Agent Creation]")
+        lines.append(
+            "You can create new agents at runtime with `create_agent` and "
+            "delete them with `delete_agent`. Created agents support recursive "
+            "delegation (depth-limited) and optional structured JSON output."
+        )
+
         # Scheduler integration hint
         lines.append("")
         lines.append("[Scheduling Sub-Agents]")
@@ -242,6 +253,31 @@ class Engine:
             '  schedule_add(task_type="agent", tool_name="researcher", '
             'agent_task="Monitor US market pre-opening for AMD, TSLA", ...)'
         )
+
+        # Phase 2: Agent Teams awareness
+        if self.team_manager:
+            team_defs = self.team_manager.list_definitions()
+            if team_defs:
+                lines.append("")
+                lines.append("[Available Agent Teams]")
+                lines.append(
+                    "Teams are groups of agents that collaborate with shared workspace "
+                    "and messaging. Use `run_team` to execute, `create_team` to create, "
+                    "`list_teams` to see all teams."
+                )
+                for tdef in team_defs:
+                    roles_str = ", ".join(r.name for r in tdef.roles)
+                    lines.append(
+                        f"- team: \"{tdef.name}\" | roles: {roles_str} | "
+                        f"max_rounds: {tdef.max_rounds}"
+                    )
+            else:
+                lines.append("")
+                lines.append("[Agent Teams]")
+                lines.append(
+                    "No teams registered yet. Use `create_team` to create a team "
+                    "of agents that can collaborate on complex tasks."
+                )
 
         return Message(role=Role.SYSTEM, content="\n".join(lines))
 
@@ -1067,6 +1103,7 @@ class Engine:
             max_output_size=self.config.sandbox.max_output_size,
             agent_manager=self.agent_manager,
             session=session,
+            team_manager=self.team_manager,
         )
 
         start = time.monotonic()

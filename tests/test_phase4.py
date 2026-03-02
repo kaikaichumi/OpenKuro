@@ -487,8 +487,11 @@ class TestToolDiscovery:
         # Session: session_clear = 1
         # System: check_update, perform_update, get_version = 3
         # Analytics: dashboard_summary, token_usage_report, security_report = 3
-        # Grand total: 32
-        assert len(ts.registry.get_names()) == 32
+        # Agents (Phase 1): create_agent, delete_agent = 2
+        # Teams (Phase 2): run_team, create_team, list_teams = 3
+        # A2A (Phase 3): remote_delegate, discover_remote_agents = 2
+        # Grand total: 39
+        assert len(ts.registry.get_names()) == 39
 
     def test_openai_tool_format(self):
         """All tools should produce valid OpenAI-compatible schemas."""
@@ -497,7 +500,7 @@ class TestToolDiscovery:
         ts.discover_tools()
 
         schemas = ts.registry.get_openai_tools()
-        assert len(schemas) == 32
+        assert len(schemas) == 39
 
         for schema in schemas:
             assert schema["type"] == "function"

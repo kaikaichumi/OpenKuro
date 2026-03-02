@@ -65,6 +65,11 @@ class ToolContext:
     max_output_size: int = 100_000
     agent_manager: Any = None  # AgentManager | None (Any avoids circular import)
     session: Any = None  # Session | None (Any avoids circular import)
+    # Phase 2: Agent Teams support
+    team_manager: Any = None  # TeamManager | None
+    team_workspace: Any = None  # SharedWorkspace | None (for team-internal tools)
+    team_message_bus: Any = None  # MessageBus | None (for team-internal tools)
+    team_role: str | None = None  # Current role name (for team-internal tools)
 
 
 class BaseTool(ABC):

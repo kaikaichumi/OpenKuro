@@ -1,7 +1,12 @@
-"""Delegate tool: allows the main LLM to delegate tasks to sub-agents."""
+"""Delegate tool: allows the main LLM to delegate tasks to sub-agents.
+
+Supports recursive delegation (Phase 1) — sub-agents can delegate to further
+sub-agents up to the configured max_depth.
+"""
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from src.tools.base import BaseTool, RiskLevel, ToolContext, ToolResult
@@ -61,9 +66,27 @@ class DelegateToAgentTool(BaseTool):
             # Pass parent session so the sub-agent's approval callback
             # can find the correct channel (Discord/Telegram/etc.)
             parent_session = getattr(context, "session", None)
+
+            # Phase 1: Calculate depth for recursive delegation
+            # If this tool is being called from within an AgentRunner,
+            # the session metadata will contain the current depth.
+            current_depth = 0
+            if parent_session and hasattr(parent_session, "metadata"):
+                current_depth = parent_session.metadata.get("depth", 0)
+
             result = await agent_manager.delegate(
-                agent_name, task, parent_session=parent_session
+                agent_name,
+                task,
+                parent_session=parent_session,
+                depth=current_depth + 1,
             )
+
+            # Handle structured output (dict) from agents with output_schema
+            if isinstance(result, dict):
+                formatted = json.dumps(result, ensure_ascii=False, indent=2)
+                return ToolResult.ok(
+                    f"[Agent '{agent_name}' structured result]\n{formatted}"
+                )
             return ToolResult.ok(f"[Agent '{agent_name}' result]\n{result}")
         except Exception as e:
             return ToolResult.fail(f"Agent '{agent_name}' failed: {e}")
@@ -106,9 +129,19 @@ class ListAgentsTool(BaseTool):
                 tools_info = f", tools: {', '.join(defn.allowed_tools)}"
             elif defn.denied_tools:
                 tools_info = f", denied: {', '.join(defn.denied_tools)}"
+
+            extras = []
+            if defn.inherit_context:
+                extras.append("inherits_context")
+            if defn.output_schema:
+                extras.append("structured_output")
+            if defn.max_depth > 0:
+                extras.append(f"max_depth={defn.max_depth}")
+            extras_str = f", [{', '.join(extras)}]" if extras else ""
+
             lines.append(
                 f"- {defn.name}: model={defn.model}, "
-                f"rounds={defn.max_tool_rounds}{tools_info}"
+                f"rounds={defn.max_tool_rounds}{tools_info}{extras_str}"
             )
 
         return ToolResult.ok("\n".join(lines))

@@ -10,7 +10,7 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 
 ## Features
 
-- **Multi-Agent System** - Delegate tasks to sub-agents with different models (local/cloud)
+- **Multi-Agent System** - Sub-agents (recursive, context-aware), Agent Teams (peer-to-peer collaboration), A2A (cross-instance remote delegation)
 - **Task Complexity Estimation** - ML-based complexity scoring with adaptive model routing; routes simple tasks to fast/cheap models, complex tasks to frontier models
 - **Task Scheduler + Proactive Notifications** - Cron-like scheduling with auto-push results to Discord/Telegram
 - **Multi-model support** - Anthropic Claude, OpenAI GPT, Google Gemini, Ollama local models via LiteLLM
@@ -21,7 +21,7 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 - **Security Dashboard** - Real-time security visualization, posture scoring, integrity verification
 - **Usage Analytics** - Tool usage statistics, cost estimation, smart optimization suggestions
 - **Experience Learning** - Learns from past interactions; extracts error patterns, tool usage optimizations, and model performance insights
-- **30+ built-in tools** - Files, shell, screenshots, clipboard, desktop control, calendar, browser automation, memory, time, scheduling, agent delegation, workflows, version check, self-update
+- **39 built-in tools** - Files, shell, screenshots, clipboard, desktop control, calendar, browser automation, memory, time, scheduling, agent delegation, team orchestration, remote delegation, workflows, version check, self-update
 - **10+ Built-in Skills** - Translator, code reviewer, git helper, debug assistant, data analyst, and more
 - **Skills + Plugins** - On-demand SKILL.md instructions, external Python tool plugins, one-click install
 - **Messaging integration** - Telegram, Discord, Slack (Socket Mode), LINE (webhook), Email (IMAP IDLE + SMTP)
@@ -291,78 +291,99 @@ curl http://localhost:11434/api/tags
 
 ## Multi-Agent System
 
-### Overview
+Kuro's three-tier multi-agent architecture (comparable to OpenClaw):
 
-Kuro can spawn sub-agents that run with different models, enabling efficient task delegation:
+### Tier 1: Sub-Agents (Parent-Child Delegation)
 
-- **Local models** for simple, fast tasks (Ollama)
-- **Cloud models** for complex reasoning (Claude, GPT-4)
-- **Specialized models** for specific domains (coding, research)
+Spawn sub-agents with different models for efficient task delegation:
 
-### Creating Agents
-
-**Interactive (CLI):**
-
-```bash
-> /agent create
-  Agent name: researcher
-
-  Available models:
-    Gemini:
-      1. gemini/gemini-3-flash
-      2. gemini/gemini-3-pro
-    Anthropic:
-      3. anthropic/claude-opus-4.6
-      4. anthropic/claude-sonnet-4.5
-    OpenAI:
-      5. openai/gpt-5.3-codex
-      6. openai/gpt-5.2
-    Ollama:
-      7. ollama/qwen3:32b
-      8. ollama/qwen3-coder
-
-  Model (number or name): 1
-  System prompt (Enter to skip): You are a web research specialist.
-  Allowed tools (comma-separated, Enter for all): web_navigate, web_get_text, memory_store
-
-  Agent 'researcher' created with model gemini/gemini-3-flash
-```
-
-**Config (YAML):**
+- **Recursive delegation** — sub-agents can spawn further sub-agents (depth-limited)
+- **Parent context inheritance** — sub-agents can see the parent conversation
+- **Structured output** — agents can return JSON via `output_schema`
+- **Dynamic creation** — LLM can create agents at runtime via `create_agent` tool
 
 ```yaml
 agents:
   enabled: true
+  max_concurrent_agents: 5
+  default_max_depth: 3         # Recursive delegation depth limit
+  allow_dynamic_creation: true # LLM can create agents at runtime
   predefined:
     - name: fast
       model: ollama/qwen3:32b
       max_tool_rounds: 3
-
     - name: researcher
       model: gemini/gemini-3-flash
+      inherit_context: true    # Sees parent conversation
       allowed_tools: [web_navigate, web_get_text, memory_store]
+```
+
+### Tier 2: Agent Teams (Peer-to-Peer Collaboration)
+
+Multiple agents working as a team with shared workspace and messaging:
+
+- **SharedWorkspace** — team-wide key-value store for data sharing
+- **MessageBus** — async inter-agent messaging (point-to-point + broadcast)
+- **TeamCoordinator** — LLM-driven task planning, progress evaluation, result synthesis
+- **Parallel execution** — team roles run concurrently each round
+
+```yaml
+teams:
+  enabled: true
+  max_concurrent_teams: 2
+  predefined:
+    - name: research-team
+      description: "Research + analysis + report writing"
+      coordinator_model: anthropic/claude-sonnet-4.5
+      max_rounds: 5
+      roles:
+        - name: researcher
+          agent_name: researcher
+          responsibility: "Search and gather information"
+        - name: analyst
+          agent_name: fast
+          responsibility: "Analyze data and find insights"
+        - name: writer
+          agent_name: thinker
+          responsibility: "Write the final report"
+```
+
+### Tier 3: Agent-to-Agent (A2A) — Cross-Instance Communication
+
+Delegate tasks to agents on remote Kuro instances over HTTP:
+
+- **Capability advertisement** — remote instances publish their agent list
+- **Auto-discovery** — find Kuro peers on the local network
+- **Authenticated delegation** — token-based auth for cross-instance tasks
+
+```yaml
+a2a:
+  enabled: false              # Opt-in
+  auth_token_env: KURO_A2A_TOKEN
+  known_peers:
+    - "http://192.168.1.100:7860"  # GPU server
+  auto_discover: false
 ```
 
 ### Delegation Flow
 
-**Manual delegation:**
+**Manual:** `/agent run fast Summarize the last 3 commits`
 
-```bash
-> /agent run fast Summarize the last 3 commits in git log
-```
-
-**LLM-driven delegation:**
-
-The main agent can autonomously delegate via the `delegate_to_agent` tool:
-
+**LLM-driven:** The main agent autonomously delegates via `delegate_to_agent`:
 ```
 User: "Research the latest Rust async runtime benchmarks and summarize"
+Main Agent → delegate_to_agent("researcher", "Find benchmarks...")
+  → Researcher (Gemini Flash) searches web, extracts data
+  → Returns to main agent → synthesized response
+```
 
-Main Agent:
-  → Calls delegate_to_agent(agent_name="researcher", task="Find benchmarks...")
-  → Researcher agent (Gemini Flash) uses web tools, searches, extracts data
-  → Returns summary to main agent
-  → Main agent synthesizes final response
+**Team-driven:** Multiple agents collaborate via `run_team`:
+```
+User: "Write a market analysis report on AI chip companies"
+Main Agent → run_team("research-team", "Analyze AI chip market...")
+  → Round 1: researcher searches + analyst processes + writer outlines
+  → Round 2: coordinator evaluates → assigns follow-ups
+  → Final: coordinator synthesizes unified report
 ```
 
 ---
@@ -780,8 +801,17 @@ PUT  /api/personality   # Update personality (JSON body: {"content": "..."})
 | `memory_search` | LOW | Search long-term memory |
 | `memory_store` | LOW | Store fact to memory |
 | **Agents** |||
-| `delegate_to_agent` | LOW | Delegate task to sub-agent (sub-agent tools have their own risk) |
+| `delegate_to_agent` | LOW | Delegate task to sub-agent (recursive, context-aware) |
 | `list_agents` | LOW | List available agents |
+| `create_agent` | MEDIUM | Dynamically create a new agent at runtime |
+| `delete_agent` | LOW | Delete a runtime-created agent |
+| **Teams** |||
+| `run_team` | MEDIUM | Run a multi-agent team on a task |
+| `create_team` | MEDIUM | Create a new agent team |
+| `list_teams` | LOW | List registered teams |
+| **Remote (A2A)** |||
+| `remote_delegate` | HIGH | Delegate task to agent on a remote Kuro instance |
+| `discover_remote_agents` | LOW | Discover agents on remote Kuro instances |
 | **Scheduling** |||
 | `schedule_add` | MEDIUM | Add a scheduled task |
 | `schedule_list` | LOW | List scheduled tasks |
@@ -898,7 +928,18 @@ src/
     learning.py               # Experience learning engine (error patterns, lessons)
     code_feedback.py          # Code quality feedback system
     types.py                  # Message, Session, ToolCall, AgentDefinition
-    agents.py                 # AgentRunner, AgentManager (multi-agent)
+    agents.py                 # AgentRunner, AgentManager (recursive delegation, structured output)
+    teams/
+      types.py                # TeamRole, TeamDefinition, TeamMessage, TeamResult
+      workspace.py            # SharedWorkspace (async key-value store)
+      message_bus.py          # MessageBus (per-role async queues)
+      coordinator.py          # TeamCoordinator (LLM-driven orchestration)
+      team_runner.py          # TeamRunner + TeamManager
+    a2a/
+      protocol.py             # AgentCapability, A2ARequest, A2AResponse
+      server.py               # A2A HTTP endpoints (delegate, capabilities, ping)
+      client.py               # A2A HTTP client
+      discovery.py            # Peer discovery + capability caching
     skills.py                 # SkillsManager (with install/search)
     plugin_loader.py          # PluginLoader
     workflow.py               # WorkflowEngine (multi-step automation)
@@ -926,7 +967,9 @@ src/
     calendar/                 # calendar_read, calendar_write, get_time
     web/                      # browser automation (Playwright)
     memory_tools/             # memory_search, memory_store
-    agents/                   # delegate_to_agent, list_agents
+    agents/                   # delegate_to_agent, list_agents, create_agent, delete_agent
+    teams/                    # run_team, create_team, list_teams
+    a2a/                      # remote_delegate, discover_remote_agents
     scheduler/                # schedule_add, schedule_list, etc.
     workflow/                 # workflow_create, workflow_run, etc.
     system/                   # get_version, check_update, perform_update
@@ -953,7 +996,7 @@ src/
 models/
   complexity_model_int8.onnx  # ONNX INT8 quantized complexity classifier
   complexity_tokenizer/       # DistilBERT tokenizer files
-tests/                        # 17 test files, 451 test cases
+tests/                        # 17 test files, 418+ test cases
   test_phase4.py              # Computer control tests
   test_phase5.py              # Messaging adapter tests
   test_phase7.py              # Encryption + tool restriction tests
@@ -980,7 +1023,7 @@ tests/                        # 17 test files, 451 test cases
 ### Running Tests
 
 ```bash
-# All tests (451 total)
+# All tests
 poetry run pytest tests/ -v
 
 # Specific test file

@@ -3,10 +3,16 @@
 Sub-agents are lightweight runners that share the main engine's infrastructure
 (ModelRouter, ToolSystem, security) but operate with their own model, session,
 system prompt, and optional tool restrictions.
+
+Phase 1 enhancements (OpenClaw parity):
+- Parent context injection: sub-agents can receive a summary of the parent conversation
+- Recursive delegation: sub-agents can spawn further sub-agents (depth-limited)
+- Structured output: sub-agents can return JSON dicts via output_schema
 """
 
 from __future__ import annotations
 
+import json
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -62,12 +68,17 @@ class AgentRunner:
     2. Has its own Session (conversation context)
     3. Optionally restricts available tools
     4. Shares the parent's ModelRouter, ToolSystem, and security stack
+    5. Can inherit parent context (when inherit_context=True)
+    6. Can recursively delegate to sub-agents (depth-limited by max_depth)
+    7. Can return structured JSON output (when output_schema is set)
 
     It does NOT have:
     - Its own memory manager (sub-agents are ephemeral)
     - Its own skills system
-    - The ability to spawn further sub-agents (no recursion)
     """
+
+    # Maximum number of parent messages to include in context summary
+    _MAX_PARENT_CONTEXT_MESSAGES = 10
 
     def __init__(
         self,
@@ -79,6 +90,10 @@ class AgentRunner:
         approval_callback: ApprovalCallback,
         audit_log: AuditLog,
         parent_session: Session | None = None,
+        # Phase 1 enhancements
+        parent_context: list[Message] | None = None,
+        depth: int = 0,
+        agent_manager: AgentManager | None = None,
     ) -> None:
         self.definition = definition
         self.model = model_router
@@ -91,6 +106,11 @@ class AgentRunner:
         # (e.g. Discord) can find the correct channel to send buttons to.
         self._parent_session = parent_session
 
+        # Phase 1: parent context, recursion depth, agent manager reference
+        self._parent_context = parent_context
+        self._depth = depth
+        self.agent_manager = agent_manager
+
         # Sub-agent security
         self.sandbox = Sandbox(config.sandbox)
         self.sanitizer = Sanitizer()
@@ -99,16 +119,22 @@ class AgentRunner:
         self.session = Session(
             adapter="agent",
             user_id=f"agent:{definition.name}",
-            metadata={"agent_name": definition.name, "agent_model": definition.model},
+            metadata={
+                "agent_name": definition.name,
+                "agent_model": definition.model,
+                "depth": depth,
+            },
         )
 
         # State
         self._started_at: float | None = None
         self._completed = False
-        self._result: str | None = None
+        self._result: str | dict[str, Any] | None = None
 
-    async def run(self, task: str) -> str:
-        """Execute a task and return the result as a string.
+    async def run(self, task: str) -> str | dict[str, Any]:
+        """Execute a task and return the result.
+
+        Returns a string by default, or a dict if output_schema is configured.
 
         This is the sub-agent's main loop, similar to Engine.process_message()
         but simplified:
@@ -116,6 +142,8 @@ class AgentRunner:
         - Uses the agent's specific model
         - Respects tool allow/deny lists
         - Has its own max_tool_rounds
+        - Can inject parent conversation context (Phase 1)
+        - Can return structured JSON (Phase 1)
         """
         self._started_at = time.monotonic()
 
@@ -125,6 +153,35 @@ class AgentRunner:
         # System prompt (agent-specific or main config fallback)
         system_content = self.definition.system_prompt or self.config.system_prompt
         messages.append(Message(role=Role.SYSTEM, content=system_content))
+
+        # Inject parent context summary (Phase 1: context inheritance)
+        if self._parent_context and self.definition.inherit_context:
+            context_summary = self._summarize_parent_context(self._parent_context)
+            if context_summary:
+                messages.append(Message(
+                    role=Role.SYSTEM,
+                    content=f"[Parent Conversation Context]\n{context_summary}",
+                ))
+
+        # Inject structured output instructions if schema is set
+        if self.definition.output_schema:
+            schema_str = json.dumps(self.definition.output_schema, ensure_ascii=False)
+            messages.append(Message(
+                role=Role.SYSTEM,
+                content=(
+                    "[Structured Output Required]\n"
+                    "You MUST return your final response as valid JSON matching this schema:\n"
+                    f"```json\n{schema_str}\n```\n"
+                    "Do NOT wrap in markdown code blocks. Return raw JSON only."
+                ),
+            ))
+
+        # Inject depth info for recursive agents
+        if self._depth > 0:
+            messages.append(Message(
+                role=Role.SYSTEM,
+                content=f"[Agent Depth: {self._depth}/{self.definition.max_depth}]",
+            ))
 
         # User task
         task = self.sanitizer.sanitize_user_input(task)
@@ -240,8 +297,9 @@ class AgentRunner:
                         pass  # Keep original content
 
                 self._completed = True
-                self._result = content
-                return content
+                result = self._maybe_parse_structured(content)
+                self._result = result
+                return result
 
         # Exhausted rounds — force final answer
         logger.warning(
@@ -274,8 +332,9 @@ class AgentRunner:
             )
 
         self._completed = True
-        self._result = content
-        return content
+        result = self._maybe_parse_structured(content)
+        self._result = result
+        return result
 
     async def _log_tokens(self, response: Any) -> None:
         """Log token usage from a sub-agent LLM response."""
@@ -291,6 +350,70 @@ class AgentRunner:
             )
         except Exception:
             pass  # Don't let token logging break the agent loop
+
+    # ------------------------------------------------------------------
+    # Phase 1: Parent context & structured output helpers
+    # ------------------------------------------------------------------
+
+    def _summarize_parent_context(self, parent_messages: list[Message]) -> str:
+        """Build a concise summary of the parent conversation for context injection.
+
+        Takes the most recent user/assistant messages and formats them as a
+        compressed context block. Limits total characters to avoid token bloat.
+        """
+        relevant: list[str] = []
+        max_msgs = self._MAX_PARENT_CONTEXT_MESSAGES
+        max_chars_per_msg = 300
+
+        # Walk backwards to get the most recent messages
+        for msg in reversed(parent_messages):
+            if msg.role in (Role.USER, Role.ASSISTANT) and isinstance(msg.content, str):
+                truncated = msg.content[:max_chars_per_msg]
+                if len(msg.content) > max_chars_per_msg:
+                    truncated += "..."
+                relevant.append(f"[{msg.role.value}]: {truncated}")
+                if len(relevant) >= max_msgs:
+                    break
+
+        if not relevant:
+            return ""
+
+        relevant.reverse()  # Chronological order
+        return "\n".join(relevant)
+
+    def _maybe_parse_structured(self, content: str) -> str | dict[str, Any]:
+        """Parse LLM response as structured JSON if output_schema is configured.
+
+        Returns the original string if no schema is set or parsing fails.
+        """
+        if not self.definition.output_schema:
+            return content
+
+        text = content.strip()
+        # Remove markdown code block wrappers
+        if "```" in text:
+            parts = text.split("```")
+            for part in parts[1:]:
+                clean = part.strip()
+                if clean.startswith("json"):
+                    clean = clean[4:].strip()
+                if clean.startswith("{") or clean.startswith("["):
+                    text = clean
+                    break
+
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+            # Wrap non-dict JSON (arrays, etc.) in a dict
+            return {"data": parsed}
+        except json.JSONDecodeError:
+            logger.debug(
+                "agent_structured_output_parse_failed",
+                agent=self.definition.name,
+                content_preview=content[:100],
+            )
+            return {"raw": content, "_parse_error": True}
 
     # ------------------------------------------------------------------
     # Context overflow auto-compression
@@ -399,6 +522,18 @@ class AgentRunner:
         if tool is None:
             return ToolResult.fail(f"Unknown tool: {tool_call.name}")
 
+        # Phase 1: Recursive delegation depth check
+        if tool_call.name == "delegate_to_agent":
+            if self._depth >= self.definition.max_depth:
+                return ToolResult.denied(
+                    f"Maximum agent depth ({self.definition.max_depth}) reached at "
+                    f"depth {self._depth}. Cannot create nested sub-agents."
+                )
+            if not self.agent_manager:
+                return ToolResult.denied(
+                    "Agent manager not available for recursive delegation."
+                )
+
         # Check tool restrictions for this agent
         if (
             self.definition.allowed_tools
@@ -454,7 +589,7 @@ class AgentRunner:
             if not approved:
                 return ToolResult.denied("User denied the action")
 
-        # Execute
+        # Execute — pass agent_manager for recursive delegation (Phase 1)
         context = ToolContext(
             session_id=self.session.id,
             allowed_directories=[
@@ -462,6 +597,8 @@ class AgentRunner:
             ],
             max_execution_time=self.config.sandbox.max_execution_time,
             max_output_size=self.config.sandbox.max_output_size,
+            agent_manager=self.agent_manager,
+            session=self._parent_session or self.session,
         )
 
         start = time.monotonic()
@@ -545,6 +682,9 @@ class AgentManager:
                 temperature=agent_cfg.temperature,
                 max_tokens=agent_cfg.max_tokens,
                 created_by="config",
+                max_depth=agent_cfg.max_depth,
+                inherit_context=agent_cfg.inherit_context,
+                output_schema=agent_cfg.output_schema,
             )
             self._definitions[defn.name] = defn
 
@@ -589,15 +729,20 @@ class AgentManager:
         name: str,
         task: str,
         parent_session: Session | None = None,
-    ) -> str:
+        parent_context: list[Message] | None = None,
+        depth: int = 0,
+    ) -> str | dict[str, Any]:
         """Run a registered agent with the given task.
 
         Creates an AgentRunner, executes the task, and returns the result.
+        Returns a string by default, or a dict if output_schema is configured.
 
         Args:
             name: Agent name to run.
             task: Task description for the agent.
             parent_session: The caller's session (used for approval channel lookup).
+            parent_context: Parent conversation messages for context injection.
+            depth: Current recursive delegation depth (0 = top-level).
         """
         defn = self._definitions.get(name)
         if defn is None:
@@ -610,6 +755,10 @@ class AgentManager:
                 f"({self.config.agents.max_concurrent_agents}) reached."
             )
 
+        # Auto-populate parent_context from session if inherit_context is set
+        if parent_context is None and parent_session and defn.inherit_context:
+            parent_context = list(parent_session.messages)
+
         runner = AgentRunner(
             definition=defn,
             model_router=self.model,
@@ -619,23 +768,36 @@ class AgentManager:
             approval_callback=self._get_approval_cb(),
             audit_log=self.audit,
             parent_session=parent_session,
+            parent_context=parent_context,
+            depth=depth,
+            agent_manager=self,  # Allow recursive delegation
         )
 
-        self._running[name] = runner
+        # Use a unique key for running agents to allow parallel same-agent runs
+        run_key = f"{name}:{id(runner)}"
+        self._running[run_key] = runner
         try:
             result = await runner.run(task)
             return result
         finally:
-            self._running.pop(name, None)
+            self._running.pop(run_key, None)
 
     async def delegate(
         self,
         agent_name: str,
         task: str,
         parent_session: Session | None = None,
-    ) -> str:
+        parent_context: list[Message] | None = None,
+        depth: int = 0,
+    ) -> str | dict[str, Any]:
         """Delegate a task to a named agent. Called by the delegate_to_agent tool."""
-        return await self.run_agent(agent_name, task, parent_session=parent_session)
+        return await self.run_agent(
+            agent_name,
+            task,
+            parent_session=parent_session,
+            parent_context=parent_context,
+            depth=depth,
+        )
 
     @property
     def definition_count(self) -> int:

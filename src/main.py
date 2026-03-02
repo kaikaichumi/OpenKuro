@@ -200,6 +200,41 @@ def build_engine(
         )
         engine.agent_manager = agent_manager
 
+    # Initialize team manager (Phase 2: Agent Teams)
+    if config.teams.enabled and engine.agent_manager:
+        from src.core.teams.team_runner import TeamManager
+        from src.core.teams.types import TeamDefinition, TeamRole
+
+        team_manager = TeamManager(
+            agent_manager=engine.agent_manager,
+            model_router=model_router,
+            config=config,
+        )
+        engine.team_manager = team_manager
+
+        # Load predefined teams from config
+        for team_cfg in config.teams.predefined:
+            roles = [
+                TeamRole(
+                    name=r.name,
+                    agent_name=r.agent_name,
+                    responsibility=r.responsibility,
+                    receives_from=list(r.receives_from),
+                    sends_to=list(r.sends_to),
+                )
+                for r in team_cfg.roles
+            ]
+            team_def = TeamDefinition(
+                name=team_cfg.name,
+                description=team_cfg.description,
+                roles=roles,
+                coordinator_model=team_cfg.coordinator_model or None,
+                max_rounds=team_cfg.max_rounds,
+                timeout_seconds=team_cfg.timeout_seconds,
+                created_by="config",
+            )
+            team_manager.register(team_def)
+
     # Initialize task scheduler
     from src.core.scheduler import TaskScheduler
     from src.tools.scheduler import (

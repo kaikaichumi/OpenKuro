@@ -111,7 +111,11 @@ class Session:
 
 @dataclass
 class AgentDefinition:
-    """Runtime definition for a sub-agent."""
+    """Runtime definition for a sub-agent.
+
+    Supports recursive delegation (depth-limited), parent context inheritance,
+    and structured JSON output via output_schema.
+    """
 
     name: str
     model: str
@@ -121,7 +125,11 @@ class AgentDefinition:
     max_tool_rounds: int = 5
     temperature: float | None = None
     max_tokens: int | None = None
-    created_by: str = "user"  # "user" | "config"
+    created_by: str = "user"  # "user" | "config" | "runtime" | "complexity_decomposer"
+    # Phase 1 enhancements
+    max_depth: int = 3  # Max recursive delegation depth (0 = no sub-agents)
+    inherit_context: bool = False  # Inject parent conversation summary
+    output_schema: dict[str, Any] | None = None  # JSON Schema for structured output
 
 
 @dataclass

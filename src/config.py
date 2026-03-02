@@ -276,6 +276,10 @@ class AgentDefinitionConfig(BaseModel):
     max_tool_rounds: int = 5  # Sub-agents get fewer rounds by default
     temperature: float | None = None  # None = inherit from main config
     max_tokens: int | None = None  # None = inherit from main config
+    # Phase 1 enhancements
+    max_depth: int = 3  # Max recursive sub-agent depth (0 = no sub-agents)
+    inherit_context: bool = False  # Inject parent conversation summary into sub-agent
+    output_schema: dict | None = None  # JSON Schema for structured output (None = plain text)
 
 
 class AgentsConfig(BaseModel):
@@ -284,7 +288,55 @@ class AgentsConfig(BaseModel):
     enabled: bool = True
     max_concurrent_agents: int = 5  # Max agents that can run simultaneously
     default_max_tool_rounds: int = 5  # Default tool rounds for sub-agents
+    default_max_depth: int = 3  # Global default for recursive delegation depth
+    allow_dynamic_creation: bool = True  # Allow LLM to create agents at runtime
     predefined: list[AgentDefinitionConfig] = Field(default_factory=list)
+
+
+# === Phase 2: Agent Teams Configuration ===
+
+
+class TeamRoleConfig(BaseModel):
+    """Configuration for a role within an Agent Team."""
+
+    name: str  # Role name, e.g. "researcher", "analyst"
+    agent_name: str  # Corresponding AgentDefinition name
+    responsibility: str = ""  # What this role does
+    receives_from: list[str] = Field(default_factory=list)
+    sends_to: list[str] = Field(default_factory=list)
+
+
+class TeamDefinitionConfig(BaseModel):
+    """Configuration for a predefined Agent Team."""
+
+    name: str
+    description: str = ""
+    roles: list[TeamRoleConfig] = Field(default_factory=list)
+    coordinator_model: str = ""  # Model for the team coordinator (empty = default)
+    max_rounds: int = 5  # Maximum coordination rounds
+    timeout_seconds: int = 300  # Overall team execution timeout
+
+
+class TeamsConfig(BaseModel):
+    """Agent Teams system configuration."""
+
+    enabled: bool = True
+    max_concurrent_teams: int = 2  # Max teams that can run simultaneously
+    predefined: list[TeamDefinitionConfig] = Field(default_factory=list)
+
+
+# === Phase 3: Agent-to-Agent (A2A) Configuration ===
+
+
+class A2AConfig(BaseModel):
+    """Agent-to-Agent cross-instance communication configuration."""
+
+    enabled: bool = False  # Disabled by default — opt-in
+    auth_token_env: str = "KURO_A2A_TOKEN"  # Env var for authentication
+    known_peers: list[str] = Field(default_factory=list)  # Known peer endpoints
+    auto_discover: bool = False  # Auto-discover peers on local network
+    max_remote_agents: int = 10  # Max registered remote agents
+    request_timeout: int = 120  # Timeout for remote requests (seconds)
 
 
 class ContextCompressionConfig(BaseModel):
@@ -446,6 +498,8 @@ class KuroConfig(BaseModel):
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     plugins: PluginsConfig = Field(default_factory=PluginsConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
+    teams: TeamsConfig = Field(default_factory=TeamsConfig)
+    a2a: A2AConfig = Field(default_factory=A2AConfig)
     context_compression: ContextCompressionConfig = Field(default_factory=ContextCompressionConfig)
     memory_lifecycle: MemoryLifecycleConfig = Field(default_factory=MemoryLifecycleConfig)
     learning: LearningConfig = Field(default_factory=LearningConfig)
