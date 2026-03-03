@@ -38,7 +38,7 @@ line-bot-sdk = "^3.14"
 aiohttp = "^3.9"
 aiosmtplib = "^3.0"
 aioimaplib = "^2.0"
-rapidocr-onnxruntime = "^1.4"
+rapidocr-onnxruntime = {version = "^1.4", python = ">=3.12,<3.13"}
 opencv-python-headless = "^4.8"
 
 [tool.poetry.group.dev.dependencies]
