@@ -307,6 +307,19 @@ class InvocationConfig(BaseModel):
     allow_agents: list[str] = Field(default_factory=list)
 
 
+class InstanceSecurityConfig(BaseModel):
+    """Per-instance security overrides (empty = inherit from main config)."""
+
+    # Approval: which risk levels auto-approve (e.g., ["low", "medium"])
+    auto_approve_levels: list[str] = Field(default_factory=list)
+    # Sandbox: allowed directories (empty = inherit from main)
+    allowed_directories: list[str] = Field(default_factory=list)
+    # Sandbox: blocked shell commands (empty = inherit from main)
+    blocked_commands: list[str] = Field(default_factory=list)
+    # Max shell execution time in seconds (0 = inherit from main)
+    max_execution_time: int = 0
+
+
 class AgentInstanceConfig(BaseModel):
     """Configuration for a Primary Agent instance (full AI persona)."""
 
@@ -324,6 +337,8 @@ class AgentInstanceConfig(BaseModel):
     allowed_tools: list[str] = Field(default_factory=list)
     denied_tools: list[str] = Field(default_factory=list)
     max_tool_rounds: int = 10
+    # Per-instance security (empty = inherit from main config)
+    security: InstanceSecurityConfig = Field(default_factory=InstanceSecurityConfig)
     # Memory
     memory: MemoryModeConfig = Field(default_factory=MemoryModeConfig)
     # Bot binding

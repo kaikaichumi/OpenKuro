@@ -303,4 +303,18 @@ class AgentInstanceManager:
                 set(existing) | set(cfg.denied_tools)
             )
 
+        # Per-instance security overrides
+        sec = cfg.security
+        if sec.auto_approve_levels:
+            data["security"]["auto_approve_levels"] = list(sec.auto_approve_levels)
+        if sec.allowed_directories:
+            data["sandbox"]["allowed_directories"] = list(sec.allowed_directories)
+        if sec.blocked_commands:
+            existing_blocked = data["sandbox"].get("blocked_commands", [])
+            data["sandbox"]["blocked_commands"] = list(
+                set(existing_blocked) | set(sec.blocked_commands)
+            )
+        if sec.max_execution_time > 0:
+            data["sandbox"]["max_execution_time"] = sec.max_execution_time
+
         return KuroConfig(**data)

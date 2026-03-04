@@ -71,6 +71,9 @@ function render() {
     if (instances.length === 0) {
         html += `<p class="empty-state">${t("agents.noInstances") || "No agent instances configured. Create one to get started."}</p>`;
     } else {
+        html += `<p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:0.75rem">
+            💡 ${t("agents.usageTip") || "To chat with an agent: go to Chat, use split layout, then select the agent from the panel dropdown."}
+        </p>`;
         html += `<div class="agent-cards">`;
         for (const inst of instances) {
             html += renderCard(inst);
@@ -224,6 +227,12 @@ function openCreateModal() {
     document.getElementById("edit-bot-token-env").value = "";
     document.getElementById("bot-token-group").style.display = "none";
     document.getElementById("edit-system-prompt").value = "";
+    // Security fields
+    document.getElementById("edit-auto-approve").value = "";
+    document.getElementById("edit-allowed-dirs").value = "";
+    document.getElementById("edit-blocked-cmds").value = "";
+    document.getElementById("edit-allowed-tools").value = "";
+    document.getElementById("edit-denied-tools").value = "";
     document.getElementById("instance-modal").style.display = "";
 }
 
@@ -246,12 +255,22 @@ function openEditModal(inst) {
     document.getElementById("bot-token-group").style.display =
         bot.adapter_type ? "" : "none";
     document.getElementById("edit-system-prompt").value = "";
+    // Security fields
+    const sec = inst.security || {};
+    document.getElementById("edit-auto-approve").value = (sec.auto_approve_levels || []).join(", ");
+    document.getElementById("edit-allowed-dirs").value = (sec.allowed_directories || []).join(", ");
+    document.getElementById("edit-blocked-cmds").value = (sec.blocked_commands || []).join(", ");
+    document.getElementById("edit-allowed-tools").value = (inst.allowed_tools || []).join(", ");
+    document.getElementById("edit-denied-tools").value = (inst.denied_tools || []).join(", ");
     document.getElementById("instance-modal").style.display = "";
 }
 
 async function saveInstance() {
     const existingId = document.getElementById("edit-instance-id").value;
     const isEdit = !!existingId;
+
+    const csvToList = (id) => (document.getElementById(id)?.value || "")
+        .split(",").map(s => s.trim()).filter(Boolean);
 
     const body = {
         id: document.getElementById("edit-id").value.trim(),
@@ -262,14 +281,21 @@ async function saveInstance() {
         personality_mode: document.getElementById("edit-personality-mode").value,
         memory: {
             mode: document.getElementById("edit-memory-mode").value,
-            linked_agents: document.getElementById("edit-linked-agents").value
-                .split(",").map(s => s.trim()).filter(Boolean),
+            linked_agents: csvToList("edit-linked-agents"),
         },
         bot_binding: {
             adapter_type: document.getElementById("edit-bot-adapter").value,
             bot_token_env: document.getElementById("edit-bot-token-env").value.trim(),
         },
         system_prompt: document.getElementById("edit-system-prompt").value.trim() || null,
+        // Security
+        allowed_tools: csvToList("edit-allowed-tools"),
+        denied_tools: csvToList("edit-denied-tools"),
+        security: {
+            auto_approve_levels: csvToList("edit-auto-approve"),
+            allowed_directories: csvToList("edit-allowed-dirs"),
+            blocked_commands: csvToList("edit-blocked-cmds"),
+        },
     };
 
     if (!body.id || !body.name) {

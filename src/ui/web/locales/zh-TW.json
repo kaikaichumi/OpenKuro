@@ -279,7 +279,14 @@
         "noSubAgents": "無",
         "addSubAgent": "新增子代理",
         "subAgentName": "名稱",
-        "maxToolRounds": "最大工具輪數"
+        "maxToolRounds": "最大工具輪數",
+        "securitySettings": "安全設定",
+        "autoApproveLevels": "自動核准等級",
+        "allowedDirs": "允許存取目錄",
+        "blockedCommands": "封鎖指令",
+        "allowedTools": "允許的工具",
+        "deniedTools": "禁用的工具",
+        "usageTip": "使用方式：前往「對話」頁面，切換分割畫面，然後從面板下拉選單選擇此代理即可開始對話。"
     },
     "dashboard": {
         "loading": "載入儀表板中...",

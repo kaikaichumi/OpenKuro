@@ -68,6 +68,14 @@ class AgentInstance:
                 "allow_main_agent": cfg.invocation.allow_main_agent,
                 "allow_agents": cfg.invocation.allow_agents,
             },
+            "allowed_tools": cfg.allowed_tools,
+            "denied_tools": cfg.denied_tools,
+            "security": {
+                "auto_approve_levels": cfg.security.auto_approve_levels,
+                "allowed_directories": cfg.security.allowed_directories,
+                "blocked_commands": cfg.security.blocked_commands,
+                "max_execution_time": cfg.security.max_execution_time,
+            },
             "sub_agents": sub_agent_names,
             "active_sessions": len(self.sessions),
         }

@@ -79,14 +79,19 @@ class WebApprovalCallback(ApprovalCallback):
     def __init__(self, timeout: int = 60, approval_policy=None) -> None:
         self._pending: dict[str, asyncio.Future[str]] = {}
         self._websockets: dict[str, WebSocket] = {}
+        self._session_agent_map: dict[str, str] = {}  # session_id → agent_id
         self._timeout = timeout
         self.approval_policy = approval_policy
 
-    def register_websocket(self, session_id: str, ws: WebSocket) -> None:
+    def register_websocket(
+        self, session_id: str, ws: WebSocket, agent_id: str = "main"
+    ) -> None:
         self._websockets[session_id] = ws
+        self._session_agent_map[session_id] = agent_id
 
     def unregister_websocket(self, session_id: str) -> None:
         self._websockets.pop(session_id, None)
+        self._session_agent_map.pop(session_id, None)
         # Deny all pending approvals for this session
         to_remove = []
         for approval_id, fut in self._pending.items():
@@ -113,6 +118,7 @@ class WebApprovalCallback(ApprovalCallback):
         self._pending[approval_id] = future
 
         # Send approval request to browser
+        agent_id = self._session_agent_map.get(session.id, "main")
         try:
             await ws.send_json({
                 "type": "approval_request",
@@ -120,6 +126,7 @@ class WebApprovalCallback(ApprovalCallback):
                 "tool_name": tool_name,
                 "params": params,
                 "risk_level": risk_level.value,
+                "agent_id": agent_id,
             })
         except Exception:
             self._pending.pop(approval_id, None)
@@ -159,14 +166,19 @@ class WebToolCallback(ToolExecutionCallback):
     def __init__(self) -> None:
         self._websockets: dict[str, WebSocket] = {}
         self._step_counter: dict[str, int] = {}
+        self._session_agent_map: dict[str, str] = {}  # session_id → agent_id
 
-    def register_websocket(self, session_id: str, ws: WebSocket) -> None:
+    def register_websocket(
+        self, session_id: str, ws: WebSocket, agent_id: str = "main"
+    ) -> None:
         self._websockets[session_id] = ws
         self._step_counter[session_id] = 0
+        self._session_agent_map[session_id] = agent_id
 
     def unregister_websocket(self, session_id: str) -> None:
         self._websockets.pop(session_id, None)
         self._step_counter.pop(session_id, None)
+        self._session_agent_map.pop(session_id, None)
 
     async def on_tool_executed(
         self,
@@ -182,6 +194,7 @@ class WebToolCallback(ToolExecutionCallback):
             try:
                 self._step_counter[session_id] = self._step_counter.get(session_id, 0) + 1
                 step = self._step_counter[session_id]
+                agent_id = self._session_agent_map.get(session_id, "main")
 
                 if tool_name in self._SCREEN_TOOLS and result.image_path:
                     data_uri = _encode_image_base64(result.image_path)
@@ -191,6 +204,7 @@ class WebToolCallback(ToolExecutionCallback):
                             "image": data_uri,
                             "action": f"Screenshot ({tool_name})",
                             "step": step,
+                            "agent_id": agent_id,
                         })
                 elif tool_name in self._ACTION_TOOLS:
                     action_desc = self._describe_action(tool_name, params)
@@ -198,6 +212,7 @@ class WebToolCallback(ToolExecutionCallback):
                         "type": "screen_action",
                         "action": action_desc,
                         "step": step,
+                        "agent_id": agent_id,
                     })
             except Exception:
                 pass  # Connection may have closed
@@ -1165,8 +1180,8 @@ class WebServer:
             conn.agent_sessions[agent_id] = session
 
         # Register approval callbacks for agent session
-        self.approval_cb.register_websocket(session.id, ws)
-        self._tool_cb.register_websocket(session.id, ws)
+        self.approval_cb.register_websocket(session.id, ws, agent_id=agent_id)
+        self._tool_cb.register_websocket(session.id, ws, agent_id=agent_id)
 
         # Resolve the engine for this agent
         engine = self._resolve_engine(agent_id)
@@ -1231,8 +1246,8 @@ class WebServer:
             if session is conn.session and agent_id != "main":
                 session = Session(adapter="web")
                 conn.set_session(agent_id, session)
-                self.approval_cb.register_websocket(session.id, ws)
-                self._tool_cb.register_websocket(session.id, ws)
+                self.approval_cb.register_websocket(session.id, ws, agent_id=agent_id)
+                self._tool_cb.register_websocket(session.id, ws, agent_id=agent_id)
 
             # Use stream_message for streaming support
             async for chunk in engine.stream_message(
@@ -1280,9 +1295,9 @@ class WebServer:
             new_session = Session(adapter="web")
             conn.set_session(agent_id, new_session)
             self.approval_cb.unregister_websocket(old_id)
-            self.approval_cb.register_websocket(new_session.id, ws)
+            self.approval_cb.register_websocket(new_session.id, ws, agent_id=agent_id)
             self._tool_cb.unregister_websocket(old_id)
-            self._tool_cb.register_websocket(new_session.id, ws)
+            self._tool_cb.register_websocket(new_session.id, ws, agent_id=agent_id)
             if agent_id == "main":
                 self._connections.pop(old_id, None)
                 self._session_cache.pop(old_id, None)

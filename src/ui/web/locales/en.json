@@ -279,7 +279,14 @@
         "noSubAgents": "None",
         "addSubAgent": "Add Sub-Agent",
         "subAgentName": "Name",
-        "maxToolRounds": "Max Tool Rounds"
+        "maxToolRounds": "Max Tool Rounds",
+        "securitySettings": "Security Settings",
+        "autoApproveLevels": "Auto-Approve Levels",
+        "allowedDirs": "Allowed Directories",
+        "blockedCommands": "Blocked Commands",
+        "allowedTools": "Allowed Tools",
+        "deniedTools": "Denied Tools",
+        "usageTip": "To chat with an agent: go to Chat, use split layout, then select the agent from the panel dropdown."
     },
     "dashboard": {
         "loading": "Loading dashboard...",
