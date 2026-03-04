@@ -49,7 +49,7 @@ class AgentInstance:
         cfg = self.config
         sub_agent_names = []
         if self.agent_manager:
-            sub_agent_names = list(self.agent_manager.list_agents().keys())
+            sub_agent_names = [a.name for a in self.agent_manager.list_definitions()]
         return {
             "id": self.id,
             "name": self.name,

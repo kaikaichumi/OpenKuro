@@ -699,8 +699,8 @@ class WebServer:
             inst = im.get(instance_id)
             if not inst or not inst.agent_manager:
                 return {"sub_agents": []}
-            agents = inst.agent_manager.list_agents()
-            return {"sub_agents": list(agents.keys())}
+            agents = inst.agent_manager.list_definitions()
+            return {"sub_agents": [a.name for a in agents]}
 
         @app.post("/api/agents/instances/{instance_id}/sub-agents")
         async def add_sub_agent(instance_id: str, request: Request):
