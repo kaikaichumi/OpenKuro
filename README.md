@@ -10,7 +10,10 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 
 ## Features
 
+- **Multi-Agent Instances** - Primary Agent instances with independent memory, personality, engine, and sub-agent pools; each instance can bind to its own bot
 - **Multi-Agent System** - Sub-agents (recursive, context-aware), Agent Teams (peer-to-peer collaboration), A2A (cross-instance remote delegation)
+- **Split-Screen Chat** - Multi-panel web UI (1–6 panels) with per-panel agent binding and WebSocket multiplexing
+- **Real-Time Dashboard** - Live agent state visualization, event timeline, and aggregated statistics via WebSocket push
 - **Task Complexity Estimation** - ML-based complexity scoring with adaptive model routing; routes simple tasks to fast/cheap models, complex tasks to frontier models
 - **Task Scheduler + Proactive Notifications** - Cron-like scheduling with auto-push results to Discord/Telegram
 - **Multi-model support** - Anthropic Claude, OpenAI GPT, Google Gemini, Ollama local models via LiteLLM
@@ -21,11 +24,11 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 - **Security Dashboard** - Real-time security visualization, posture scoring, integrity verification
 - **Usage Analytics** - Tool usage statistics, cost estimation, smart optimization suggestions
 - **Experience Learning** - Learns from past interactions; extracts error patterns, tool usage optimizations, and model performance insights
-- **39 built-in tools** - Files, shell, screenshots, clipboard, desktop control, calendar, browser automation, memory, time, scheduling, agent delegation, team orchestration, remote delegation, workflows, version check, self-update
+- **42 built-in tools** - Files, shell, screenshots, clipboard, desktop control, calendar, browser automation, memory, time, scheduling, agent delegation, agent instance management, team orchestration, remote delegation, workflows, version check, self-update
 - **10+ Built-in Skills** - Translator, code reviewer, git helper, debug assistant, data analyst, and more
 - **Skills + Plugins** - On-demand SKILL.md instructions, external Python tool plugins, one-click install
 - **Messaging integration** - Telegram, Discord, Slack (Socket Mode), LINE (webhook), Email (IMAP IDLE + SMTP)
-- **Web GUI** - Dark-themed browser interface at `localhost:7860` with WebSocket streaming, i18n support (English, Traditional Chinese)
+- **Web GUI** - Dark-themed browser interface at `localhost:7860` with split-screen chat, agent management, real-time dashboard, WebSocket streaming, i18n (English, Traditional Chinese)
 - **CLI** - Rich terminal with markdown rendering, streaming, slash commands
 - **5-layer security** - Approval, sandbox, credentials, audit, sanitizer
 - **3-tier memory** - Working memory, conversation history (SQLite), long-term RAG (ChromaDB) with lifecycle management (decay, consolidation, pruning)
@@ -84,7 +87,7 @@ poetry run kuro --web
 # Open http://127.0.0.1:7860
 ```
 
-Browser-based chat with dark theme, streaming, approval modals, settings panel, and audit log viewer.
+Browser-based chat with dark theme, split-screen panels (1–6), agent management, real-time dashboard, approval modals, settings panel, and audit log viewer.
 
 ### Telegram Bot Mode
 
@@ -227,7 +230,7 @@ Or pre-configure in `config.yaml`:
 agents:
   enabled: true
   max_concurrent_agents: 3
-  predefined:
+  sub_agents:
     - name: fast
       model: ollama/qwen3:32b
       system_prompt: "You are a fast local assistant. Be extremely concise."
@@ -245,6 +248,22 @@ agents:
     - name: cloud
       model: anthropic/claude-sonnet-4.5
       system_prompt: "You handle complex reasoning tasks."
+
+  # Optional: Primary Agent instances with independent memory + bot binding
+  instances:
+    - id: "customer-service"
+      name: "Customer Service Bot"
+      model: "gemini/gemini-3-flash"
+      personality_mode: "independent"
+      memory:
+        mode: "independent"
+      bot_binding:
+        adapter_type: "discord"
+        bot_token_env: "KURO_DISCORD_TOKEN_CS"
+      sub_agents:
+        - name: faq-lookup
+          model: ollama/qwen3:32b
+          system_prompt: "You look up FAQ answers."
 ```
 
 ### 6. Verify Ollama is Running
@@ -291,7 +310,37 @@ curl http://localhost:11434/api/tags
 
 ## Multi-Agent System
 
-Kuro's three-tier multi-agent architecture (comparable to OpenClaw):
+Kuro's multi-agent architecture supports hierarchical instances, sub-agents, teams, and cross-instance delegation:
+
+### Agent Instances (Primary Agents)
+
+Each instance is a fully independent AI agent with its own memory, personality, engine, sub-agent pool, and optional bot binding:
+
+```
+PrimaryAgent "main" (Engine + Memory + Personality)
+├── SubAgent "fast"        (lightweight, no memory)
+├── SubAgent "researcher"  (lightweight, web tools)
+└── SubAgent "coder"       (lightweight, file tools)
+
+PrimaryAgent "customer-service" (独立 Engine + Memory) → Discord Bot
+├── SubAgent "faq-lookup"
+└── SubAgent "translator"
+
+PrimaryAgent "analyst" (linked memory) → Telegram Bot
+└── SubAgent "data-processor"
+```
+
+- **Independent memory** — each instance has its own conversation history and long-term memory (or shared/linked)
+- **Independent personality** — each instance can have its own `personality.md`
+- **Own sub-agent pool** — each instance defines and manages its own sub-agents
+- **Bot binding** — bind to a specific Discord/Telegram/Slack bot with per-instance token
+- **LLM self-service** — the main agent can create/delete instances via tools at runtime
+- **Web management** — CRUD instances via the Agents page in Web GUI
+
+Memory modes:
+- `independent` — fully isolated memory (default)
+- `shared` — shares memory with the main agent
+- `linked` — own history, shares long-term memory with specified agents
 
 ### Tier 1: Sub-Agents (Parent-Child Delegation)
 
@@ -308,7 +357,7 @@ agents:
   max_concurrent_agents: 5
   default_max_depth: 3         # Recursive delegation depth limit
   allow_dynamic_creation: true # LLM can create agents at runtime
-  predefined:
+  sub_agents:                  # Main agent's sub-agent pool
     - name: fast
       model: ollama/qwen3:32b
       max_tool_rounds: 3
@@ -385,6 +434,29 @@ Main Agent → run_team("research-team", "Analyze AI chip market...")
   → Round 2: coordinator evaluates → assigns follow-ups
   → Final: coordinator synthesizes unified report
 ```
+
+---
+
+## Split-Screen Chat
+
+The Web GUI supports multi-panel chat with up to 6 simultaneous panels:
+
+- **Layout modes** — Single, Split 2, Split 3, Grid 4 (2×2), Grid 6 (3×2)
+- **Per-panel agent** — each panel can be bound to a different agent instance
+- **WebSocket multiplexing** — single connection, messages routed by `agent_id`
+- **Independent sessions** — each panel maintains its own conversation history
+- **Agent switching** — change the agent for any panel via dropdown
+
+---
+
+## Real-Time Dashboard
+
+Live visualization of all agent activity at `/dashboard`:
+
+- **Agent state cards** — real-time status (idle/busy) per agent with message, tool call, delegation, and error counters
+- **Event timeline** — chronological feed of all agent events (message received, tool calls, delegations, errors, status changes)
+- **Live WebSocket push** — events appear instantly via `/ws/dashboard`
+- **Statistics overview** — total events, active agents, tool calls, errors
 
 ---
 
@@ -501,7 +573,8 @@ agents:
   enabled: true
   max_concurrent_agents: 5
   default_max_tool_rounds: 5
-  predefined: []
+  sub_agents: []            # Main agent's sub-agent pool (replaces old "predefined")
+  instances: []             # Primary Agent instances (independent memory/personality/bot)
 
 skills:
   enabled: true
@@ -805,6 +878,10 @@ PUT  /api/personality   # Update personality (JSON body: {"content": "..."})
 | `list_agents` | LOW | List available agents |
 | `create_agent` | MEDIUM | Dynamically create a new agent at runtime |
 | `delete_agent` | LOW | Delete a runtime-created agent |
+| **Agent Instances** |||
+| `create_agent_instance` | MEDIUM | Create a new Primary Agent instance (with memory, personality, bot binding) |
+| `delete_agent_instance` | HIGH | Delete a Primary Agent instance and its data |
+| `list_agent_instances` | LOW | List all Primary Agent instances and their sub-agents |
 | **Teams** |||
 | `run_team` | MEDIUM | Run a multi-agent team on a task |
 | `create_team` | MEDIUM | Create a new agent team |
@@ -929,6 +1006,9 @@ src/
     code_feedback.py          # Code quality feedback system
     types.py                  # Message, Session, ToolCall, AgentDefinition
     agents.py                 # AgentRunner, AgentManager (recursive delegation, structured output)
+    agent_events.py           # AgentEventBus + AgentEvent (real-time event tracking)
+    agent_instance.py         # AgentInstance (Primary Agent with independent engine/memory)
+    agent_instance_manager.py # AgentInstanceManager (lifecycle, CRUD, memory isolation)
     teams/
       types.py                # TeamRole, TeamDefinition, TeamMessage, TeamResult
       workspace.py            # SharedWorkspace (async key-value store)
@@ -967,7 +1047,7 @@ src/
     calendar/                 # calendar_read, calendar_write, get_time
     web/                      # browser automation (Playwright)
     memory_tools/             # memory_search, memory_store
-    agents/                   # delegate_to_agent, list_agents, create_agent, delete_agent
+    agents/                   # delegate_to_agent, list_agents, create/delete agent + instance tools
     teams/                    # run_team, create_team, list_teams
     a2a/                      # remote_delegate, discover_remote_agents
     scheduler/                # schedule_add, schedule_list, etc.
@@ -985,18 +1065,20 @@ src/
     cli.py                    # Rich terminal interface
     web_server.py             # FastAPI + WebSocket
     web/                      # Static HTML/CSS/JS (modular architecture)
-      index.html              # Main chat interface
+      index.html              # Main chat interface (split-screen multi-panel)
+      agents.html             # Agent instance management page
+      dashboard.html          # Real-time agent visualization dashboard
       config.html             # Settings/configuration
       analytics.html          # Usage statistics
       security.html           # Security dashboard
       scheduler.html          # Task scheduling UI
       css/                    # Modular CSS (variables, base, components, layout)
-      js/                     # Modular JS (chat, config, analytics, scheduler, i18n, ...)
+      js/                     # Modular JS (chat, config, analytics, scheduler, agents, dashboard, i18n, ...)
       locales/                # i18n translations (en.json, zh-TW.json)
 models/
   complexity_model_int8.onnx  # ONNX INT8 quantized complexity classifier
   complexity_tokenizer/       # DistilBERT tokenizer files
-tests/                        # 17 test files, 418+ test cases
+tests/                        # 17 test files, 419+ test cases
   test_phase4.py              # Computer control tests
   test_phase5.py              # Messaging adapter tests
   test_phase7.py              # Encryption + tool restriction tests
@@ -1050,6 +1132,11 @@ poetry run pytest tests/ --cov=src --cov-report=html
     MEMORY.md                 # Editable preferences/facts
     facts/                    # Knowledge files
     vector_store/             # ChromaDB data
+  agents/                     # Agent instance data (per-instance memory, personality, history)
+    <instance-id>/
+      memory/                 # Independent long-term memory
+      history.db              # Independent conversation history
+      personality.md          # Independent personality
   skills/                     # User-created SKILL.md files
   plugins/                    # User-created Python tools
   screenshots/                # Captured screenshots
