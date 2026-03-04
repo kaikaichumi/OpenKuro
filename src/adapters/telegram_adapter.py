@@ -190,21 +190,37 @@ class TelegramAdapter(BaseAdapter):
 
     Uses long-polling (no webhook server needed).
     Each Telegram user gets their own Session.
+
+    Supports binding to an AgentInstance for multi-bot scenarios:
+    each instance gets its own Telegram bot with separate token,
+    routing messages through the instance's Engine.
     """
 
     name = "telegram"
 
-    def __init__(self, engine: Engine, config: KuroConfig) -> None:
-        super().__init__(engine, config)
+    def __init__(
+        self,
+        engine: Engine,
+        config: KuroConfig,
+        agent_instance: Any = None,
+        bot_token_override: str | None = None,
+        config_overrides: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(engine, config, agent_instance=agent_instance)
 
         self._app = None
+        self._bot_token_override = bot_token_override
+        self._config_overrides = config_overrides or {}
+
+        # Use the effective engine's approval policy
+        target_engine = self.effective_engine
         self._approval_cb = TelegramApprovalCallback(
-            approval_policy=engine.approval_policy,
+            approval_policy=target_engine.approval_policy,
         )
         self._approval_cb._timeout = config.adapters.telegram.approval_timeout
 
-        # Replace the engine's approval callback with Telegram's
-        self.engine.approval_cb = self._approval_cb
+        # Replace the target engine's approval callback with Telegram's
+        target_engine.approval_cb = self._approval_cb
 
     async def start(self) -> None:
         """Initialize the Telegram bot and start polling."""
@@ -217,9 +233,15 @@ class TelegramAdapter(BaseAdapter):
             filters,
         )
 
-        token = self.config.adapters.telegram.get_bot_token()
-        if not token:
+        # Use token override (from AgentInstance binding) or default config
+        if self._bot_token_override:
+            import os
+            token = os.environ.get(self._bot_token_override, "")
+            env_var = self._bot_token_override
+        else:
+            token = self.config.adapters.telegram.get_bot_token()
             env_var = self.config.adapters.telegram.bot_token_env
+        if not token:
             raise RuntimeError(
                 f"Telegram bot token not found. "
                 f"Set the {env_var} environment variable."
@@ -371,7 +393,7 @@ class TelegramAdapter(BaseAdapter):
             session.trust_level = args[0]
             level_map = {"low": RiskLevel.LOW, "medium": RiskLevel.MEDIUM,
                          "high": RiskLevel.HIGH, "critical": RiskLevel.CRITICAL}
-            self.engine.approval_policy.elevate_session_trust(
+            self.effective_engine.approval_policy.elevate_session_trust(
                 session.id, level_map[args[0]])
             await update.message.reply_text(
                 f"\U0001f513 Trust level set to: *{args[0].upper()}*",
@@ -443,8 +465,8 @@ class TelegramAdapter(BaseAdapter):
             # Get model override if set
             model = session.metadata.get("model_override")
 
-            # Process through engine
-            response = await self.engine.process_message(
+            # Process through engine (routes to agent instance if bound)
+            response = await self.process_incoming(
                 user_text, session, model=model
             )
 

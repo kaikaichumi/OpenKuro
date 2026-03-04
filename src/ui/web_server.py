@@ -33,11 +33,44 @@ WEB_DIR = Path(__file__).parent / "web"
 
 @dataclass
 class ConnectionState:
-    """Mutable state for each WebSocket connection."""
+    """Mutable state for each WebSocket connection.
+
+    Supports multi-agent panels: ``agent_sessions`` maps agent_id to a
+    per-agent Session, and ``agent_chat_tasks`` tracks in-flight chat
+    tasks per agent.  The top-level ``session`` / ``chat_task`` are the
+    "main" agent's state.
+    """
 
     session: Session
     model_override: str | None = None
     chat_task: asyncio.Task | None = None
+
+    # Multi-agent panel support
+    agent_sessions: dict[str, Session] = field(default_factory=dict)
+    agent_chat_tasks: dict[str, asyncio.Task] = field(default_factory=dict)
+
+    def get_session(self, agent_id: str | None) -> Session:
+        """Return the session for *agent_id*, falling back to main."""
+        if not agent_id or agent_id == "main":
+            return self.session
+        return self.agent_sessions.get(agent_id, self.session)
+
+    def set_session(self, agent_id: str | None, session: Session) -> None:
+        if not agent_id or agent_id == "main":
+            self.session = session
+        else:
+            self.agent_sessions[agent_id] = session
+
+    def get_chat_task(self, agent_id: str | None) -> asyncio.Task | None:
+        if not agent_id or agent_id == "main":
+            return self.chat_task
+        return self.agent_chat_tasks.get(agent_id)
+
+    def set_chat_task(self, agent_id: str | None, task: asyncio.Task) -> None:
+        if not agent_id or agent_id == "main":
+            self.chat_task = task
+        else:
+            self.agent_chat_tasks[agent_id] = task
 
 
 class WebApprovalCallback(ApprovalCallback):
@@ -552,6 +585,234 @@ class WebServer:
                 return FileResponse(str(ana_file), media_type="text/html")
             return HTMLResponse("<h1>Analytics</h1><p>analytics.html not found</p>")
 
+        # === Agents Page & API ===
+
+        @app.get("/agents")
+        async def agents_page():
+            """Serve the agent instances management page."""
+            agents_file = WEB_DIR / "agents.html"
+            if agents_file.exists():
+                return FileResponse(str(agents_file), media_type="text/html")
+            return HTMLResponse("<h1>Agents</h1><p>agents.html not found</p>")
+
+        @app.get("/api/agents/instances")
+        async def list_instances():
+            """List all agent instances."""
+            im = getattr(self.engine, "instance_manager", None)
+            if not im:
+                return {"instances": []}
+            return {"instances": [inst.get_info() for inst in im.list_all()]}
+
+        @app.get("/api/agents/instances/{instance_id}")
+        async def get_instance(instance_id: str):
+            """Get a single agent instance."""
+            im = getattr(self.engine, "instance_manager", None)
+            if not im:
+                return {"status": "error", "message": "Instance manager not available"}
+            inst = im.get(instance_id)
+            if not inst:
+                return {"status": "error", "message": f"Instance '{instance_id}' not found"}
+            return inst.get_info()
+
+        @app.post("/api/agents/instances")
+        async def create_instance(request: Request):
+            """Create a new agent instance."""
+            im = getattr(self.engine, "instance_manager", None)
+            if not im:
+                return {"status": "error", "message": "Instance manager not available"}
+            data = await request.json()
+            try:
+                from src.config import AgentInstanceConfig
+                cfg = AgentInstanceConfig(**data)
+                inst = await im.create_instance(cfg)
+                return {"status": "ok", "instance": inst.get_info()}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        @app.put("/api/agents/instances/{instance_id}")
+        async def update_instance(instance_id: str, request: Request):
+            """Update an agent instance (limited fields)."""
+            im = getattr(self.engine, "instance_manager", None)
+            if not im:
+                return {"status": "error", "message": "Instance manager not available"}
+            inst = im.get(instance_id)
+            if not inst:
+                return {"status": "error", "message": f"Instance '{instance_id}' not found"}
+            data = await request.json()
+            # Update mutable fields
+            if "name" in data:
+                inst.name = data["name"]
+                inst.config.name = data["name"]
+            if "model" in data:
+                inst.config.model = data["model"]
+            if "temperature" in data:
+                inst.config.temperature = data["temperature"]
+            if "system_prompt" in data:
+                inst.config.system_prompt = data["system_prompt"]
+            return {"status": "ok", "instance": inst.get_info()}
+
+        @app.delete("/api/agents/instances/{instance_id}")
+        async def delete_instance(instance_id: str):
+            """Delete an agent instance."""
+            im = getattr(self.engine, "instance_manager", None)
+            if not im:
+                return {"status": "error", "message": "Instance manager not available"}
+            deleted = await im.delete_instance(instance_id)
+            if not deleted:
+                return {"status": "error", "message": f"Instance '{instance_id}' not found"}
+            return {"status": "ok"}
+
+        @app.get("/api/agents/instances/{instance_id}/personality")
+        async def get_instance_personality(instance_id: str):
+            """Get an instance's personality file content."""
+            im = getattr(self.engine, "instance_manager", None)
+            if not im:
+                return {"content": ""}
+            inst = im.get(instance_id)
+            if not inst or not inst.personality_path:
+                return {"content": ""}
+            try:
+                content = inst.personality_path.read_text(encoding="utf-8")
+                return {"content": content}
+            except Exception:
+                return {"content": ""}
+
+        @app.put("/api/agents/instances/{instance_id}/personality")
+        async def update_instance_personality(instance_id: str, request: Request):
+            """Update an instance's personality file."""
+            im = getattr(self.engine, "instance_manager", None)
+            if not im:
+                return {"status": "error", "message": "Instance manager not available"}
+            inst = im.get(instance_id)
+            if not inst or not inst.personality_path:
+                return {"status": "error", "message": "Instance has no independent personality"}
+            data = await request.json()
+            inst.personality_path.write_text(data.get("content", ""), encoding="utf-8")
+            return {"status": "ok"}
+
+        @app.get("/api/agents/instances/{instance_id}/sub-agents")
+        async def list_sub_agents(instance_id: str):
+            """List sub-agents for an instance."""
+            im = getattr(self.engine, "instance_manager", None)
+            if not im:
+                return {"sub_agents": []}
+            inst = im.get(instance_id)
+            if not inst or not inst.agent_manager:
+                return {"sub_agents": []}
+            agents = inst.agent_manager.list_agents()
+            return {"sub_agents": list(agents.keys())}
+
+        @app.post("/api/agents/instances/{instance_id}/sub-agents")
+        async def add_sub_agent(instance_id: str, request: Request):
+            """Add a sub-agent to an instance."""
+            im = getattr(self.engine, "instance_manager", None)
+            if not im:
+                return {"status": "error", "message": "Instance manager not available"}
+            inst = im.get(instance_id)
+            if not inst or not inst.agent_manager:
+                return {"status": "error", "message": "Instance not found or has no agent manager"}
+            data = await request.json()
+            try:
+                from src.core.types import AgentDefinition
+                defn = AgentDefinition(
+                    name=data["name"],
+                    model=data.get("model", ""),
+                    system_prompt=data.get("system_prompt", ""),
+                    max_tool_rounds=data.get("max_tool_rounds", 5),
+                    created_by="web_ui",
+                )
+                inst.agent_manager.register(defn)
+                return {"status": "ok"}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        @app.delete("/api/agents/instances/{instance_id}/sub-agents/{agent_name}")
+        async def delete_sub_agent(instance_id: str, agent_name: str):
+            """Remove a sub-agent from an instance."""
+            im = getattr(self.engine, "instance_manager", None)
+            if not im:
+                return {"status": "error", "message": "Instance manager not available"}
+            inst = im.get(instance_id)
+            if not inst or not inst.agent_manager:
+                return {"status": "error", "message": "Instance not found"}
+            removed = inst.agent_manager.unregister(agent_name)
+            if not removed:
+                return {"status": "error", "message": f"Sub-agent '{agent_name}' not found"}
+            return {"status": "ok"}
+
+        @app.get("/api/agents/instances/{instance_id}/memory-stats")
+        async def get_instance_memory_stats(instance_id: str):
+            """Get memory statistics for an instance."""
+            im = getattr(self.engine, "instance_manager", None)
+            if not im:
+                return {"stats": {}}
+            inst = im.get(instance_id)
+            if not inst:
+                return {"stats": {}}
+            try:
+                stats = await inst.memory_manager.get_stats()
+                return {"stats": stats}
+            except Exception:
+                return {"stats": {}}
+
+        # === Dashboard Page & API ===
+
+        @app.get("/dashboard")
+        async def dashboard_page():
+            """Serve the real-time agent dashboard page."""
+            dash_file = WEB_DIR / "dashboard.html"
+            if dash_file.exists():
+                return FileResponse(str(dash_file), media_type="text/html")
+            return HTMLResponse("<h1>Dashboard</h1><p>dashboard.html not found</p>")
+
+        @app.get("/api/dashboard/stats")
+        async def dashboard_stats():
+            """Return aggregated agent event statistics."""
+            event_bus = getattr(self.engine, "event_bus", None)
+            if not event_bus:
+                return {"total_events": 0, "agents": {}, "agent_states": {}}
+            return event_bus.get_stats()
+
+        @app.get("/api/dashboard/events")
+        async def dashboard_events(limit: int = Query(50)):
+            """Return recent agent events."""
+            event_bus = getattr(self.engine, "event_bus", None)
+            if not event_bus:
+                return {"events": []}
+            return {"events": event_bus.get_recent(limit)}
+
+        @app.websocket("/ws/dashboard")
+        async def dashboard_ws(ws: WebSocket):
+            """WebSocket endpoint for live dashboard event streaming."""
+            await ws.accept()
+
+            event_bus = getattr(self.engine, "event_bus", None)
+            if not event_bus:
+                await ws.send_json({"type": "error", "message": "Event bus not available"})
+                await ws.close()
+                return
+
+            queue: asyncio.Queue = asyncio.Queue()
+
+            def on_event(evt):
+                try:
+                    queue.put_nowait(evt)
+                except asyncio.QueueFull:
+                    pass
+
+            event_bus.subscribe(on_event)
+            try:
+                while True:
+                    event = await queue.get()
+                    await ws.send_json({
+                        "type": "agent_event",
+                        "event": event.to_dict(),
+                    })
+            except (WebSocketDisconnect, Exception):
+                pass
+            finally:
+                event_bus.unsubscribe(on_event)
+
         # === Scheduler Page & API ===
 
         @app.get("/scheduler")
@@ -754,7 +1015,7 @@ class WebServer:
         await ws.accept()
 
         # Wait for the first message which may contain a session_id for restoration.
-        # The frontend always sends { type: "restore", session_id: ... } as handshake.
+        # The frontend always sends { type: "restore", session_id: ..., agent_id: ... }
         conn = None
         restored = False
         replay_data = None  # non-restore message that arrived first (fallback)
@@ -786,12 +1047,14 @@ class WebServer:
 
         # Send initial status + history if restored
         try:
+            agent_id = "main"
             status_msg = {
                 "type": "status",
                 "model": conn.model_override or self.engine.model.default_model,
                 "trust_level": session.trust_level,
                 "session_id": session.id,
                 "restored": restored,
+                "agent_id": agent_id,
             }
             await ws.send_json(status_msg)
 
@@ -802,7 +1065,7 @@ class WebServer:
                     if msg.role.value in ("user", "assistant") and isinstance(msg.content, str):
                         history.append({"role": msg.role.value, "content": msg.content})
                 if history:
-                    await ws.send_json({"type": "history", "messages": history})
+                    await ws.send_json({"type": "history", "messages": history, "agent_id": agent_id})
         except Exception:
             return
 
@@ -820,25 +1083,30 @@ class WebServer:
                     continue
 
                 msg_type = data.get("type")
+                agent_id = data.get("agent_id", "main")
 
                 if msg_type == "restore":
-                    # Already handled above; ignore duplicates
+                    # Multi-panel restore: create/restore session for the given agent_id
+                    await self._handle_agent_restore(ws, conn, data)
                     continue
 
                 if msg_type == "message":
                     text = data.get("text", "").strip()
                     if not text:
                         continue
-                    # Run chat in background to keep receive loop free for approvals
-                    if conn.chat_task and not conn.chat_task.done():
+                    # Check for in-flight task for this specific agent
+                    existing = conn.get_chat_task(agent_id)
+                    if existing and not existing.done():
                         await ws.send_json({
                             "type": "error",
                             "message": "Please wait for the current response to finish.",
+                            "agent_id": agent_id,
                         })
                         continue
-                    conn.chat_task = asyncio.create_task(
-                        self._handle_chat_message(ws, conn, text)
+                    task = asyncio.create_task(
+                        self._handle_chat_message(ws, conn, text, agent_id=agent_id)
                     )
+                    conn.set_chat_task(agent_id, task)
 
                 elif msg_type == "approval_response":
                     approval_id = data.get("approval_id", "")
@@ -848,6 +1116,7 @@ class WebServer:
                         "type": "approval_result",
                         "approval_id": approval_id,
                         "status": "resolved" if resolved else "not_found",
+                        "agent_id": agent_id,
                     })
 
                 elif msg_type == "command":
@@ -857,6 +1126,7 @@ class WebServer:
                     await ws.send_json({
                         "type": "error",
                         "message": f"Unknown message type: {msg_type}",
+                        "agent_id": agent_id,
                     })
 
         except WebSocketDisconnect:
@@ -866,21 +1136,75 @@ class WebServer:
         finally:
             self.approval_cb.unregister_websocket(session.id)
             self._tool_cb.unregister_websocket(session.id)
+            # Also unregister agent sessions
+            for asid in list(conn.agent_sessions.keys()):
+                agent_sess = conn.agent_sessions[asid]
+                self.approval_cb.unregister_websocket(agent_sess.id)
+                self._tool_cb.unregister_websocket(agent_sess.id)
             self._connections.pop(session.id, None)
             # Cache the session for potential reconnection
             self._cache_session(session.id, conn)
+
+    async def _handle_agent_restore(
+        self, ws: WebSocket, conn: ConnectionState, data: dict
+    ) -> None:
+        """Handle a restore/handshake for a specific agent panel."""
+        agent_id = data.get("agent_id", "main")
+        sid = data.get("session_id")
+
+        if agent_id == "main":
+            # Main agent already restored in the initial handshake
+            return
+
+        # Get or create session for this agent
+        existing = conn.agent_sessions.get(agent_id)
+        if existing:
+            session = existing
+        else:
+            session = Session(adapter="web")
+            conn.agent_sessions[agent_id] = session
+
+        # Register approval callbacks for agent session
+        self.approval_cb.register_websocket(session.id, ws)
+        self._tool_cb.register_websocket(session.id, ws)
+
+        # Resolve the engine for this agent
+        engine = self._resolve_engine(agent_id)
+        default_model = engine.model.default_model if engine else self.engine.model.default_model
+
+        await ws.send_json({
+            "type": "status",
+            "model": default_model,
+            "trust_level": session.trust_level,
+            "session_id": session.id,
+            "agent_id": agent_id,
+            "restored": False,
+        })
+
+    def _resolve_engine(self, agent_id: str):
+        """Resolve the Engine for a given agent_id."""
+        if not agent_id or agent_id == "main":
+            return self.engine
+        instance_manager = getattr(self.engine, "instance_manager", None)
+        if instance_manager:
+            inst = instance_manager.get(agent_id)
+            if inst:
+                return inst.engine
+        return self.engine
 
     async def _process_ws_message(
         self, ws: WebSocket, conn: ConnectionState, data: dict
     ) -> None:
         """Process a single parsed WebSocket message (used for replaying non-handshake first messages)."""
         msg_type = data.get("type")
+        agent_id = data.get("agent_id", "main")
         if msg_type == "message":
             text = data.get("text", "").strip()
             if text:
-                conn.chat_task = asyncio.create_task(
-                    self._handle_chat_message(ws, conn, text)
+                task = asyncio.create_task(
+                    self._handle_chat_message(ws, conn, text, agent_id=agent_id)
                 )
+                conn.set_chat_task(agent_id, task)
         elif msg_type == "approval_response":
             approval_id = data.get("approval_id", "")
             action = data.get("action", "deny")
@@ -889,27 +1213,43 @@ class WebServer:
             await self._handle_command(ws, conn, data)
 
     async def _handle_chat_message(
-        self, ws: WebSocket, conn: ConnectionState, text: str
+        self, ws: WebSocket, conn: ConnectionState, text: str,
+        *, agent_id: str = "main",
     ) -> None:
-        """Process a chat message in the background."""
+        """Process a chat message in the background.
+
+        Routes to the correct engine based on *agent_id*.
+        """
         try:
-            await ws.send_json({"type": "stream_start"})
+            await ws.send_json({"type": "stream_start", "agent_id": agent_id})
+
+            # Resolve engine and session for this agent
+            engine = self._resolve_engine(agent_id)
+            session = conn.get_session(agent_id)
+
+            # If the agent panel has no session yet, create one
+            if session is conn.session and agent_id != "main":
+                session = Session(adapter="web")
+                conn.set_session(agent_id, session)
+                self.approval_cb.register_websocket(session.id, ws)
+                self._tool_cb.register_websocket(session.id, ws)
 
             # Use stream_message for streaming support
-            async for chunk in self.engine.stream_message(
-                text, conn.session, model=conn.model_override
+            async for chunk in engine.stream_message(
+                text, session, model=conn.model_override
             ):
-                await ws.send_json({"type": "stream_chunk", "text": chunk})
+                await ws.send_json({"type": "stream_chunk", "text": chunk, "agent_id": agent_id})
 
-            await ws.send_json({"type": "stream_end"})
+            await ws.send_json({"type": "stream_end", "agent_id": agent_id})
         except WebSocketDisconnect:
             pass
         except Exception as e:
-            logger.error("chat_error", error=str(e))
+            logger.error("chat_error", error=str(e), agent_id=agent_id)
             try:
                 await ws.send_json({
                     "type": "error",
                     "message": f"Error: {str(e)}",
+                    "agent_id": agent_id,
                 })
             except Exception:
                 pass
@@ -920,46 +1260,57 @@ class WebServer:
         """Handle a command message."""
         command = data.get("command", "")
         args = data.get("args", "")
+        agent_id = data.get("agent_id", "main")
 
         if command == "model":
             if args:
                 conn.model_override = args
+            engine = self._resolve_engine(agent_id)
             await ws.send_json({
                 "type": "status",
-                "model": conn.model_override or self.engine.model.default_model,
-                "trust_level": conn.session.trust_level,
-                "session_id": conn.session.id,
+                "model": conn.model_override or engine.model.default_model,
+                "trust_level": conn.get_session(agent_id).trust_level,
+                "session_id": conn.get_session(agent_id).id,
+                "agent_id": agent_id,
             })
 
         elif command == "clear":
-            old_id = conn.session.id
-            conn.session = Session(adapter="web")
+            session = conn.get_session(agent_id)
+            old_id = session.id
+            new_session = Session(adapter="web")
+            conn.set_session(agent_id, new_session)
             self.approval_cb.unregister_websocket(old_id)
-            self.approval_cb.register_websocket(conn.session.id, ws)
+            self.approval_cb.register_websocket(new_session.id, ws)
             self._tool_cb.unregister_websocket(old_id)
-            self._tool_cb.register_websocket(conn.session.id, ws)
-            self._connections.pop(old_id, None)
-            self._session_cache.pop(old_id, None)  # Remove from cache too
-            self._connections[conn.session.id] = conn
+            self._tool_cb.register_websocket(new_session.id, ws)
+            if agent_id == "main":
+                self._connections.pop(old_id, None)
+                self._session_cache.pop(old_id, None)
+                self._connections[new_session.id] = conn
+            engine = self._resolve_engine(agent_id)
             await ws.send_json({
                 "type": "status",
-                "model": conn.model_override or self.engine.model.default_model,
-                "trust_level": conn.session.trust_level,
-                "session_id": conn.session.id,
+                "model": conn.model_override or engine.model.default_model,
+                "trust_level": new_session.trust_level,
+                "session_id": new_session.id,
+                "agent_id": agent_id,
             })
 
         elif command == "trust":
             level = args if args in ("low", "medium", "high", "critical") else "low"
-            conn.session.trust_level = level
+            session = conn.get_session(agent_id)
+            session.trust_level = level
             level_map = {"low": RiskLevel.LOW, "medium": RiskLevel.MEDIUM,
                          "high": RiskLevel.HIGH, "critical": RiskLevel.CRITICAL}
-            self.engine.approval_policy.elevate_session_trust(
-                conn.session.id, level_map[level])
+            engine = self._resolve_engine(agent_id)
+            engine.approval_policy.elevate_session_trust(
+                session.id, level_map[level])
             await ws.send_json({
                 "type": "status",
-                "model": conn.model_override or self.engine.model.default_model,
-                "trust_level": conn.session.trust_level,
-                "session_id": conn.session.id,
+                "model": conn.model_override or engine.model.default_model,
+                "trust_level": session.trust_level,
+                "session_id": session.id,
+                "agent_id": agent_id,
             })
 
         elif command == "skills":
@@ -972,6 +1323,7 @@ class WebServer:
                     {"name": s.name, "description": s.description, "active": s.name in active}
                     for s in skills
                 ],
+                "agent_id": agent_id,
             })
 
         elif command == "skill":
@@ -989,14 +1341,16 @@ class WebServer:
                         {"name": s.name, "description": s.description, "active": s.name in active}
                         for s in sm.list_skills()
                     ],
+                    "agent_id": agent_id,
                 })
             else:
-                await ws.send_json({"type": "error", "message": "Usage: skill <name>"})
+                await ws.send_json({"type": "error", "message": "Usage: skill <name>", "agent_id": agent_id})
 
         else:
             await ws.send_json({
                 "type": "error",
                 "message": f"Unknown command: {command}",
+                "agent_id": agent_id,
             })
 
     async def run(self) -> None:

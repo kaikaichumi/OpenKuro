@@ -197,20 +197,29 @@ class LineApprovalCallback(ApprovalCallback):
 
 
 class LineAdapter(BaseAdapter):
-    """LINE Messaging API adapter with webhook server."""
+    """LINE Messaging API adapter with webhook server.
+
+    Supports binding to an AgentInstance for multi-bot scenarios.
+    """
 
     name = "line"
 
-    def __init__(self, engine: Engine, config: KuroConfig) -> None:
-        super().__init__(engine, config)
+    def __init__(
+        self,
+        engine: Engine,
+        config: KuroConfig,
+        agent_instance: Any = None,
+    ) -> None:
+        super().__init__(engine, config, agent_instance=agent_instance)
         self._api = None
         self._parser = None
         self._runner = None
         self._site = None
+        target_engine = self.effective_engine
         self._approval_cb = LineApprovalCallback(
-            approval_policy=engine.approval_policy
+            approval_policy=target_engine.approval_policy
         )
-        self.engine.approval_cb = self._approval_cb
+        target_engine.approval_cb = self._approval_cb
 
     async def start(self) -> None:
         from aiohttp import web
@@ -366,7 +375,7 @@ class LineAdapter(BaseAdapter):
         model = session.metadata.get("model_override")
 
         try:
-            response = await self.engine.process_message(text, session, model=model)
+            response = await self.process_incoming(text, session, model=model)
 
             max_len = self.config.adapters.line.max_message_length
             chunks = split_message(response, max_len)

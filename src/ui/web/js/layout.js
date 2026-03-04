@@ -9,6 +9,8 @@ import { initI18n, applyTranslations } from "./i18n.js";
 
 const NAV_LINKS = [
     { href: "/", key: "nav.chat", label: "Chat" },
+    { href: "/agents", key: "nav.agents", label: "Agents" },
+    { href: "/dashboard", key: "nav.dashboard", label: "Dashboard" },
     { href: "/scheduler", key: "nav.scheduler", label: "Scheduler" },
     { href: "/security", key: "nav.security", label: "Security" },
     { href: "/analytics", key: "nav.analytics", label: "Analytics" },

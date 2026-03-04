@@ -183,18 +183,31 @@ class SlackApprovalCallback(ApprovalCallback):
 
 
 class SlackAdapter(BaseAdapter):
-    """Slack adapter using slack-bolt with Socket Mode."""
+    """Slack adapter using slack-bolt with Socket Mode.
+
+    Supports binding to an AgentInstance for multi-bot scenarios.
+    """
 
     name = "slack"
 
-    def __init__(self, engine: Engine, config: KuroConfig) -> None:
-        super().__init__(engine, config)
+    def __init__(
+        self,
+        engine: Engine,
+        config: KuroConfig,
+        agent_instance: Any = None,
+        bot_token_override: str | None = None,
+        config_overrides: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(engine, config, agent_instance=agent_instance)
         self._app = None
         self._handler = None
+        self._bot_token_override = bot_token_override
+        self._config_overrides = config_overrides or {}
+        target_engine = self.effective_engine
         self._approval_cb = SlackApprovalCallback(
-            approval_policy=engine.approval_policy
+            approval_policy=target_engine.approval_policy
         )
-        self.engine.approval_cb = self._approval_cb
+        target_engine.approval_cb = self._approval_cb
 
     async def start(self) -> None:
         from slack_bolt.async_app import AsyncApp
@@ -390,7 +403,7 @@ class SlackAdapter(BaseAdapter):
         model = session.metadata.get("model_override")
 
         try:
-            response = await self.engine.process_message(text, session, model=model)
+            response = await self.process_incoming(text, session, model=model)
 
             max_len = self.config.adapters.slack.max_message_length
             chunks = split_message(response, max_len)

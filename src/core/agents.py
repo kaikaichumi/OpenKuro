@@ -668,10 +668,10 @@ class AgentManager:
         self._load_predefined()
 
     def _load_predefined(self) -> None:
-        """Load predefined agent definitions from config."""
+        """Load sub-agent definitions from config (agents.sub_agents)."""
         if not self.config.agents.enabled:
             return
-        for agent_cfg in self.config.agents.predefined:
+        for agent_cfg in self.config.agents.sub_agents:
             defn = AgentDefinition(
                 name=agent_cfg.name,
                 model=agent_cfg.model,

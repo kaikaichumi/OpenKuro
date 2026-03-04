@@ -221,27 +221,53 @@ class DiscordAdapter(BaseAdapter):
     Uses message content intent for prefix commands.
     Session key: f"{channel_id}:{user_id}" — each user in each channel
     gets their own session.
+
+    Supports binding to an AgentInstance for multi-bot scenarios:
+    each instance gets its own Discord bot with separate token,
+    routing messages through the instance's Engine.
     """
 
     name = "discord"
 
-    def __init__(self, engine: Engine, config: KuroConfig) -> None:
-        super().__init__(engine, config)
+    def __init__(
+        self,
+        engine: Engine,
+        config: KuroConfig,
+        agent_instance: Any = None,
+        bot_token_override: str | None = None,
+        config_overrides: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(engine, config, agent_instance=agent_instance)
 
         self._bot = None
-        self._approval_cb = DiscordApprovalCallback(
-            approval_policy=engine.approval_policy,
-        )
-        self._approval_cb._timeout = config.adapters.discord.approval_timeout
+        self._bot_token_override = bot_token_override
+        self._config_overrides = config_overrides or {}
 
-        # Replace the engine's approval callback with Discord's
-        self.engine.approval_cb = self._approval_cb
+        # Use the effective engine's approval policy
+        target_engine = self.effective_engine
+        self._approval_cb = DiscordApprovalCallback(
+            approval_policy=target_engine.approval_policy,
+        )
+        self._approval_cb._timeout = self._get_discord_config("approval_timeout", config.adapters.discord.approval_timeout)
+
+        # Replace the target engine's approval callback with Discord's
+        target_engine.approval_cb = self._approval_cb
+
+    def _get_discord_config(self, key: str, default: Any = None) -> Any:
+        """Get a Discord config value, checking overrides first."""
+        return self._config_overrides.get(key, default)
 
     async def start(self) -> None:
         """Initialize the Discord bot and start it."""
-        token = self.config.adapters.discord.get_bot_token()
-        if not token:
+        # Use token override (from AgentInstance binding) or default config
+        if self._bot_token_override:
+            import os
+            token = os.environ.get(self._bot_token_override, "")
+            env_var = self._bot_token_override
+        else:
+            token = self.config.adapters.discord.get_bot_token()
             env_var = self.config.adapters.discord.bot_token_env
+        if not token:
             raise RuntimeError(
                 f"Discord bot token not found. "
                 f"Set the {env_var} environment variable."
@@ -436,7 +462,7 @@ class DiscordAdapter(BaseAdapter):
 
         elif cmd == "models":
             try:
-                groups = await self.engine.model.list_models_grouped()
+                groups = await self.effective_engine.model.list_models_grouped()
                 if not groups:
                     await message.channel.send("No models available.")
                 else:
@@ -454,7 +480,7 @@ class DiscordAdapter(BaseAdapter):
                 await message.channel.send(f"\u274c Error listing models: {str(e)[:200]}")
 
         elif cmd == "agents":
-            agent_manager = getattr(self.engine, "agent_manager", None)
+            agent_manager = getattr(self.effective_engine, "agent_manager", None)
             if agent_manager is None:
                 await message.channel.send(
                     "\u274c Agent system is disabled. Enable it in config.yaml:\n"
@@ -505,7 +531,7 @@ class DiscordAdapter(BaseAdapter):
             agent_name = delegate_parts[0]
             task = delegate_parts[1]
 
-            agent_manager = getattr(self.engine, "agent_manager", None)
+            agent_manager = getattr(self.effective_engine, "agent_manager", None)
             if agent_manager is None:
                 await message.channel.send("\u274c Agent system is not available.")
                 return
@@ -582,7 +608,7 @@ class DiscordAdapter(BaseAdapter):
                     "low": RiskLevel.LOW, "medium": RiskLevel.MEDIUM,
                     "high": RiskLevel.HIGH, "critical": RiskLevel.CRITICAL,
                 }
-                self.engine.approval_policy.elevate_session_trust(
+                self.effective_engine.approval_policy.elevate_session_trust(
                     session.id, level_map[args_text]
                 )
                 await message.channel.send(
@@ -622,8 +648,8 @@ class DiscordAdapter(BaseAdapter):
                 # Get model override if set
                 model = session.metadata.get("model_override")
 
-                # Process through engine
-                response = await self.engine.process_message(
+                # Process through engine (routes to agent instance if bound)
+                response = await self.process_incoming(
                     content, session, model=model
                 )
 

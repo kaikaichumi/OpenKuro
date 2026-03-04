@@ -12,31 +12,43 @@
 <body>
     <nav id="main-nav"></nav>
 
-    <main id="chat-container" style="flex:1;overflow-y:auto;padding:1rem;background:var(--bg-chat);">
-        <div id="messages"></div>
-    </main>
-
-    <footer id="input-area">
-        <div class="input-wrapper">
-            <textarea id="user-input" data-i18n-placeholder="chat.placeholder" placeholder="Type a message..." rows="1" autofocus></textarea>
-            <button id="btn-send" data-i18n-title="chat.send" title="Send">&#10148;</button>
+    <!-- Panel Layout Toolbar -->
+    <div id="panel-toolbar" class="panel-toolbar">
+        <div class="panel-toolbar-inner">
+            <div class="layout-modes">
+                <button class="layout-btn active" data-layout="single" title="Single panel">
+                    <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" rx="1" fill="currentColor"/></svg>
+                </button>
+                <button class="layout-btn" data-layout="split-2" title="Split 2 panels">
+                    <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="1" width="6" height="14" rx="1" fill="currentColor"/><rect x="9" y="1" width="6" height="14" rx="1" fill="currentColor"/></svg>
+                </button>
+                <button class="layout-btn" data-layout="split-3" title="Split 3 panels">
+                    <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="1" width="4" height="14" rx="1" fill="currentColor"/><rect x="6" y="1" width="4" height="14" rx="1" fill="currentColor"/><rect x="11" y="1" width="4" height="14" rx="1" fill="currentColor"/></svg>
+                </button>
+                <button class="layout-btn" data-layout="grid-4" title="Grid 4 panels">
+                    <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="1" width="6" height="6" rx="1" fill="currentColor"/><rect x="9" y="1" width="6" height="6" rx="1" fill="currentColor"/><rect x="1" y="9" width="6" height="6" rx="1" fill="currentColor"/><rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor"/></svg>
+                </button>
+                <button class="layout-btn" data-layout="grid-6" title="Grid 6 panels">
+                    <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="1" width="4" height="6" rx="1" fill="currentColor"/><rect x="6" y="1" width="4" height="6" rx="1" fill="currentColor"/><rect x="11" y="1" width="4" height="6" rx="1" fill="currentColor"/><rect x="1" y="9" width="4" height="6" rx="1" fill="currentColor"/><rect x="6" y="9" width="4" height="6" rx="1" fill="currentColor"/><rect x="11" y="9" width="4" height="6" rx="1" fill="currentColor"/></svg>
+                </button>
+            </div>
+            <span class="panel-toolbar-label" id="layout-label" data-i18n="chat.singlePanel">Single Panel</span>
         </div>
-        <div id="connection-status" class="status-bar">
-            <span id="status-dot" class="dot dot-disconnected"></span>
-            <span id="status-text" data-i18n="chat.connecting">Connecting...</span>
-            <span class="status-spacer"></span>
-            <span id="model-badge" class="badge badge-model" title="">—</span>
-            <span id="trust-badge" class="badge badge-trust">—</span>
-        </div>
-    </footer>
+    </div>
 
-    <!-- Approval Modal -->
+    <!-- Panels Grid: chat panels are created dynamically by chat.js -->
+    <div id="panels-grid" class="panels-grid layout-single">
+        <!-- ChatPanel elements injected here by JS -->
+    </div>
+
+    <!-- Approval Modal (shared across all panels) -->
     <div id="approval-modal" class="modal-overlay hidden">
         <div class="modal">
             <h2 data-i18n="approval.title">Tool Approval</h2>
             <div id="approval-tool" class="approval-field"></div>
             <div id="approval-risk" class="approval-field"></div>
             <pre id="approval-params" class="approval-params"></pre>
+            <div id="approval-agent-label" class="approval-field" style="color:var(--accent);font-weight:600;"></div>
             <div class="approval-actions">
                 <button id="btn-approve" class="btn btn-approve" data-i18n="approval.approve">Approve</button>
                 <button id="btn-deny" class="btn btn-deny" data-i18n="approval.deny">Deny</button>
@@ -45,7 +57,7 @@
         </div>
     </div>
 
-    <!-- Settings Panel -->
+    <!-- Settings Panel (shared) -->
     <div id="settings-panel" class="side-panel hidden">
         <div class="panel-header">
             <h2 data-i18n="settings.title">Settings</h2>
@@ -69,7 +81,7 @@
         </div>
     </div>
 
-    <!-- Screen Preview Panel -->
+    <!-- Screen Preview Panel (shared) -->
     <div id="screen-panel" class="side-panel screen-panel hidden">
         <div class="panel-header">
             <h2 data-i18n="chat.screenPreview">Screen Preview</h2>
@@ -85,7 +97,7 @@
         </div>
     </div>
 
-    <!-- Audit Panel -->
+    <!-- Audit Panel (shared) -->
     <div id="audit-panel" class="side-panel hidden">
         <div class="panel-header">
             <h2 data-i18n="chat.auditLog">Audit Log</h2>

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # === Default paths ===
@@ -282,15 +282,87 @@ class AgentDefinitionConfig(BaseModel):
     output_schema: dict | None = None  # JSON Schema for structured output (None = plain text)
 
 
+class MemoryModeConfig(BaseModel):
+    """Memory configuration for a Primary Agent instance."""
+
+    mode: str = "independent"  # "independent" | "shared" | "linked"
+    # For "linked": share specific memory tiers with named agents
+    linked_agents: list[str] = Field(default_factory=list)
+    link_tiers: list[str] = Field(default_factory=lambda: ["longterm"])
+
+
+class BotBindingConfig(BaseModel):
+    """Bot binding: which adapter this agent instance is attached to."""
+
+    adapter_type: str = ""  # "discord" | "telegram" | "slack" | "line" | "email" | ""
+    bot_token_env: str = ""  # Env var for a SEPARATE bot token
+    overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class InvocationConfig(BaseModel):
+    """Who can invoke this agent instance."""
+
+    allow_web_ui: bool = True
+    allow_main_agent: bool = True
+    allow_agents: list[str] = Field(default_factory=list)
+
+
+class AgentInstanceConfig(BaseModel):
+    """Configuration for a Primary Agent instance (full AI persona)."""
+
+    id: str
+    name: str
+    enabled: bool = True
+    # LLM settings (None = inherit from main config)
+    model: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+    system_prompt: str | None = None
+    # Personality
+    personality_mode: str = "independent"  # "independent" | "shared"
+    # Tool configuration
+    allowed_tools: list[str] = Field(default_factory=list)
+    denied_tools: list[str] = Field(default_factory=list)
+    max_tool_rounds: int = 10
+    # Memory
+    memory: MemoryModeConfig = Field(default_factory=MemoryModeConfig)
+    # Bot binding
+    bot_binding: BotBindingConfig = Field(default_factory=BotBindingConfig)
+    # Invocation control
+    invocation: InvocationConfig = Field(default_factory=InvocationConfig)
+    # This Primary Agent's own Sub-Agent pool
+    sub_agents: list[AgentDefinitionConfig] = Field(default_factory=list)
+
+
 class AgentsConfig(BaseModel):
-    """Multi-agent system configuration."""
+    """Unified multi-agent system configuration.
+
+    Combines sub-agents (lightweight task executors) and Primary Agent instances
+    (full AI personas with own memory/personality/bot binding) in one section.
+    """
 
     enabled: bool = True
-    max_concurrent_agents: int = 5  # Max agents that can run simultaneously
-    default_max_tool_rounds: int = 5  # Default tool rounds for sub-agents
-    default_max_depth: int = 3  # Global default for recursive delegation depth
-    allow_dynamic_creation: bool = True  # Allow LLM to create agents at runtime
+    max_concurrent_agents: int = 5
+    default_max_tool_rounds: int = 5
+    default_max_depth: int = 3
+    allow_dynamic_creation: bool = True
+
+    # Main agent's sub-agent pool (replaces old "predefined")
+    sub_agents: list[AgentDefinitionConfig] = Field(default_factory=list)
+
+    # Primary Agent instances (each with own memory/personality/sub-agents)
+    instances: list[AgentInstanceConfig] = Field(default_factory=list)
+
+    # Backward compat: old "predefined" auto-migrates to "sub_agents"
     predefined: list[AgentDefinitionConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _migrate_predefined(self):
+        """Backward compat: merge predefined into sub_agents."""
+        if self.predefined and not self.sub_agents:
+            self.sub_agents = list(self.predefined)
+            self.predefined = []
+        return self
 
 
 # === Phase 2: Agent Teams Configuration ===

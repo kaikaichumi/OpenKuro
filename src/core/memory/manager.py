@@ -33,11 +33,13 @@ class MemoryManager:
         history: ConversationHistory | None = None,
         longterm: LongTermMemory | None = None,
         config: KuroConfig | None = None,
+        personality_path: Any | None = None,
     ) -> None:
         self.working = working or WorkingMemory()
         self.history = history or ConversationHistory()
         self.longterm = longterm or LongTermMemory()
         self._config = config
+        self._personality_path = personality_path  # Custom path or None (use default)
 
         # Lazy-initialized components (set up by engine after model_router is ready)
         self.compressor: Any = None  # ContextCompressor
@@ -114,7 +116,7 @@ class MemoryManager:
 
         # 1.5 Personality (user-defined character & style)
         try:
-            personality_path = get_kuro_home() / "personality.md"
+            personality_path = self._personality_path or get_kuro_home() / "personality.md"
             if personality_path.exists():
                 personality_text = personality_path.read_text(encoding="utf-8").strip()
                 if personality_text:

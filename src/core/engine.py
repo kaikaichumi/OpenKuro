@@ -143,6 +143,7 @@ class Engine:
         self.skills = skills_manager
         self.agent_manager = agent_manager
         self.team_manager: Any = None  # Set externally after construction (Phase 2)
+        self.instance_manager: Any = None  # AgentInstanceManager (Primary Agent instances)
 
         # Security components
         self.approval_policy = ApprovalPolicy(config.security)
@@ -177,6 +178,7 @@ class Engine:
             max_output_size=self.config.sandbox.max_output_size,
             agent_manager=self.agent_manager,
             team_manager=self.team_manager,
+            instance_manager=self.instance_manager,
         )
         result = await self.tools.execute(tool_name, params, context)
         if result.success:
@@ -1104,6 +1106,7 @@ class Engine:
             agent_manager=self.agent_manager,
             session=session,
             team_manager=self.team_manager,
+            instance_manager=self.instance_manager,
         )
 
         start = time.monotonic()

@@ -70,6 +70,9 @@ class ToolContext:
     team_workspace: Any = None  # SharedWorkspace | None (for team-internal tools)
     team_message_bus: Any = None  # MessageBus | None (for team-internal tools)
     team_role: str | None = None  # Current role name (for team-internal tools)
+    # Primary Agent Instance support
+    agent_instance_id: str | None = None  # Current Primary Agent instance ID
+    instance_manager: Any = None  # AgentInstanceManager | None
 
 
 class BaseTool(ABC):

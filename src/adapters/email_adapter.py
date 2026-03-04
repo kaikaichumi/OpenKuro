@@ -166,20 +166,29 @@ class EmailApprovalCallback(ApprovalCallback):
 
 
 class EmailAdapter(BaseAdapter):
-    """Email adapter: IMAP IDLE receive + SMTP send."""
+    """Email adapter: IMAP IDLE receive + SMTP send.
+
+    Supports binding to an AgentInstance for multi-bot scenarios.
+    """
 
     name = "email"
 
-    def __init__(self, engine: Engine, config: KuroConfig) -> None:
-        super().__init__(engine, config)
+    def __init__(
+        self,
+        engine: Engine,
+        config: KuroConfig,
+        agent_instance: Any = None,
+    ) -> None:
+        super().__init__(engine, config, agent_instance=agent_instance)
         self._imap = None
         self._running = False
         self._idle_task: asyncio.Task | None = None
+        target_engine = self.effective_engine
         self._approval_cb = EmailApprovalCallback(
-            approval_policy=engine.approval_policy
+            approval_policy=target_engine.approval_policy
         )
         self._approval_cb.set_send_fn(self._send_email)
-        self.engine.approval_cb = self._approval_cb
+        target_engine.approval_cb = self._approval_cb
         self._seen_uids: set[str] = set()
 
     async def start(self) -> None:
@@ -375,7 +384,7 @@ class EmailAdapter(BaseAdapter):
         model = session.metadata.get("model_override")
 
         try:
-            response = await self.engine.process_message(body, session, model=model)
+            response = await self.process_incoming(body, session, model=model)
 
             # Send response via email
             reply_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}"

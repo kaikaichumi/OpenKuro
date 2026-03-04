@@ -2,11 +2,16 @@
 
 Handles registration, concurrent startup, and graceful shutdown
 of all configured messaging adapters.
+
+Supports multi-instance adapters: the same adapter type (e.g. Discord)
+can run multiple instances, each bound to a different AgentInstance
+with its own bot token, memory, and personality.
 """
 
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import structlog
 
@@ -20,7 +25,10 @@ logger = structlog.get_logger()
 class AdapterManager:
     """Manages the lifecycle of multiple messaging adapters.
 
-    Adapters are registered, then started concurrently.
+    Adapters are registered with composite keys (e.g. "discord:main",
+    "discord:customer-service") to support multiple instances of the
+    same adapter type.
+
     On shutdown, all adapters are stopped gracefully.
     """
 
@@ -29,18 +37,36 @@ class AdapterManager:
         self.config = config
         self._adapters: dict[str, BaseAdapter] = {}
 
-    def register(self, adapter: BaseAdapter) -> None:
-        """Register an adapter for management."""
-        self._adapters[adapter.name] = adapter
-        logger.info("adapter_registered", adapter=adapter.name)
+    def register(self, adapter: BaseAdapter, instance_id: str | None = None) -> None:
+        """Register an adapter for management.
+
+        Args:
+            adapter: The adapter instance to register.
+            instance_id: Optional agent instance ID for multi-instance.
+                         Key becomes "type:instance_id" (e.g. "discord:cs-bot").
+                         If None, uses the adapter name as-is.
+        """
+        if instance_id:
+            key = f"{adapter.name}:{instance_id}"
+        else:
+            key = adapter.name
+        self._adapters[key] = adapter
+        logger.info("adapter_registered", adapter=key)
 
     def get(self, name: str) -> BaseAdapter | None:
-        """Get a registered adapter by name."""
+        """Get a registered adapter by name or composite key."""
         return self._adapters.get(name)
+
+    def get_by_type(self, adapter_type: str) -> list[BaseAdapter]:
+        """Get all adapters of a given type (e.g. all Discord adapters)."""
+        return [
+            a for key, a in self._adapters.items()
+            if key == adapter_type or key.startswith(f"{adapter_type}:")
+        ]
 
     @property
     def adapter_names(self) -> list[str]:
-        """Get names of all registered adapters."""
+        """Get keys of all registered adapters."""
         return list(self._adapters.keys())
 
     async def start_all(self) -> None:
@@ -89,7 +115,8 @@ class AdapterManager:
         to users via Discord/Telegram.
 
         Args:
-            adapter_name: Name of the adapter (e.g., "discord", "telegram").
+            adapter_name: Name or composite key of the adapter
+                         (e.g., "discord", "discord:cs-bot", "telegram").
             user_id: Platform-specific user/channel identifier.
             message: The notification message to send.
 
@@ -97,6 +124,12 @@ class AdapterManager:
             True if the message was sent successfully.
         """
         adapter = self._adapters.get(adapter_name)
+        # Fallback: try base type if composite key not found
+        if adapter is None and ":" not in adapter_name:
+            for key, a in self._adapters.items():
+                if key == adapter_name or key.startswith(f"{adapter_name}:"):
+                    adapter = a
+                    break
         if adapter is None:
             logger.warning(
                 "notification_adapter_not_found",
@@ -144,6 +177,10 @@ class AdapterManager:
     ) -> AdapterManager:
         """Create an AdapterManager and register adapters based on config.
 
+        Registers both:
+        1. Main adapters (from config.adapters settings)
+        2. Instance-bound adapters (from AgentInstance bot_binding)
+
         Args:
             engine: The core Engine instance.
             config: The application configuration.
@@ -155,7 +192,7 @@ class AdapterManager:
         """
         manager = cls(engine, config)
 
-        # Determine which adapters to enable
+        # --- 1. Register main adapters (existing behavior) ---
         if adapters is None:
             adapters = []
             if config.adapters.telegram.enabled:
@@ -170,27 +207,123 @@ class AdapterManager:
                 adapters.append("email")
 
         for name in adapters:
-            if name == "telegram":
-                from src.adapters.telegram_adapter import TelegramAdapter
-                adapter = TelegramAdapter(engine, config)
-                manager.register(adapter)
-            elif name == "discord":
-                from src.adapters.discord_adapter import DiscordAdapter
-                adapter = DiscordAdapter(engine, config)
-                manager.register(adapter)
-            elif name == "slack":
-                from src.adapters.slack_adapter import SlackAdapter
-                adapter = SlackAdapter(engine, config)
-                manager.register(adapter)
-            elif name == "line":
-                from src.adapters.line_adapter import LineAdapter
-                adapter = LineAdapter(engine, config)
-                manager.register(adapter)
-            elif name == "email":
-                from src.adapters.email_adapter import EmailAdapter
-                adapter = EmailAdapter(engine, config)
+            adapter = _create_adapter(name, engine, config)
+            if adapter:
                 manager.register(adapter)
             else:
                 logger.warning("unknown_adapter", adapter=name)
 
+        # --- 2. Register instance-bound adapters ---
+        instance_manager = getattr(engine, "instance_manager", None)
+        if instance_manager:
+            for inst in instance_manager.list_all():
+                binding = inst.config.bot_binding
+                if not binding.adapter_type or not binding.bot_token_env:
+                    continue
+
+                adapter = _create_instance_adapter(
+                    adapter_type=binding.adapter_type,
+                    engine=engine,
+                    config=config,
+                    agent_instance=inst,
+                    bot_token_env=binding.bot_token_env,
+                    overrides=binding.overrides,
+                )
+                if adapter:
+                    manager.register(adapter, instance_id=inst.id)
+                    inst.bound_adapter = adapter
+                    logger.info(
+                        "instance_adapter_bound",
+                        instance_id=inst.id,
+                        adapter_type=binding.adapter_type,
+                        token_env=binding.bot_token_env,
+                    )
+                else:
+                    logger.warning(
+                        "instance_adapter_unknown_type",
+                        instance_id=inst.id,
+                        adapter_type=binding.adapter_type,
+                    )
+
         return manager
+
+
+def _create_adapter(
+    name: str,
+    engine: Engine,
+    config: KuroConfig,
+) -> BaseAdapter | None:
+    """Create a main adapter by name."""
+    if name == "telegram":
+        from src.adapters.telegram_adapter import TelegramAdapter
+        return TelegramAdapter(engine, config)
+    elif name == "discord":
+        from src.adapters.discord_adapter import DiscordAdapter
+        return DiscordAdapter(engine, config)
+    elif name == "slack":
+        from src.adapters.slack_adapter import SlackAdapter
+        return SlackAdapter(engine, config)
+    elif name == "line":
+        from src.adapters.line_adapter import LineAdapter
+        return LineAdapter(engine, config)
+    elif name == "email":
+        from src.adapters.email_adapter import EmailAdapter
+        return EmailAdapter(engine, config)
+    return None
+
+
+def _create_instance_adapter(
+    adapter_type: str,
+    engine: Engine,
+    config: KuroConfig,
+    agent_instance: Any,
+    bot_token_env: str,
+    overrides: dict[str, Any] | None = None,
+) -> BaseAdapter | None:
+    """Create an adapter bound to an AgentInstance.
+
+    The adapter will route messages through the instance's Engine
+    and use the specified bot token environment variable.
+    """
+    if adapter_type == "discord":
+        from src.adapters.discord_adapter import DiscordAdapter
+        return DiscordAdapter(
+            engine=engine,
+            config=config,
+            agent_instance=agent_instance,
+            bot_token_override=bot_token_env,
+            config_overrides=overrides,
+        )
+    elif adapter_type == "telegram":
+        from src.adapters.telegram_adapter import TelegramAdapter
+        return TelegramAdapter(
+            engine=engine,
+            config=config,
+            agent_instance=agent_instance,
+            bot_token_override=bot_token_env,
+            config_overrides=overrides,
+        )
+    elif adapter_type == "slack":
+        from src.adapters.slack_adapter import SlackAdapter
+        return SlackAdapter(
+            engine=engine,
+            config=config,
+            agent_instance=agent_instance,
+            bot_token_override=bot_token_env,
+            config_overrides=overrides,
+        )
+    elif adapter_type == "line":
+        from src.adapters.line_adapter import LineAdapter
+        return LineAdapter(
+            engine=engine,
+            config=config,
+            agent_instance=agent_instance,
+        )
+    elif adapter_type == "email":
+        from src.adapters.email_adapter import EmailAdapter
+        return EmailAdapter(
+            engine=engine,
+            config=config,
+            agent_instance=agent_instance,
+        )
+    return None

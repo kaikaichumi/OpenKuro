@@ -235,6 +235,24 @@ def build_engine(
             )
             team_manager.register(team_def)
 
+    # Initialize agent instance manager (Primary Agent instances)
+    if config.agents.instances:
+        from src.core.agent_instance_manager import AgentInstanceManager
+
+        instance_manager = AgentInstanceManager(
+            config=config,
+            model_router=model_router,
+            tool_system=tool_system,
+            approval_policy=engine.approval_policy,
+            approval_callback=engine.approval_cb,
+            audit_log=audit_log,
+            main_memory_manager=memory_manager,
+            skills_manager=skills_manager,
+            action_logger=action_logger,
+        )
+        engine.instance_manager = instance_manager
+        # Note: initialize_all() is async, called from async entry points
+
     # Initialize task scheduler
     from src.core.scheduler import TaskScheduler
     from src.tools.scheduler import (
@@ -494,9 +512,16 @@ def build_app(config: KuroConfig) -> tuple[Engine, "CLI"]:
     return engine, cli
 
 
+async def _init_instances(engine: "Engine") -> None:
+    """Initialize Primary Agent instances if configured."""
+    if hasattr(engine, 'instance_manager') and engine.instance_manager:
+        await engine.instance_manager.initialize_all()
+
+
 async def async_main(config: KuroConfig) -> None:
     """Async entry point for CLI mode."""
     _, cli = build_app(config)
+    await _init_instances(cli.engine)
     await cli.run()
 
 
@@ -505,6 +530,7 @@ async def async_web_main(config: KuroConfig) -> None:
     from src.ui.web_server import WebServer
 
     engine = build_engine(config)
+    await _init_instances(engine)
     server = WebServer(engine, config)
     host = config.web_ui.host
     port = config.web_ui.port
@@ -527,6 +553,11 @@ async def async_adapter_main(
     from src.ui.web_server import WebServer
 
     engine = build_engine(config)
+
+    # Initialize Primary Agent instances (async)
+    if hasattr(engine, 'instance_manager') and engine.instance_manager:
+        await engine.instance_manager.initialize_all()
+
     manager = AdapterManager.from_config(engine, config, adapters=adapter_names)
 
     if not manager.adapter_names:

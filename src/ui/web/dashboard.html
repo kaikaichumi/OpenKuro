@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kuro - Dashboard</title>
+    <link rel="stylesheet" href="/static/css/variables.css">
+    <link rel="stylesheet" href="/static/css/base.css">
+    <link rel="stylesheet" href="/static/css/layout.css">
+    <link rel="stylesheet" href="/static/css/components.css">
+</head>
+<body>
+    <nav id="main-nav"></nav>
+
+    <div id="dashboard" class="page-content" style="padding:1rem;">
+        <div id="loading" class="empty-state" data-i18n="dashboard.loading">Loading dashboard...</div>
+
+        <!-- Stats overview -->
+        <div id="stats-grid" class="stats-grid" style="display:none;">
+            <div class="stat-card">
+                <div class="value" id="stat-total-events">0</div>
+                <div class="label" data-i18n="dashboard.totalEvents">Total Events</div>
+            </div>
+            <div class="stat-card">
+                <div class="value blue" id="stat-active-agents">0</div>
+                <div class="label" data-i18n="dashboard.activeAgents">Active Agents</div>
+            </div>
+            <div class="stat-card">
+                <div class="value green" id="stat-tool-calls">0</div>
+                <div class="label" data-i18n="dashboard.toolCalls">Tool Calls</div>
+            </div>
+            <div class="stat-card">
+                <div class="value red" id="stat-errors">0</div>
+                <div class="label" data-i18n="dashboard.errors">Errors</div>
+            </div>
+        </div>
+
+        <!-- Agent state cards -->
+        <div id="agents-section" class="section" style="display:none;">
+            <h2 data-i18n="dashboard.agentStates">Agent States</h2>
+            <div id="agent-state-cards" class="agent-state-grid"></div>
+        </div>
+
+        <!-- Event timeline -->
+        <div id="timeline-section" class="section" style="display:none;">
+            <h2>
+                <span data-i18n="dashboard.eventTimeline">Event Timeline</span>
+                <span id="live-dot" class="live-indicator">&#9679; LIVE</span>
+            </h2>
+            <div id="event-timeline" class="event-timeline"></div>
+        </div>
+    </div>
+
+    <script type="module" src="/static/js/dashboard.js"></script>
+</body>
+</html>

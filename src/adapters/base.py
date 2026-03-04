@@ -8,6 +8,7 @@ message processing to the core Engine.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 import structlog
 
@@ -27,14 +28,46 @@ class BaseAdapter(ABC):
 
     The adapter maintains a session map (user_key -> Session) so each
     user gets their own conversation context.
+
+    When bound to an AgentInstance, messages are routed through the
+    instance's own Engine (with its own memory/personality) instead
+    of the main engine.
     """
 
     name: str = "base"
 
-    def __init__(self, engine: Engine, config: KuroConfig) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        config: KuroConfig,
+        agent_instance: Any = None,
+    ) -> None:
         self.engine = engine
         self.config = config
+        self._agent_instance = agent_instance  # AgentInstance or None
         self._sessions: dict[str, Session] = {}
+
+    async def process_incoming(
+        self,
+        text: str,
+        session: Session,
+        model: str | None = None,
+    ) -> str:
+        """Route a message to the bound agent instance or main engine.
+
+        If this adapter is bound to an AgentInstance, the message goes
+        through the instance's Engine. Otherwise, uses the main engine.
+        """
+        if self._agent_instance:
+            return await self._agent_instance.process_message(text, session, model)
+        return await self.engine.process_message(text, session, model)
+
+    @property
+    def effective_engine(self) -> Engine:
+        """Return the engine that this adapter routes to."""
+        if self._agent_instance:
+            return self._agent_instance.engine
+        return self.engine
 
     @abstractmethod
     async def start(self) -> None:
