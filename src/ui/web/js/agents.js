@@ -184,28 +184,28 @@ async function deleteSubAgent(instanceId, name) {
 
 function initModals() {
     // Instance modal
-    document.getElementById("modal-cancel").addEventListener("click", () => closeModal("instance-modal"));
-    document.getElementById("modal-save").addEventListener("click", saveInstance);
+    document.getElementById("modal-cancel")?.addEventListener("click", () => closeModal("instance-modal"));
+    document.getElementById("modal-save")?.addEventListener("click", saveInstance);
 
     // Memory mode toggle for linked agents field
-    document.getElementById("edit-memory-mode").addEventListener("change", (e) => {
-        document.getElementById("linked-agents-group").style.display =
-            e.target.value === "linked" ? "" : "none";
+    document.getElementById("edit-memory-mode")?.addEventListener("change", (e) => {
+        const group = document.getElementById("linked-agents-group");
+        if (group) group.style.display = e.target.value === "linked" ? "" : "none";
     });
 
     // Bot adapter toggle for token env field
-    document.getElementById("edit-bot-adapter").addEventListener("change", (e) => {
-        document.getElementById("bot-token-group").style.display =
-            e.target.value ? "" : "none";
+    document.getElementById("edit-bot-adapter")?.addEventListener("change", (e) => {
+        const group = document.getElementById("bot-token-group");
+        if (group) group.style.display = e.target.value ? "" : "none";
     });
 
     // Personality modal
-    document.getElementById("personality-cancel").addEventListener("click", () => closeModal("personality-modal"));
-    document.getElementById("personality-save").addEventListener("click", savePersonality);
+    document.getElementById("personality-cancel")?.addEventListener("click", () => closeModal("personality-modal"));
+    document.getElementById("personality-save")?.addEventListener("click", savePersonality);
 
     // Sub-agent modal
-    document.getElementById("subagent-cancel").addEventListener("click", () => closeModal("subagent-modal"));
-    document.getElementById("subagent-save").addEventListener("click", saveSubAgent);
+    document.getElementById("subagent-cancel")?.addEventListener("click", () => closeModal("subagent-modal"));
+    document.getElementById("subagent-save")?.addEventListener("click", saveSubAgent);
 }
 
 function openCreateModal() {

@@ -656,9 +656,9 @@ function bindGlobalEvents() {
     btnDeny = document.getElementById("btn-deny");
     btnTrust = document.getElementById("btn-trust");
 
-    btnApprove.addEventListener("click", () => respondApproval("approve"));
-    btnDeny.addEventListener("click", () => respondApproval("deny"));
-    btnTrust.addEventListener("click", () => respondApproval("trust"));
+    btnApprove?.addEventListener("click", () => respondApproval("approve"));
+    btnDeny?.addEventListener("click", () => respondApproval("deny"));
+    btnTrust?.addEventListener("click", () => respondApproval("trust"));
 
     // Side panels
     settingsPanel = document.getElementById("settings-panel");
@@ -671,52 +671,53 @@ function bindGlobalEvents() {
     screenStep = document.getElementById("screen-step");
     screenPlaceholder = document.getElementById("screen-placeholder");
 
-    document.getElementById("btn-screen").addEventListener("click", () => {
-        screenPanel.classList.toggle("hidden");
-        settingsPanel.classList.add("hidden");
-        auditPanel.classList.add("hidden");
+    document.getElementById("btn-screen")?.addEventListener("click", () => {
+        screenPanel?.classList.toggle("hidden");
+        settingsPanel?.classList.add("hidden");
+        auditPanel?.classList.add("hidden");
     });
 
-    document.getElementById("btn-settings").addEventListener("click", () => {
-        settingsPanel.classList.toggle("hidden");
-        auditPanel.classList.add("hidden");
-        screenPanel.classList.add("hidden");
-        if (!settingsPanel.classList.contains("hidden")) {
+    document.getElementById("btn-settings")?.addEventListener("click", () => {
+        settingsPanel?.classList.toggle("hidden");
+        auditPanel?.classList.add("hidden");
+        screenPanel?.classList.add("hidden");
+        if (settingsPanel && !settingsPanel.classList.contains("hidden")) {
             loadModels();
             loadSkills();
         }
     });
 
-    document.getElementById("btn-audit").addEventListener("click", () => {
-        auditPanel.classList.toggle("hidden");
-        settingsPanel.classList.add("hidden");
-        screenPanel.classList.add("hidden");
-        if (!auditPanel.classList.contains("hidden")) loadAudit();
+    document.getElementById("btn-audit")?.addEventListener("click", () => {
+        auditPanel?.classList.toggle("hidden");
+        settingsPanel?.classList.add("hidden");
+        screenPanel?.classList.add("hidden");
+        if (auditPanel && !auditPanel.classList.contains("hidden")) loadAudit();
     });
 
     document.querySelectorAll(".panel-close").forEach(btn => {
         btn.addEventListener("click", () => {
             const panelId = btn.getAttribute("data-panel");
-            document.getElementById(panelId).classList.add("hidden");
+            const panel = document.getElementById(panelId);
+            if (panel) panel.classList.add("hidden");
         });
     });
 
-    modelSelect.addEventListener("change", () => {
+    modelSelect?.addEventListener("change", () => {
         send({ type: "command", command: "model", args: modelSelect.value, agent_id: MAIN_AGENT_ID });
     });
 
-    trustSelect.addEventListener("change", () => {
+    trustSelect?.addEventListener("change", () => {
         send({ type: "command", command: "trust", args: trustSelect.value, agent_id: MAIN_AGENT_ID });
     });
 
-    document.getElementById("btn-clear").addEventListener("click", () => {
+    document.getElementById("btn-clear")?.addEventListener("click", () => {
         // Clear the focused/main panel
         const main = panels.get(MAIN_AGENT_ID);
         if (main) main.clearMessages();
-        settingsPanel.classList.add("hidden");
+        settingsPanel?.classList.add("hidden");
     });
 
-    document.getElementById("btn-refresh-audit").addEventListener("click", loadAudit);
+    document.getElementById("btn-refresh-audit")?.addEventListener("click", loadAudit);
 
     // Layout mode buttons
     document.querySelectorAll(".layout-btn").forEach(btn => {

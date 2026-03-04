@@ -236,22 +236,22 @@ def build_engine(
             team_manager.register(team_def)
 
     # Initialize agent instance manager (Primary Agent instances)
-    if config.agents.instances:
-        from src.core.agent_instance_manager import AgentInstanceManager
+    # Always create the manager so instances can be created at runtime via tools/API
+    from src.core.agent_instance_manager import AgentInstanceManager
 
-        instance_manager = AgentInstanceManager(
-            config=config,
-            model_router=model_router,
-            tool_system=tool_system,
-            approval_policy=engine.approval_policy,
-            approval_callback=engine.approval_cb,
-            audit_log=audit_log,
-            main_memory_manager=memory_manager,
-            skills_manager=skills_manager,
-            action_logger=action_logger,
-        )
-        engine.instance_manager = instance_manager
-        # Note: initialize_all() is async, called from async entry points
+    instance_manager = AgentInstanceManager(
+        config=config,
+        model_router=model_router,
+        tool_system=tool_system,
+        approval_policy=engine.approval_policy,
+        approval_callback=engine.approval_cb,
+        audit_log=audit_log,
+        main_memory_manager=memory_manager,
+        skills_manager=skills_manager,
+        action_logger=action_logger,
+    )
+    engine.instance_manager = instance_manager
+    # Note: initialize_all() is async, called from async entry points
 
     # Initialize task scheduler
     from src.core.scheduler import TaskScheduler
