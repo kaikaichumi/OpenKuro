@@ -76,6 +76,16 @@ class AgentInstance:
                 "blocked_commands": cfg.security.blocked_commands,
                 "max_execution_time": cfg.security.max_execution_time,
             },
+            "feature_overrides": {
+                "context_compression_enabled": cfg.feature_overrides.context_compression_enabled,
+                "context_compression_summarize_model": cfg.feature_overrides.context_compression_summarize_model,
+                "context_compression_trigger_threshold": cfg.feature_overrides.context_compression_trigger_threshold,
+                "memory_lifecycle_enabled": cfg.feature_overrides.memory_lifecycle_enabled,
+                "learning_enabled": cfg.feature_overrides.learning_enabled,
+                "code_feedback_enabled": cfg.feature_overrides.code_feedback_enabled,
+                "vision_image_analysis_mode": cfg.feature_overrides.vision_image_analysis_mode,
+                "task_complexity_enabled": cfg.feature_overrides.task_complexity_enabled,
+            },
             "sub_agents": sub_agent_names,
             "active_sessions": len(self.sessions),
         }

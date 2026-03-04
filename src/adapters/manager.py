@@ -11,6 +11,7 @@ with its own bot token, memory, and personality.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 import structlog
@@ -20,6 +21,22 @@ from src.config import KuroConfig
 from src.core.engine import Engine
 
 logger = structlog.get_logger()
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _is_env_var_name(value: str) -> bool:
+    """Check whether *value* is a valid environment variable name."""
+    return bool(_ENV_VAR_NAME_RE.fullmatch((value or "").strip()))
+
+
+def _safe_env_ref(value: str) -> str:
+    """Return a safe log representation for env var references."""
+    ref = (value or "").strip()
+    if not ref:
+        return ""
+    if _is_env_var_name(ref):
+        return ref
+    return "[invalid_or_secret]"
 
 
 class AdapterManager:
@@ -168,6 +185,70 @@ class AdapterManager:
         except Exception as e:
             logger.warning("adapter_stop_error", adapter=name, error=str(e))
 
+    async def remove_instance_adapters(self, instance_id: str) -> None:
+        """Stop and remove all adapters bound to a specific instance ID."""
+        keys = [
+            key for key in self._adapters.keys()
+            if ":" in key and key.split(":", 1)[1] == instance_id
+        ]
+        for key in keys:
+            adapter = self._adapters.get(key)
+            if adapter is None:
+                continue
+            await self._stop_adapter(key, adapter)
+            self._adapters.pop(key, None)
+            logger.info("instance_adapter_removed", adapter=key, instance_id=instance_id)
+
+    async def sync_instance_adapter(self, agent_instance: Any) -> None:
+        """Ensure adapter state matches the instance's current bot binding.
+
+        - No binding: remove existing instance adapters.
+        - Binding present: recreate and start the bound adapter.
+        """
+        instance_id = agent_instance.id
+        binding = agent_instance.config.bot_binding
+
+        # Always clear old adapters first to avoid duplicate bots.
+        await self.remove_instance_adapters(instance_id)
+
+        if not binding.adapter_type or not binding.bot_token_env:
+            return
+        if not _is_env_var_name(binding.bot_token_env):
+            logger.error(
+                "instance_adapter_invalid_token_env",
+                instance_id=instance_id,
+                adapter_type=binding.adapter_type,
+                token_env=_safe_env_ref(binding.bot_token_env),
+            )
+            return
+
+        adapter = _create_instance_adapter(
+            adapter_type=binding.adapter_type,
+            engine=self.engine,
+            config=self.config,
+            agent_instance=agent_instance,
+            bot_token_env=binding.bot_token_env,
+            overrides=binding.overrides,
+        )
+        if not adapter:
+            logger.warning(
+                "instance_adapter_unknown_type",
+                instance_id=instance_id,
+                adapter_type=binding.adapter_type,
+            )
+            return
+
+        key = f"{adapter.name}:{instance_id}"
+        self._adapters[key] = adapter
+        agent_instance.bound_adapter = adapter
+        logger.info(
+            "instance_adapter_bound",
+            instance_id=instance_id,
+            adapter_type=binding.adapter_type,
+            token_env=_safe_env_ref(binding.bot_token_env),
+        )
+        await self._start_adapter(key, adapter)
+
     @classmethod
     def from_config(
         cls,
@@ -220,6 +301,18 @@ class AdapterManager:
                 binding = inst.config.bot_binding
                 if not binding.adapter_type or not binding.bot_token_env:
                     continue
+                if not _is_env_var_name(binding.bot_token_env):
+                    logger.error(
+                        "instance_adapter_invalid_token_env",
+                        instance_id=inst.id,
+                        adapter_type=binding.adapter_type,
+                        token_env=_safe_env_ref(binding.bot_token_env),
+                        message=(
+                            "bot_token_env must be an environment variable name "
+                            "(e.g. KURO_DISCORD_TOKEN_CS), not the token value"
+                        ),
+                    )
+                    continue
 
                 adapter = _create_instance_adapter(
                     adapter_type=binding.adapter_type,
@@ -236,7 +329,7 @@ class AdapterManager:
                         "instance_adapter_bound",
                         instance_id=inst.id,
                         adapter_type=binding.adapter_type,
-                        token_env=binding.bot_token_env,
+                        token_env=_safe_env_ref(binding.bot_token_env),
                     )
                 else:
                     logger.warning(

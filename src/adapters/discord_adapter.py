@@ -12,6 +12,7 @@ Features:
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -24,6 +25,7 @@ from src.core.types import Session
 from src.tools.base import RiskLevel
 
 logger = structlog.get_logger()
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Approval timeout in seconds
 DEFAULT_APPROVAL_TIMEOUT = 60
@@ -257,6 +259,14 @@ class DiscordAdapter(BaseAdapter):
         """Get a Discord config value, checking overrides first."""
         return self._config_overrides.get(key, default)
 
+    @staticmethod
+    def _safe_env_label(value: str) -> str:
+        """Return a safe env-var label for error messages."""
+        ref = (value or "").strip()
+        if _ENV_VAR_NAME_RE.fullmatch(ref):
+            return ref
+        return "<DISCORD_BOT_TOKEN_ENV>"
+
     async def start(self) -> None:
         """Initialize the Discord bot and start it."""
         # Use token override (from AgentInstance binding) or default config
@@ -270,7 +280,7 @@ class DiscordAdapter(BaseAdapter):
         if not token:
             raise RuntimeError(
                 f"Discord bot token not found. "
-                f"Set the {env_var} environment variable."
+                f"Set the {self._safe_env_label(env_var)} environment variable."
             )
 
         import discord

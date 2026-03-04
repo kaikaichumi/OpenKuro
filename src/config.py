@@ -320,6 +320,28 @@ class InstanceSecurityConfig(BaseModel):
     max_execution_time: int = 0
 
 
+class InstanceFeatureOverrides(BaseModel):
+    """Per-instance feature overrides (None = inherit from main config)."""
+
+    # Context compression
+    context_compression_enabled: bool | None = None
+    context_compression_summarize_model: str | None = None
+    context_compression_trigger_threshold: float | None = None
+
+    # Memory and learning lifecycle
+    memory_lifecycle_enabled: bool | None = None
+    learning_enabled: bool | None = None
+
+    # Code feedback loop
+    code_feedback_enabled: bool | None = None
+
+    # Vision/image analysis mode
+    vision_image_analysis_mode: str | None = None  # auto | always | disabled
+
+    # Task complexity system
+    task_complexity_enabled: bool | None = None
+
+
 class AgentInstanceConfig(BaseModel):
     """Configuration for a Primary Agent instance (full AI persona)."""
 
@@ -339,6 +361,10 @@ class AgentInstanceConfig(BaseModel):
     max_tool_rounds: int = 10
     # Per-instance security (empty = inherit from main config)
     security: InstanceSecurityConfig = Field(default_factory=InstanceSecurityConfig)
+    # Per-instance feature overrides (None fields inherit from main)
+    feature_overrides: InstanceFeatureOverrides = Field(
+        default_factory=InstanceFeatureOverrides
+    )
     # Memory
     memory: MemoryModeConfig = Field(default_factory=MemoryModeConfig)
     # Bot binding

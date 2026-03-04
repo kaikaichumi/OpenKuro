@@ -38,6 +38,14 @@ const panels = new Map();
 /** @type {Array<{id:string, name:string}>} Cached agent list */
 let agentList = [];
 
+function isKnownAgentId(agentId) {
+    return agentId === MAIN_AGENT_ID || agentList.some(a => a.id === agentId);
+}
+
+function isRoutableAgentId(agentId) {
+    return typeof agentId === "string" && isKnownAgentId(agentId);
+}
+
 // Shared DOM refs
 let approvalModal, approvalTool, approvalRisk, approvalParams, approvalAgentLabel;
 let btnApprove, btnDeny, btnTrust;
@@ -169,6 +177,10 @@ class ChatPanel {
     sendMessage() {
         const text = this.inputEl.value.trim();
         if (!text || this.isStreaming) return;
+        if (!isRoutableAgentId(this.agentId)) {
+            this.addSystemMessage("Select a valid agent before sending.");
+            return;
+        }
         this.addBubble("user", text);
         send({ type: "message", text: text, agent_id: this.agentId });
         this.inputEl.value = "";
@@ -178,7 +190,9 @@ class ChatPanel {
     // --- Clear ---
 
     clearMessages() {
-        send({ type: "command", command: "clear", agent_id: this.agentId });
+        if (isRoutableAgentId(this.agentId)) {
+            send({ type: "command", command: "clear", agent_id: this.agentId });
+        }
         this.messagesEl.innerHTML = "";
         this.sessionId = null;
         sessionStorage.removeItem("kuro_session_" + this.agentId);
@@ -189,14 +203,21 @@ class ChatPanel {
     switchAgent(newAgentId) {
         if (newAgentId === this.agentId) return;
         const oldId = this.agentId;
+        if (panels.has(newAgentId)) {
+            this.addSystemMessage("This agent is already assigned to another panel.");
+            if (this.agentSelect) this.agentSelect.value = oldId;
+            return;
+        }
         panels.delete(oldId);
         this.agentId = newAgentId;
         this.el.dataset.agentId = newAgentId;
         this.sessionId = sessionStorage.getItem("kuro_session_" + newAgentId) || null;
         this.messagesEl.innerHTML = "";
         panels.set(newAgentId, this);
-        // Request handshake/restore for the new agent
-        send({ type: "restore", session_id: this.sessionId, agent_id: newAgentId });
+        // Request handshake/restore for the new agent if routable.
+        if (isRoutableAgentId(newAgentId)) {
+            send({ type: "restore", session_id: this.sessionId, agent_id: newAgentId });
+        }
     }
 
     // --- Internal ---
@@ -235,6 +256,14 @@ class ChatPanel {
         if (!this.agentSelect) return;
         const current = this.agentId;
         this.agentSelect.innerHTML = "";
+
+        if (!isKnownAgentId(current)) {
+            const unassigned = document.createElement("option");
+            unassigned.value = current;
+            unassigned.textContent = "Unassigned";
+            unassigned.selected = true;
+            this.agentSelect.appendChild(unassigned);
+        }
 
         const mainOpt = document.createElement("option");
         mainOpt.value = MAIN_AGENT_ID;
@@ -299,8 +328,8 @@ function ensurePanels(count) {
             } else if (availIdx < available.length) {
                 agentId = available[availIdx++].id;
             } else {
-                // Duplicate main if no other agents available
-                agentId = MAIN_AGENT_ID + "-" + i;
+                // Extra panel remains unassigned until user picks an agent.
+                agentId = "__unassigned_" + i;
             }
             const el = createPanelElement(agentId);
             grid.appendChild(el);
@@ -308,7 +337,7 @@ function ensurePanels(count) {
             panel.populateAgentSelect();
             panels.set(agentId, panel);
             // Request session from server
-            if (ws && ws.readyState === WebSocket.OPEN) {
+            if (ws && ws.readyState === WebSocket.OPEN && isRoutableAgentId(agentId)) {
                 send({ type: "restore", session_id: panel.sessionId, agent_id: agentId });
             }
         }
@@ -377,8 +406,17 @@ function connect() {
             clearTimeout(reconnectTimer);
             reconnectTimer = null;
         }
-        // Send handshake for every active panel
+        // Send main panel handshake first, then other routable panels.
+        const mainPanel = panels.get(MAIN_AGENT_ID);
+        if (mainPanel && isRoutableAgentId(mainPanel.agentId)) {
+            ws.send(JSON.stringify({
+                type: "restore",
+                session_id: mainPanel.sessionId,
+                agent_id: mainPanel.agentId,
+            }));
+        }
         panels.forEach(p => {
+            if (p === mainPanel || !isRoutableAgentId(p.agentId)) return;
             ws.send(JSON.stringify({
                 type: "restore",
                 session_id: p.sessionId,
@@ -424,7 +462,7 @@ function send(data) {
 function routeMessage(data) {
     KuroPlugins.emit("onMessage", data);
     const agentId = data.agent_id || MAIN_AGENT_ID;
-    const panel = panels.get(agentId) || panels.values().next().value;
+    const panel = panels.get(agentId);
 
     switch (data.type) {
         case "status":

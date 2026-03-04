@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -26,6 +27,7 @@ from src.core.types import Session
 from src.tools.base import RiskLevel, ToolResult
 
 logger = structlog.get_logger()
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Path to static web files
 WEB_DIR = Path(__file__).parent / "web"
@@ -616,7 +618,12 @@ class WebServer:
             im = getattr(self.engine, "instance_manager", None)
             if not im:
                 return {"instances": []}
-            return {"instances": [inst.get_info() for inst in im.list_all()]}
+            runtime_map = {inst.id: inst for inst in im.list_all()}
+            items = [
+                self._instance_info_from_cfg(cfg, runtime_map.get(cfg.id))
+                for cfg in self.config.agents.instances
+            ]
+            return {"instances": items}
 
         @app.get("/api/agents/instances/{instance_id}")
         async def get_instance(instance_id: str):
@@ -624,10 +631,11 @@ class WebServer:
             im = getattr(self.engine, "instance_manager", None)
             if not im:
                 return {"status": "error", "message": "Instance manager not available"}
-            inst = im.get(instance_id)
-            if not inst:
+            cfg = self._find_agent_instance_config(instance_id)
+            if not cfg:
                 return {"status": "error", "message": f"Instance '{instance_id}' not found"}
-            return inst.get_info()
+            inst = im.get(instance_id)
+            return self._instance_info_from_cfg(cfg, inst)
 
         @app.post("/api/agents/instances")
         async def create_instance(request: Request):
@@ -638,33 +646,94 @@ class WebServer:
             data = await request.json()
             try:
                 from src.config import AgentInstanceConfig
+
                 cfg = AgentInstanceConfig(**data)
-                inst = await im.create_instance(cfg)
-                return {"status": "ok", "instance": inst.get_info()}
+                if self._find_agent_instance_config(cfg.id):
+                    raise ValueError(f"Agent instance '{cfg.id}' already exists")
+                self._validate_instance_binding(cfg)
+                inst = None
+                if cfg.enabled:
+                    inst = await im.create_instance(cfg)
+                    self._upsert_agent_instance_config(inst.config)
+                else:
+                    self._upsert_agent_instance_config(cfg)
+                self._save_runtime_config()
+                adapter_manager = getattr(self.engine, "adapter_manager", None)
+                if adapter_manager and inst:
+                    await adapter_manager.sync_instance_adapter(inst)
+                return {
+                    "status": "ok",
+                    "instance": self._instance_info_from_cfg(cfg, inst),
+                }
             except Exception as e:
+                # If persistence failed after runtime creation, rollback runtime state.
+                if "cfg" in locals():
+                    try:
+                        await im.delete_instance(cfg.id)
+                    except Exception:
+                        pass
                 return {"status": "error", "message": str(e)}
 
         @app.put("/api/agents/instances/{instance_id}")
         async def update_instance(instance_id: str, request: Request):
-            """Update an agent instance (limited fields)."""
+            """Update and persist an agent instance."""
             im = getattr(self.engine, "instance_manager", None)
             if not im:
                 return {"status": "error", "message": "Instance manager not available"}
-            inst = im.get(instance_id)
-            if not inst:
+            existing_cfg = self._find_agent_instance_config(instance_id)
+            if not existing_cfg:
                 return {"status": "error", "message": f"Instance '{instance_id}' not found"}
             data = await request.json()
-            # Update mutable fields
-            if "name" in data:
-                inst.name = data["name"]
-                inst.config.name = data["name"]
-            if "model" in data:
-                inst.config.model = data["model"]
-            if "temperature" in data:
-                inst.config.temperature = data["temperature"]
-            if "system_prompt" in data:
-                inst.config.system_prompt = data["system_prompt"]
-            return {"status": "ok", "instance": inst.get_info()}
+            if "id" in data and data["id"] != instance_id:
+                return {"status": "error", "message": "Instance ID cannot be changed"}
+            old_cfg = existing_cfg.model_copy(deep=True)
+            try:
+                from src.config import AgentInstanceConfig
+
+                merged = existing_cfg.model_dump()
+                self._deep_merge(merged, data)
+                merged["id"] = instance_id
+                new_cfg = AgentInstanceConfig(**merged)
+                self._validate_instance_binding(new_cfg)
+
+                old_runtime = im.get(instance_id)
+                if old_runtime:
+                    await im.delete_instance(instance_id)
+
+                new_runtime = None
+                if new_cfg.enabled:
+                    new_runtime = await im.create_instance(new_cfg)
+                self._upsert_agent_instance_config(new_cfg)
+                self._save_runtime_config()
+                adapter_manager = getattr(self.engine, "adapter_manager", None)
+                if adapter_manager:
+                    if new_runtime:
+                        await adapter_manager.sync_instance_adapter(new_runtime)
+                    else:
+                        await adapter_manager.remove_instance_adapters(instance_id)
+                return {
+                    "status": "ok",
+                    "instance": self._instance_info_from_cfg(new_cfg, new_runtime),
+                }
+            except Exception as e:
+                # Best-effort rollback to previous config/runtime state
+                try:
+                    if im.get(instance_id):
+                        await im.delete_instance(instance_id)
+                    if old_cfg.enabled:
+                        restored = await im.create_instance(old_cfg)
+                        adapter_manager = getattr(self.engine, "adapter_manager", None)
+                        if adapter_manager:
+                            await adapter_manager.sync_instance_adapter(restored)
+                    else:
+                        adapter_manager = getattr(self.engine, "adapter_manager", None)
+                        if adapter_manager:
+                            await adapter_manager.remove_instance_adapters(instance_id)
+                    self._upsert_agent_instance_config(old_cfg)
+                    self._save_runtime_config()
+                except Exception:
+                    pass
+                return {"status": "error", "message": str(e)}
 
         @app.delete("/api/agents/instances/{instance_id}")
         async def delete_instance(instance_id: str):
@@ -672,9 +741,19 @@ class WebServer:
             im = getattr(self.engine, "instance_manager", None)
             if not im:
                 return {"status": "error", "message": "Instance manager not available"}
-            deleted = await im.delete_instance(instance_id)
-            if not deleted:
+            existing_cfg = self._find_agent_instance_config(instance_id)
+            if not existing_cfg:
                 return {"status": "error", "message": f"Instance '{instance_id}' not found"}
+            try:
+                adapter_manager = getattr(self.engine, "adapter_manager", None)
+                if adapter_manager:
+                    await adapter_manager.remove_instance_adapters(instance_id)
+                if im.get(instance_id):
+                    await im.delete_instance(instance_id)
+                self._remove_agent_instance_config(instance_id)
+                self._save_runtime_config()
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
             return {"status": "ok"}
 
         @app.get("/api/agents/instances/{instance_id}/personality")
@@ -712,10 +791,13 @@ class WebServer:
             if not im:
                 return {"sub_agents": []}
             inst = im.get(instance_id)
-            if not inst or not inst.agent_manager:
+            if inst and inst.agent_manager:
+                agents = inst.agent_manager.list_definitions()
+                return {"sub_agents": [a.name for a in agents]}
+            cfg = self._find_agent_instance_config(instance_id)
+            if not cfg:
                 return {"sub_agents": []}
-            agents = inst.agent_manager.list_definitions()
-            return {"sub_agents": [a.name for a in agents]}
+            return {"sub_agents": [a.name for a in cfg.sub_agents]}
 
         @app.post("/api/agents/instances/{instance_id}/sub-agents")
         async def add_sub_agent(instance_id: str, request: Request):
@@ -725,20 +807,54 @@ class WebServer:
                 return {"status": "error", "message": "Instance manager not available"}
             inst = im.get(instance_id)
             if not inst or not inst.agent_manager:
-                return {"status": "error", "message": "Instance not found or has no agent manager"}
+                return {"status": "error", "message": "Instance not running. Enable it first."}
             data = await request.json()
             try:
+                from src.config import AgentDefinitionConfig
                 from src.core.types import AgentDefinition
+
                 defn = AgentDefinition(
                     name=data["name"],
                     model=data.get("model", ""),
                     system_prompt=data.get("system_prompt", ""),
+                    allowed_tools=list(data.get("allowed_tools", [])),
+                    denied_tools=list(data.get("denied_tools", [])),
                     max_tool_rounds=data.get("max_tool_rounds", 5),
+                    temperature=data.get("temperature"),
+                    max_tokens=data.get("max_tokens"),
                     created_by="web_ui",
+                    max_depth=data.get("max_depth", 3),
+                    inherit_context=bool(data.get("inherit_context", False)),
+                    output_schema=data.get("output_schema"),
                 )
                 inst.agent_manager.register(defn)
+
+                inst.config.sub_agents.append(
+                    AgentDefinitionConfig(
+                        name=defn.name,
+                        model=defn.model,
+                        system_prompt=defn.system_prompt,
+                        allowed_tools=list(defn.allowed_tools),
+                        denied_tools=list(defn.denied_tools),
+                        max_tool_rounds=defn.max_tool_rounds,
+                        temperature=defn.temperature,
+                        max_tokens=defn.max_tokens,
+                        max_depth=defn.max_depth,
+                        inherit_context=defn.inherit_context,
+                        output_schema=defn.output_schema,
+                    )
+                )
+                self._upsert_agent_instance_config(inst.config)
+                self._save_runtime_config()
                 return {"status": "ok"}
             except Exception as e:
+                # Best-effort rollback if config save failed after runtime register.
+                name = data.get("name")
+                if name:
+                    try:
+                        inst.agent_manager.unregister(name)
+                    except Exception:
+                        pass
                 return {"status": "error", "message": str(e)}
 
         @app.delete("/api/agents/instances/{instance_id}/sub-agents/{agent_name}")
@@ -749,10 +865,18 @@ class WebServer:
                 return {"status": "error", "message": "Instance manager not available"}
             inst = im.get(instance_id)
             if not inst or not inst.agent_manager:
-                return {"status": "error", "message": "Instance not found"}
+                return {"status": "error", "message": "Instance not running. Enable it first."}
             removed = inst.agent_manager.unregister(agent_name)
             if not removed:
                 return {"status": "error", "message": f"Sub-agent '{agent_name}' not found"}
+            try:
+                inst.config.sub_agents = [
+                    sa for sa in inst.config.sub_agents if sa.name != agent_name
+                ]
+                self._upsert_agent_instance_config(inst.config)
+                self._save_runtime_config()
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
             return {"status": "ok"}
 
         @app.get("/api/agents/instances/{instance_id}/memory-stats")
@@ -908,6 +1032,115 @@ class WebServer:
                 WebServer._deep_merge(base[key], value)
             else:
                 base[key] = value
+
+    def _find_agent_instance_config(
+        self, instance_id: str
+    ) -> "AgentInstanceConfig | None":
+        """Find an instance config by ID from persisted config."""
+        for cfg in self.config.agents.instances:
+            if cfg.id == instance_id:
+                return cfg
+        return None
+
+    def _instance_info_from_cfg(
+        self, cfg: "AgentInstanceConfig", runtime_inst: Any | None = None
+    ) -> dict[str, Any]:
+        """Build API info from persisted config, with optional runtime fields."""
+        sub_agent_names = [a.name for a in cfg.sub_agents]
+        active_sessions = 0
+        if runtime_inst:
+            try:
+                sub_agent_names = [
+                    a.name for a in runtime_inst.agent_manager.list_definitions()
+                ]
+            except Exception:
+                pass
+            active_sessions = len(getattr(runtime_inst, "sessions", {}))
+
+        return {
+            "id": cfg.id,
+            "name": cfg.name,
+            "enabled": cfg.enabled,
+            "model": cfg.model,
+            "temperature": cfg.temperature,
+            "personality_mode": cfg.personality_mode,
+            "memory_mode": cfg.memory.mode,
+            "memory_linked_agents": cfg.memory.linked_agents,
+            "bot_binding": {
+                "adapter_type": cfg.bot_binding.adapter_type,
+                "bot_token_env": cfg.bot_binding.bot_token_env,
+            } if cfg.bot_binding.adapter_type else None,
+            "invocation": {
+                "allow_web_ui": cfg.invocation.allow_web_ui,
+                "allow_main_agent": cfg.invocation.allow_main_agent,
+                "allow_agents": cfg.invocation.allow_agents,
+            },
+            "allowed_tools": cfg.allowed_tools,
+            "denied_tools": cfg.denied_tools,
+            "security": {
+                "auto_approve_levels": cfg.security.auto_approve_levels,
+                "allowed_directories": cfg.security.allowed_directories,
+                "blocked_commands": cfg.security.blocked_commands,
+                "max_execution_time": cfg.security.max_execution_time,
+            },
+            "feature_overrides": {
+                "context_compression_enabled": cfg.feature_overrides.context_compression_enabled,
+                "context_compression_summarize_model": cfg.feature_overrides.context_compression_summarize_model,
+                "context_compression_trigger_threshold": cfg.feature_overrides.context_compression_trigger_threshold,
+                "memory_lifecycle_enabled": cfg.feature_overrides.memory_lifecycle_enabled,
+                "learning_enabled": cfg.feature_overrides.learning_enabled,
+                "code_feedback_enabled": cfg.feature_overrides.code_feedback_enabled,
+                "vision_image_analysis_mode": cfg.feature_overrides.vision_image_analysis_mode,
+                "task_complexity_enabled": cfg.feature_overrides.task_complexity_enabled,
+            },
+            "sub_agents": sub_agent_names,
+            "active_sessions": active_sessions,
+            "running": bool(runtime_inst),
+        }
+
+    def _upsert_agent_instance_config(self, cfg: "AgentInstanceConfig") -> None:
+        """Insert or replace an AgentInstanceConfig in self.config.agents.instances."""
+        cfg_copy = cfg.model_copy(deep=True)
+        for idx, existing in enumerate(self.config.agents.instances):
+            if existing.id == cfg.id:
+                self.config.agents.instances[idx] = cfg_copy
+                break
+        else:
+            self.config.agents.instances.append(cfg_copy)
+
+    def _remove_agent_instance_config(self, instance_id: str) -> None:
+        """Remove an AgentInstanceConfig from self.config by instance ID."""
+        self.config.agents.instances = [
+            cfg for cfg in self.config.agents.instances if cfg.id != instance_id
+        ]
+
+    def _save_runtime_config(self) -> None:
+        """Persist current runtime config to ~/.kuro/config.yaml."""
+        from src.config import save_config
+
+        save_config(self.config)
+
+    @staticmethod
+    def _is_env_var_name(value: str) -> bool:
+        """Return True if value is a valid environment variable name."""
+        return bool(_ENV_VAR_NAME_RE.fullmatch((value or "").strip()))
+
+    def _validate_instance_binding(self, cfg: "AgentInstanceConfig") -> None:
+        """Validate bot binding format for an AgentInstanceConfig."""
+        binding = cfg.bot_binding
+        if not binding.adapter_type:
+            return
+
+        token_env = (binding.bot_token_env or "").strip()
+        if not token_env:
+            raise ValueError(
+                "Bot Token Env Var is required when Bot Adapter is enabled."
+            )
+        if not self._is_env_var_name(token_env):
+            raise ValueError(
+                "Bot Token Env Var must be an environment variable name "
+                "(e.g. KURO_DISCORD_TOKEN_CS), not a raw token value."
+            )
 
     def _apply_config_changes(self, new_config: "KuroConfig") -> list[str]:
         """Apply config changes to the running engine without restart.

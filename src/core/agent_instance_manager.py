@@ -114,13 +114,16 @@ class AgentInstanceManager:
         agent_home = get_kuro_home() / "agents" / cfg.id
         agent_home.mkdir(parents=True, exist_ok=True)
 
-        # --- 1. Build MemoryManager based on mode ---
-        mm = self._build_memory(cfg, agent_home)
+        # --- 1. Build instance-specific KuroConfig ---
+        instance_config = self._build_instance_config(cfg)
+
+        # --- 2. Build MemoryManager based on mode ---
+        mm = self._build_memory(cfg, agent_home, instance_config)
 
         # Initialize advanced features (compression, lifecycle)
         mm.setup_advanced_features(model_router=self._model_router)
 
-        # --- 2. Resolve personality path ---
+        # --- 3. Resolve personality path ---
         personality_path: Path | None = None
         if cfg.personality_mode == "independent":
             personality_path = agent_home / "personality.md"
@@ -132,9 +135,6 @@ class AgentInstanceManager:
                 )
             mm._personality_path = personality_path
         # "shared" mode: mm._personality_path stays None → uses default
-
-        # --- 3. Build instance-specific KuroConfig ---
-        instance_config = self._build_instance_config(cfg)
 
         # --- 4. Build Engine ---
         from src.core.engine import ApprovalCallback, Engine
@@ -206,7 +206,10 @@ class AgentInstanceManager:
         return instance
 
     def _build_memory(
-        self, cfg: AgentInstanceConfig, agent_home: Path
+        self,
+        cfg: AgentInstanceConfig,
+        agent_home: Path,
+        instance_config: KuroConfig,
     ) -> MemoryManager:
         """Build a MemoryManager based on the instance's memory mode."""
         mode = cfg.memory.mode
@@ -228,7 +231,7 @@ class AgentInstanceManager:
                 working=WorkingMemory(),
                 history=history,
                 longterm=longterm,
-                config=self._config,
+                config=instance_config,
             )
 
         if mode == "linked":
@@ -259,12 +262,12 @@ class AgentInstanceManager:
                 working=WorkingMemory(),
                 history=history,
                 longterm=linked_lt,
-                config=self._config,
+                config=instance_config,
             )
 
         # Unknown mode — default to independent
         logger.warning("unknown_memory_mode", mode=mode, instance=cfg.id)
-        return MemoryManager(config=self._config)
+        return MemoryManager(config=instance_config)
 
     def _build_instance_config(self, cfg: AgentInstanceConfig) -> KuroConfig:
         """Build a KuroConfig tailored for this instance.
@@ -316,5 +319,29 @@ class AgentInstanceManager:
             )
         if sec.max_execution_time > 0:
             data["sandbox"]["max_execution_time"] = sec.max_execution_time
+
+        # Per-instance feature overrides
+        fo = cfg.feature_overrides
+        if fo.context_compression_enabled is not None:
+            data["context_compression"]["enabled"] = fo.context_compression_enabled
+        if fo.context_compression_summarize_model:
+            data["context_compression"]["summarize_model"] = (
+                fo.context_compression_summarize_model
+            )
+        if fo.context_compression_trigger_threshold is not None:
+            data["context_compression"]["trigger_threshold"] = (
+                fo.context_compression_trigger_threshold
+            )
+
+        if fo.memory_lifecycle_enabled is not None:
+            data["memory_lifecycle"]["enabled"] = fo.memory_lifecycle_enabled
+        if fo.learning_enabled is not None:
+            data["learning"]["enabled"] = fo.learning_enabled
+        if fo.code_feedback_enabled is not None:
+            data["code_feedback"]["enabled"] = fo.code_feedback_enabled
+        if fo.vision_image_analysis_mode:
+            data["vision"]["image_analysis_mode"] = fo.vision_image_analysis_mode
+        if fo.task_complexity_enabled is not None:
+            data["task_complexity"]["enabled"] = fo.task_complexity_enabled
 
         return KuroConfig(**data)

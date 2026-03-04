@@ -33,8 +33,17 @@
             </div>
 
             <div class="form-group">
+                <label>
+                    <input type="checkbox" id="edit-enabled" checked>
+                    Enabled
+                </label>
+            </div>
+
+            <div class="form-group">
                 <label data-i18n="agents.model">Model</label>
-                <input type="text" id="edit-model" placeholder="(inherit from main)">
+                <select id="edit-model">
+                    <option value="">(inherit from main)</option>
+                </select>
             </div>
 
             <div class="form-group">
@@ -85,6 +94,71 @@
                 <label data-i18n="agents.systemPrompt">System Prompt</label>
                 <textarea id="edit-system-prompt" rows="3" placeholder="(inherit from main)"></textarea>
             </div>
+
+            <details class="form-section-collapsible" style="margin:0.5rem 0">
+                <summary style="cursor:pointer;color:var(--primary);font-weight:600">Feature Overrides</summary>
+                <div style="padding:0.5rem 0">
+                    <div class="form-group">
+                        <label>Context Compression</label>
+                        <select id="edit-feature-context-compression">
+                            <option value="inherit">Inherit from main</option>
+                            <option value="enabled">Enabled</option>
+                            <option value="disabled">Disabled</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Compression Summarize Model</label>
+                        <select id="edit-feature-context-model">
+                            <option value="">(inherit from main)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Compression Trigger Threshold</label>
+                        <input type="number" id="edit-feature-context-threshold" min="0" max="1" step="0.01" placeholder="(inherit, e.g. 0.80)">
+                    </div>
+                    <div class="form-group">
+                        <label>Memory Lifecycle</label>
+                        <select id="edit-feature-memory-lifecycle">
+                            <option value="inherit">Inherit from main</option>
+                            <option value="enabled">Enabled</option>
+                            <option value="disabled">Disabled</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Learning</label>
+                        <select id="edit-feature-learning">
+                            <option value="inherit">Inherit from main</option>
+                            <option value="enabled">Enabled</option>
+                            <option value="disabled">Disabled</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Code Feedback</label>
+                        <select id="edit-feature-code-feedback">
+                            <option value="inherit">Inherit from main</option>
+                            <option value="enabled">Enabled</option>
+                            <option value="disabled">Disabled</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Task Complexity</label>
+                        <select id="edit-feature-task-complexity">
+                            <option value="inherit">Inherit from main</option>
+                            <option value="enabled">Enabled</option>
+                            <option value="disabled">Disabled</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Vision Analysis Mode</label>
+                        <select id="edit-feature-vision-mode">
+                            <option value="inherit">Inherit from main</option>
+                            <option value="auto">Auto</option>
+                            <option value="always">Always</option>
+                            <option value="disabled">Disabled</option>
+                        </select>
+                    </div>
+                </div>
+            </details>
 
             <details class="form-section-collapsible" style="margin:0.5rem 0">
                 <summary style="cursor:pointer;color:var(--primary);font-weight:600" data-i18n="agents.securitySettings">Security Settings</summary>

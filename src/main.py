@@ -559,6 +559,7 @@ async def async_adapter_main(
         await engine.instance_manager.initialize_all()
 
     manager = AdapterManager.from_config(engine, config, adapters=adapter_names)
+    engine.adapter_manager = manager
 
     if not manager.adapter_names:
         print("No adapters configured. Check your config.yaml or specify --telegram.")

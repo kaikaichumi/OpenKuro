@@ -10,10 +10,13 @@ import { t, onLocaleChange } from "./i18n.js";
 
 const API = "/api/agents/instances";
 let instances = [];
+const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+let availableModels = [];
 
 document.addEventListener("DOMContentLoaded", async () => {
     await initLayout({ activePath: "/agents" });
     onLocaleChange(() => render());
+    await loadModels();
     await loadInstances();
     initModals();
 });
@@ -29,6 +32,73 @@ async function loadInstances() {
     } catch (e) {
         document.getElementById("loading").textContent = t("agents.loadFailed") || "Failed to load agents";
     }
+}
+
+async function loadModels() {
+    try {
+        const res = await fetch("/api/models");
+        if (!res.ok) return;
+        const data = await res.json();
+        availableModels = Array.isArray(data.available) ? data.available : [];
+        populateModelSelect("edit-model", "(inherit from main)");
+        populateModelSelect("edit-feature-context-model", "(inherit from main)");
+    } catch {
+        availableModels = [];
+    }
+}
+
+function populateModelSelect(selectId, defaultLabel) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+
+    const current = select.value || "";
+    select.innerHTML = "";
+
+    const inheritOpt = document.createElement("option");
+    inheritOpt.value = "";
+    inheritOpt.textContent = defaultLabel;
+    select.appendChild(inheritOpt);
+
+    for (const model of availableModels) {
+        const opt = document.createElement("option");
+        opt.value = model;
+        opt.textContent = model;
+        select.appendChild(opt);
+    }
+
+    if (current && !availableModels.includes(current)) {
+        const custom = document.createElement("option");
+        custom.value = current;
+        custom.textContent = `${current} (custom)`;
+        select.appendChild(custom);
+    }
+    select.value = current;
+}
+
+function setSelectValueSafe(selectId, value) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    const target = value ?? "";
+    if (![...select.options].some(o => o.value === target)) {
+        const custom = document.createElement("option");
+        custom.value = target;
+        custom.textContent = target ? `${target} (custom)` : "(inherit from main)";
+        select.appendChild(custom);
+    }
+    select.value = target;
+}
+
+function boolOverrideToSelect(value) {
+    if (value === true) return "enabled";
+    if (value === false) return "disabled";
+    return "inherit";
+}
+
+function selectToBoolOverride(id) {
+    const value = document.getElementById(id)?.value || "inherit";
+    if (value === "enabled") return true;
+    if (value === "disabled") return false;
+    return null;
 }
 
 // ─── Render ──────────────────────────────────────────────────
@@ -88,6 +158,7 @@ function render() {
     document.getElementById("btn-create")?.addEventListener("click", () => openCreateModal());
 
     for (const inst of instances) {
+        document.getElementById(`toggle-${inst.id}`)?.addEventListener("click", () => toggleInstance(inst));
         document.getElementById(`edit-${inst.id}`)?.addEventListener("click", () => openEditModal(inst));
         document.getElementById(`delete-${inst.id}`)?.addEventListener("click", () => deleteInstance(inst.id));
         document.getElementById(`personality-${inst.id}`)?.addEventListener("click", () => openPersonalityModal(inst.id));
@@ -124,6 +195,9 @@ function renderCard(inst) {
                     <span class="agent-id">${inst.id}</span>
                 </div>
                 <div class="agent-card-actions">
+                    <button class="btn btn-sm" id="toggle-${inst.id}" title="Enable/Disable">
+                        ${inst.enabled ? "Disable" : "Enable"}
+                    </button>
                     <button class="btn btn-sm" id="edit-${inst.id}" title="Edit">${t("common.edit") || "Edit"}</button>
                     <button class="btn btn-sm btn-danger" id="delete-${inst.id}" title="Delete">&times;</button>
                 </div>
@@ -168,6 +242,27 @@ async function deleteInstance(id) {
         await loadInstances();
     } catch (e) {
         alert("Delete failed: " + e.message);
+    }
+}
+
+async function toggleInstance(inst) {
+    const enable = !inst.enabled;
+    const action = enable ? "enable" : "disable";
+    if (!confirm(`${action} agent instance "${inst.id}" now?`)) return;
+    try {
+        const res = await fetch(`${API}/${inst.id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: enable }),
+        });
+        const data = await res.json();
+        if (data.status === "error") {
+            alert(data.message || `Failed to ${action} instance.`);
+            return;
+        }
+        await loadInstances();
+    } catch (e) {
+        alert(`${action} failed: ` + e.message);
     }
 }
 
@@ -217,7 +312,8 @@ function openCreateModal() {
     document.getElementById("edit-id").value = "";
     document.getElementById("edit-id").disabled = false;
     document.getElementById("edit-name").value = "";
-    document.getElementById("edit-model").value = "";
+    document.getElementById("edit-enabled").checked = true;
+    setSelectValueSafe("edit-model", "");
     document.getElementById("edit-temperature").value = "";
     document.getElementById("edit-personality-mode").value = "independent";
     document.getElementById("edit-memory-mode").value = "independent";
@@ -233,6 +329,14 @@ function openCreateModal() {
     document.getElementById("edit-blocked-cmds").value = "";
     document.getElementById("edit-allowed-tools").value = "";
     document.getElementById("edit-denied-tools").value = "";
+    document.getElementById("edit-feature-context-compression").value = "inherit";
+    setSelectValueSafe("edit-feature-context-model", "");
+    document.getElementById("edit-feature-context-threshold").value = "";
+    document.getElementById("edit-feature-memory-lifecycle").value = "inherit";
+    document.getElementById("edit-feature-learning").value = "inherit";
+    document.getElementById("edit-feature-code-feedback").value = "inherit";
+    document.getElementById("edit-feature-task-complexity").value = "inherit";
+    document.getElementById("edit-feature-vision-mode").value = "inherit";
     document.getElementById("instance-modal").style.display = "";
 }
 
@@ -242,7 +346,8 @@ function openEditModal(inst) {
     document.getElementById("edit-id").value = inst.id;
     document.getElementById("edit-id").disabled = true;
     document.getElementById("edit-name").value = inst.name;
-    document.getElementById("edit-model").value = inst.model || "";
+    document.getElementById("edit-enabled").checked = !!inst.enabled;
+    setSelectValueSafe("edit-model", inst.model || "");
     document.getElementById("edit-temperature").value = inst.temperature ?? "";
     document.getElementById("edit-personality-mode").value = inst.personality_mode;
     document.getElementById("edit-memory-mode").value = inst.memory_mode;
@@ -262,6 +367,22 @@ function openEditModal(inst) {
     document.getElementById("edit-blocked-cmds").value = (sec.blocked_commands || []).join(", ");
     document.getElementById("edit-allowed-tools").value = (inst.allowed_tools || []).join(", ");
     document.getElementById("edit-denied-tools").value = (inst.denied_tools || []).join(", ");
+    const feat = inst.feature_overrides || {};
+    document.getElementById("edit-feature-context-compression").value =
+        boolOverrideToSelect(feat.context_compression_enabled);
+    setSelectValueSafe("edit-feature-context-model", feat.context_compression_summarize_model || "");
+    document.getElementById("edit-feature-context-threshold").value =
+        feat.context_compression_trigger_threshold ?? "";
+    document.getElementById("edit-feature-memory-lifecycle").value =
+        boolOverrideToSelect(feat.memory_lifecycle_enabled);
+    document.getElementById("edit-feature-learning").value =
+        boolOverrideToSelect(feat.learning_enabled);
+    document.getElementById("edit-feature-code-feedback").value =
+        boolOverrideToSelect(feat.code_feedback_enabled);
+    document.getElementById("edit-feature-task-complexity").value =
+        boolOverrideToSelect(feat.task_complexity_enabled);
+    document.getElementById("edit-feature-vision-mode").value =
+        feat.vision_image_analysis_mode || "inherit";
     document.getElementById("instance-modal").style.display = "";
 }
 
@@ -275,6 +396,7 @@ async function saveInstance() {
     const body = {
         id: document.getElementById("edit-id").value.trim(),
         name: document.getElementById("edit-name").value.trim(),
+        enabled: !!document.getElementById("edit-enabled").checked,
         model: document.getElementById("edit-model").value.trim() || null,
         temperature: document.getElementById("edit-temperature").value
             ? parseFloat(document.getElementById("edit-temperature").value) : null,
@@ -296,11 +418,40 @@ async function saveInstance() {
             allowed_directories: csvToList("edit-allowed-dirs"),
             blocked_commands: csvToList("edit-blocked-cmds"),
         },
+        feature_overrides: {
+            context_compression_enabled: selectToBoolOverride("edit-feature-context-compression"),
+            context_compression_summarize_model:
+                document.getElementById("edit-feature-context-model").value.trim() || null,
+            context_compression_trigger_threshold: document.getElementById("edit-feature-context-threshold").value
+                ? parseFloat(document.getElementById("edit-feature-context-threshold").value)
+                : null,
+            memory_lifecycle_enabled: selectToBoolOverride("edit-feature-memory-lifecycle"),
+            learning_enabled: selectToBoolOverride("edit-feature-learning"),
+            code_feedback_enabled: selectToBoolOverride("edit-feature-code-feedback"),
+            task_complexity_enabled: selectToBoolOverride("edit-feature-task-complexity"),
+            vision_image_analysis_mode: (() => {
+                const v = document.getElementById("edit-feature-vision-mode").value;
+                return v === "inherit" ? null : v;
+            })(),
+        },
     };
 
     if (!body.id || !body.name) {
         alert("ID and Name are required.");
         return;
+    }
+    if (body.bot_binding.adapter_type) {
+        const tokenEnv = (body.bot_binding.bot_token_env || "").trim();
+        if (!tokenEnv) {
+            alert("Bot Token Env Var is required when Bot Adapter is enabled.");
+            return;
+        }
+        if (!ENV_VAR_NAME_RE.test(tokenEnv)) {
+            alert(
+                "Bot Token Env Var must be an environment variable name (e.g. KURO_DISCORD_TOKEN_CS), not the token itself."
+            );
+            return;
+        }
     }
 
     try {
