@@ -1079,6 +1079,7 @@ class WebServer:
             "denied_tools": cfg.denied_tools,
             "security": {
                 "auto_approve_levels": cfg.security.auto_approve_levels,
+                "max_risk_level": cfg.security.max_risk_level,
                 "allowed_directories": cfg.security.allowed_directories,
                 "blocked_commands": cfg.security.blocked_commands,
                 "max_execution_time": cfg.security.max_execution_time,

@@ -694,8 +694,9 @@ class DiscordAdapter(BaseAdapter):
                 # Get model override if set
                 model = session.metadata.get("model_override")
 
-                # Record tool image paths before processing
-                images_before = self._collect_session_images(session)
+                # Record generated image paths before processing
+                images_before = set(self._collect_generated_images(session))
+                legacy_before = self._collect_session_images(session)
 
                 # Process through engine (routes to agent instance if bound)
                 response = await self.process_incoming(
@@ -704,7 +705,13 @@ class DiscordAdapter(BaseAdapter):
                 )
 
                 # Collect any new images generated during processing (screenshots, etc.)
-                new_images = self._collect_new_images(session, images_before)
+                new_images = [
+                    p for p in self._collect_generated_images(session)
+                    if p not in images_before
+                ]
+                # Backward-compatible fallback for older sessions/messages.
+                if not new_images:
+                    new_images = self._collect_new_images(session, legacy_before)
 
                 # Send response (split if needed)
                 max_len = self.config.adapters.discord.max_message_length
@@ -768,6 +775,29 @@ class DiscordAdapter(BaseAdapter):
                     logger.debug("discord_image_download_failed", url=url[:80], error=str(e))
         return paths
 
+    def _collect_generated_images(self, session: Any) -> list[str]:
+        """Collect generated image file paths tracked in session metadata."""
+        from pathlib import Path
+
+        raw = session.metadata.get("generated_images", [])
+        if not isinstance(raw, list):
+            return []
+
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in raw:
+            if not isinstance(item, str):
+                continue
+            p = Path(item)
+            if not p.is_file():
+                continue
+            path_str = str(p)
+            if path_str in seen:
+                continue
+            seen.add(path_str)
+            out.append(path_str)
+        return out
+
     def _collect_session_images(self, session: Any) -> set[str]:
         """Collect image paths already present in session messages."""
         paths: set[str] = set()
@@ -783,6 +813,12 @@ class DiscordAdapter(BaseAdapter):
     def _collect_new_images(self, session: Any, before: set[str]) -> list[str]:
         """Find image paths in tool results that were added during processing."""
         from pathlib import Path
+        import re
+
+        img_path_re = re.compile(
+            r"([A-Za-z]:[\\/][^\n\r\"<>|:*?]+?\.(?:png|jpg|jpeg|gif|webp|bmp))",
+            re.IGNORECASE,
+        )
         new_images: list[str] = []
         for msg in session.messages:
             if msg.role.value == "tool" and isinstance(msg.content, list):
@@ -795,13 +831,17 @@ class DiscordAdapter(BaseAdapter):
                             for p2 in msg.content:
                                 if isinstance(p2, dict) and p2.get("type") == "text":
                                     text = p2.get("text", "")
-                                    # Extract path from "Screenshot saved: /path/to/file"
                                     for line in text.split("\n"):
+                                        candidate = None
                                         if "saved:" in line.lower() or "path:" in line.lower():
                                             candidate = line.split(":", 1)[-1].strip()
-                                            if Path(candidate).is_file():
-                                                new_images.append(candidate)
-                                                break
+                                        else:
+                                            m = img_path_re.search(line)
+                                            if m:
+                                                candidate = m.group(1).strip()
+                                        if candidate and Path(candidate).is_file():
+                                            new_images.append(candidate)
+                                            break
         return new_images
 
     async def _send_images(self, channel: Any, image_paths: list[str]) -> None:

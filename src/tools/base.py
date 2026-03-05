@@ -73,6 +73,7 @@ class ToolContext:
     # Primary Agent Instance support
     agent_instance_id: str | None = None  # Current Primary Agent instance ID
     instance_manager: Any = None  # AgentInstanceManager | None
+    memory_manager: Any = None  # MemoryManager | None (instance-aware memory tools)
 
 
 class BaseTool(ABC):

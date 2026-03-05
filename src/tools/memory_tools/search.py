@@ -6,7 +6,7 @@ from typing import Any
 
 from src.tools.base import BaseTool, RiskLevel, ToolContext, ToolResult
 
-# Will be set by main.py during initialization
+# Fallback global memory manager set at app init (main agent default).
 _memory_manager = None
 
 
@@ -14,6 +14,18 @@ def set_memory_manager(manager: Any) -> None:
     """Set the global memory manager instance (called during app init)."""
     global _memory_manager
     _memory_manager = manager
+
+
+def _resolve_memory_manager(context: ToolContext) -> Any:
+    """Resolve memory manager with instance-aware priority.
+
+    Priority:
+    1) ToolContext.memory_manager (per-engine / per-agent-instance)
+    2) Global fallback manager (legacy/main initialization path)
+    """
+    if getattr(context, "memory_manager", None) is not None:
+        return context.memory_manager
+    return _memory_manager
 
 
 class MemorySearchTool(BaseTool):
@@ -42,7 +54,8 @@ class MemorySearchTool(BaseTool):
     risk_level = RiskLevel.LOW
 
     async def execute(self, params: dict[str, Any], context: ToolContext) -> ToolResult:
-        if _memory_manager is None:
+        memory_manager = _resolve_memory_manager(context)
+        if memory_manager is None:
             return ToolResult.fail("Memory system not initialized")
 
         query = params.get("query", "")
@@ -52,7 +65,7 @@ class MemorySearchTool(BaseTool):
             return ToolResult.fail("Query is required")
 
         try:
-            results = await _memory_manager.search_memories(query, top_k=top_k)
+            results = await memory_manager.search_memories(query, top_k=top_k)
 
             if not results:
                 return ToolResult.ok("No relevant memories found.", count=0)

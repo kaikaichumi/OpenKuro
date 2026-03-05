@@ -324,6 +324,7 @@ function openCreateModal() {
     document.getElementById("bot-token-group").style.display = "none";
     document.getElementById("edit-system-prompt").value = "";
     // Security fields
+    document.getElementById("edit-max-risk-level").value = "inherit";
     document.getElementById("edit-auto-approve").value = "";
     document.getElementById("edit-allowed-dirs").value = "";
     document.getElementById("edit-blocked-cmds").value = "";
@@ -362,6 +363,8 @@ function openEditModal(inst) {
     document.getElementById("edit-system-prompt").value = "";
     // Security fields
     const sec = inst.security || {};
+    document.getElementById("edit-max-risk-level").value =
+        sec.max_risk_level || "inherit";
     document.getElementById("edit-auto-approve").value = (sec.auto_approve_levels || []).join(", ");
     document.getElementById("edit-allowed-dirs").value = (sec.allowed_directories || []).join(", ");
     document.getElementById("edit-blocked-cmds").value = (sec.blocked_commands || []).join(", ");
@@ -414,6 +417,10 @@ async function saveInstance() {
         allowed_tools: csvToList("edit-allowed-tools"),
         denied_tools: csvToList("edit-denied-tools"),
         security: {
+            max_risk_level: (() => {
+                const value = document.getElementById("edit-max-risk-level").value;
+                return value === "inherit" ? "" : value;
+            })(),
             auto_approve_levels: csvToList("edit-auto-approve"),
             allowed_directories: csvToList("edit-allowed-dirs"),
             blocked_commands: csvToList("edit-blocked-cmds"),

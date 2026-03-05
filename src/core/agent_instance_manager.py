@@ -149,6 +149,9 @@ class AgentInstanceManager:
             memory_manager=mm,
             skills_manager=self._skills_manager,
         )
+        # Mark engine with its owning instance ID for tool routing.
+        instance_engine.agent_instance_id = cfg.id
+        self._initialize_instance_runtime_features(instance_engine, instance_config)
 
         # --- 5. Build this instance's own AgentManager (sub-agent pool) ---
         from src.core.agents import AgentManager
@@ -204,6 +207,74 @@ class AgentInstanceManager:
             sub_agents=len(cfg.sub_agents),
         )
         return instance
+
+    def _initialize_instance_runtime_features(
+        self, engine: Any, cfg: KuroConfig
+    ) -> None:
+        """Initialize optional runtime components for an instance engine."""
+        # Code feedback loop
+        if cfg.code_feedback.enabled:
+            from src.core.code_feedback import CodeFeedbackLoop
+
+            engine.code_feedback = CodeFeedbackLoop(cfg.code_feedback)
+        else:
+            engine.code_feedback = None
+
+        # Task complexity estimator
+        if not cfg.task_complexity.enabled:
+            engine.complexity_estimator = None
+            return
+
+        from src.core.complexity import ComplexityEstimator
+
+        ml_classifier = None
+        if cfg.task_complexity.ml_model_enabled:
+            from src.core.complexity_ml import (
+                MLComplexityClassifier,
+                get_default_model_path,
+                get_default_tokenizer_path,
+            )
+
+            model_path = (
+                Path(cfg.task_complexity.ml_model_path)
+                if cfg.task_complexity.ml_model_path
+                else get_default_model_path()
+            )
+            tokenizer_path = (
+                Path(cfg.task_complexity.ml_tokenizer_path)
+                if cfg.task_complexity.ml_tokenizer_path
+                else get_default_tokenizer_path()
+            )
+
+            if model_path.exists():
+                ml_classifier = MLComplexityClassifier(
+                    model_path=model_path,
+                    tokenizer_path=tokenizer_path,
+                )
+                logger.info(
+                    "instance_ml_classifier_configured",
+                    model_path=str(model_path),
+                    mode=cfg.task_complexity.ml_estimation_mode,
+                )
+            else:
+                logger.warning(
+                    "instance_ml_classifier_model_not_found",
+                    expected_path=str(model_path),
+                    instance_model=cfg.models.default,
+                )
+
+        engine.complexity_estimator = ComplexityEstimator(
+            config=cfg.task_complexity,
+            model_router=self._model_router,
+            ml_classifier=ml_classifier,
+        )
+        logger.info(
+            "instance_complexity_estimator_initialized",
+            trigger_mode=cfg.task_complexity.trigger_mode,
+            llm_refinement=cfg.task_complexity.llm_refinement,
+            decomposition=cfg.task_complexity.decomposition_enabled,
+            ml_enabled=cfg.task_complexity.ml_model_enabled,
+        )
 
     def _build_memory(
         self,
@@ -310,6 +381,8 @@ class AgentInstanceManager:
         sec = cfg.security
         if sec.auto_approve_levels:
             data["security"]["auto_approve_levels"] = list(sec.auto_approve_levels)
+        if sec.max_risk_level:
+            data["security"]["max_risk_level"] = sec.max_risk_level
         if sec.allowed_directories:
             data["sandbox"]["allowed_directories"] = list(sec.allowed_directories)
         if sec.blocked_commands:

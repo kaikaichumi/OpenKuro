@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+from urllib.parse import urlparse
 from typing import Any, AsyncIterator
 
 import litellm
@@ -164,6 +165,35 @@ class ModelRouter:
                 if key:
                     os.environ.setdefault("GEMINI_API_KEY", key)
 
+    @staticmethod
+    def _is_local_base_url(url: str | None) -> bool:
+        """Return True if api base URL points to localhost/private loopback."""
+        if not url:
+            return False
+        try:
+            host = (urlparse(url).hostname or "").lower()
+        except Exception:
+            return False
+        return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+    def _should_disable_tools_for_model(
+        self,
+        model_name: str,
+        provider_cfg: Any | None,
+    ) -> bool:
+        """Heuristic guard for strict local templates that break with tool schema."""
+        lower = model_name.lower()
+        provider = model_name.split("/")[0] if "/" in model_name else ""
+        if "llama" not in lower:
+            return False
+        if provider == "ollama":
+            return True
+        if provider == "openai" and provider_cfg and self._is_local_base_url(
+            provider_cfg.base_url
+        ):
+            return True
+        return False
+
     @property
     def default_model(self) -> str:
         return self.config.models.default
@@ -238,15 +268,22 @@ class ModelRouter:
                     "stream": False,  # Non-streaming for complete()
                 }
 
-                if tools:
-                    kwargs["tools"] = tools
-                    kwargs["tool_choice"] = "auto"
-
                 # Get provider-specific base_url
                 provider = model_name.split("/")[0] if "/" in model_name else ""
                 provider_cfg = self.config.models.providers.get(provider)
                 if provider_cfg and provider_cfg.base_url and provider != "ollama":
                     kwargs["api_base"] = provider_cfg.base_url
+
+                if tools:
+                    if self._should_disable_tools_for_model(model_name, provider_cfg):
+                        logger.warning(
+                            "tools_disabled_for_strict_template",
+                            model=model_name,
+                            reason="local_llama_template",
+                        )
+                    else:
+                        kwargs["tools"] = tools
+                        kwargs["tool_choice"] = "auto"
 
                 logger.debug("model_request", model=model_name)
                 response = await litellm.acompletion(**kwargs)
@@ -255,6 +292,18 @@ class ModelRouter:
 
             except Exception as e:
                 error_str = str(e)
+                if "Assistant response prefill is incompatible with enable_thinking" in error_str:
+                    try:
+                        retry_kwargs = dict(kwargs)
+                        extra_body = dict(retry_kwargs.get("extra_body", {}))
+                        extra_body["enable_thinking"] = False
+                        retry_kwargs["extra_body"] = extra_body
+                        logger.warning("retry_disable_thinking", model=model_name)
+                        response = await litellm.acompletion(**retry_kwargs)
+                        return self._parse_response(response, model_name)
+                    except Exception as retry_err:
+                        e = retry_err
+                        error_str = str(retry_err)
 
                 # Context overflow: don't try fallback models — the caller
                 # should compress and retry with the *same* model.
@@ -332,6 +381,15 @@ class ModelRouter:
         provider_cfg = self.config.models.providers.get(provider)
         if provider_cfg and provider_cfg.base_url and provider != "ollama":
             kwargs["api_base"] = provider_cfg.base_url
+
+        if tools and self._should_disable_tools_for_model(target_model, provider_cfg):
+            kwargs.pop("tools", None)
+            kwargs.pop("tool_choice", None)
+            logger.warning(
+                "tools_disabled_for_strict_template_stream",
+                model=target_model,
+                reason="local_llama_template",
+            )
 
         response = await litellm.acompletion(**kwargs)
 

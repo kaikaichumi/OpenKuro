@@ -782,6 +782,17 @@ class Engine:
                     if result.data.get("policy_denied"):
                         blocked_tools_by_policy.add(tc.name)
 
+                    # Track generated images in session metadata so adapters
+                    # can reliably send them as platform attachments.
+                    if result.image_path:
+                        generated = session.metadata.setdefault("generated_images", [])
+                        if isinstance(generated, list):
+                            if result.image_path not in generated:
+                                generated.append(result.image_path)
+                            # Keep bounded history to avoid unbounded growth.
+                            if len(generated) > 100:
+                                del generated[:-100]
+
                     # Sanitize tool output before adding to context
                     output = result.output if result.success else (result.error or "Error")
                     output = self.sanitizer.sanitize_tool_output(output)

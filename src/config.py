@@ -101,6 +101,8 @@ class SecurityConfig(BaseModel):
     """Security layer configuration."""
 
     auto_approve_levels: list[str] = Field(default_factory=lambda: ["low"])
+    # Hard cap: tool risk above this level is denied without prompting.
+    max_risk_level: str = "critical"
     require_approval_for: list[str] = Field(default_factory=lambda: [
         "shell_execute", "send_message",
     ])
@@ -312,6 +314,8 @@ class InstanceSecurityConfig(BaseModel):
 
     # Approval: which risk levels auto-approve (e.g., ["low", "medium"])
     auto_approve_levels: list[str] = Field(default_factory=list)
+    # Hard cap override: "" = inherit from main, else "low|medium|high|critical"
+    max_risk_level: str = ""
     # Sandbox: allowed directories (empty = inherit from main)
     allowed_directories: list[str] = Field(default_factory=list)
     # Sandbox: blocked shell commands (empty = inherit from main)

@@ -26,7 +26,7 @@ from src.core.security.sandbox import Sandbox
 from src.core.security.sanitizer import Sanitizer
 from src.core.tool_system import ToolSystem
 from src.core.types import AgentDefinition, Message, Role, Session, ToolCall
-from src.tools.base import ToolContext, ToolResult
+from src.tools.base import RiskLevel, ToolContext, ToolResult
 
 if TYPE_CHECKING:
     from src.core.engine import ApprovalCallback
@@ -189,21 +189,46 @@ class AgentRunner:
         self.session.add_message(Message(role=Role.USER, content=task))
 
         # Get filtered tools
-        tools = self.tools.registry.get_openai_tools_filtered(
+        base_tools = self.tools.registry.get_openai_tools_filtered(
             allowed=self.definition.allowed_tools or None,
             denied=self.definition.denied_tools or None,
-        ) or None
+        ) or []
+        blocked_tools_by_policy: set[str] = set()
+        risk_map = {
+            "low": RiskLevel.LOW,
+            "medium": RiskLevel.MEDIUM,
+            "high": RiskLevel.HIGH,
+            "critical": RiskLevel.CRITICAL,
+        }
+        max_risk_name = str(
+            getattr(self.config.security, "max_risk_level", "critical")
+        ).strip().lower()
+        max_risk_level = risk_map.get(max_risk_name, RiskLevel.CRITICAL)
 
         # Agent loop
         max_rounds = self.definition.max_tool_rounds
         for _round_num in range(max_rounds):
-            litellm_msgs = [m.to_litellm() for m in messages]
+            tools = []
+            for td in base_tools:
+                fn = (td.get("function") or {})
+                name = fn.get("name", "")
+                t_obj = self.tools.registry.get(name) if name else None
+                if t_obj is None:
+                    continue
+                if t_obj.risk_level > max_risk_level:
+                    continue
+                if name in blocked_tools_by_policy:
+                    continue
+                tools.append(td)
+
+            request_messages = self._normalize_system_messages(messages)
+            litellm_msgs = [m.to_litellm() for m in request_messages]
 
             try:
                 response = await self.model.complete(
                     messages=litellm_msgs,
                     model=self.definition.model,
-                    tools=tools,
+                    tools=tools or None,
                     temperature=self.definition.temperature,
                     max_tokens=self.definition.max_tokens,
                 )
@@ -216,11 +241,12 @@ class AgentRunner:
                     limit_tokens=exc.limit,
                 )
                 messages = self._compress_for_overflow(messages, exc.limit)
-                litellm_msgs = [m.to_litellm() for m in messages]
+                request_messages = self._normalize_system_messages(messages)
+                litellm_msgs = [m.to_litellm() for m in request_messages]
                 response = await self.model.complete(
                     messages=litellm_msgs,
                     model=self.definition.model,
-                    tools=tools,
+                    tools=tools or None,
                     temperature=self.definition.temperature,
                     max_tokens=self.definition.max_tokens,
                 )
@@ -240,6 +266,8 @@ class AgentRunner:
 
                 for tc in response.tool_calls:
                     result = await self._handle_tool_call(tc)
+                    if result.data.get("policy_denied"):
+                        blocked_tools_by_policy.add(tc.name)
                     output = result.output if result.success else (result.error or "Error")
                     output = self.sanitizer.sanitize_tool_output(output)
 
@@ -272,10 +300,10 @@ class AgentRunner:
                         agent=self.definition.name,
                         vague_content=content[:60],
                     )
-                    messages.append(Message(role=Role.ASSISTANT, content=content))
-                    messages.append(
+                    retry_messages_ctx = list(messages)
+                    retry_messages_ctx.append(
                         Message(
-                            role=Role.SYSTEM,
+                            role=Role.USER,
                             content=(
                                 "[Result Reporting Required] Your response was too brief. "
                                 "Report the specific results of the tools you used. "
@@ -284,7 +312,10 @@ class AgentRunner:
                         )
                     )
                     try:
-                        retry_msgs = [m.to_litellm() for m in messages]
+                        retry_messages = self._normalize_system_messages(
+                            retry_messages_ctx
+                        )
+                        retry_msgs = [m.to_litellm() for m in retry_messages]
                         retry_resp = await self.model.complete(
                             messages=retry_msgs,
                             model=self.definition.model,
@@ -308,7 +339,8 @@ class AgentRunner:
             rounds=max_rounds,
         )
         try:
-            litellm_msgs = [m.to_litellm() for m in messages]
+            request_messages = self._normalize_system_messages(messages)
+            litellm_msgs = [m.to_litellm() for m in request_messages]
             try:
                 final = await self.model.complete(
                     messages=litellm_msgs,
@@ -317,7 +349,8 @@ class AgentRunner:
                 )
             except ContextOverflowError as exc:
                 messages = self._compress_for_overflow(messages, exc.limit)
-                litellm_msgs = [m.to_litellm() for m in messages]
+                request_messages = self._normalize_system_messages(messages)
+                litellm_msgs = [m.to_litellm() for m in request_messages]
                 final = await self.model.complete(
                     messages=litellm_msgs,
                     model=self.definition.model,
@@ -335,6 +368,33 @@ class AgentRunner:
         result = self._maybe_parse_structured(content)
         self._result = result
         return result
+
+    def _normalize_system_messages(self, messages: list[Message]) -> list[Message]:
+        """Normalize to a single leading SYSTEM message for strict templates."""
+        if not messages:
+            return messages
+
+        system_msgs = [m for m in messages if m.role == Role.SYSTEM]
+        if not system_msgs:
+            return messages
+
+        non_system = [m for m in messages if m.role != Role.SYSTEM]
+        if len(system_msgs) == 1 and messages[0].role == Role.SYSTEM and all(
+            m.role != Role.SYSTEM for m in messages[1:]
+        ):
+            return messages
+
+        merged_parts: list[str] = []
+        for sm in system_msgs:
+            if isinstance(sm.content, str):
+                text = sm.content.strip()
+            else:
+                text = str(sm.content).strip()
+            if text:
+                merged_parts.append(text)
+
+        merged = Message(role=Role.SYSTEM, content="\n\n".join(merged_parts))
+        return [merged] + non_system
 
     async def _log_tokens(self, response: Any) -> None:
         """Log token usage from a sub-agent LLM response."""
@@ -580,6 +640,12 @@ class AgentRunner:
             tool_call.name, tool.risk_level, approval_session.id
         )
         if not decision.approved:
+            if decision.method == "policy_denied":
+                return ToolResult(
+                    success=False,
+                    error=f"Denied: {decision.reason}",
+                    data={"policy_denied": True},
+                )
             approved = await self.approval_cb.request_approval(
                 tool_call.name,
                 tool_call.arguments,
@@ -590,6 +656,14 @@ class AgentRunner:
                 return ToolResult.denied("User denied the action")
 
         # Execute — pass agent_manager for recursive delegation (Phase 1)
+        engine = None
+        memory_manager = None
+        agent_instance_id = None
+        if self.agent_manager is not None:
+            engine = getattr(self.agent_manager, "_engine", None)
+            memory_manager = getattr(engine, "memory", None)
+            agent_instance_id = getattr(engine, "agent_instance_id", None)
+
         context = ToolContext(
             session_id=self.session.id,
             allowed_directories=[
@@ -599,6 +673,8 @@ class AgentRunner:
             max_output_size=self.config.sandbox.max_output_size,
             agent_manager=self.agent_manager,
             session=self._parent_session or self.session,
+            memory_manager=memory_manager,
+            agent_instance_id=agent_instance_id,
         )
 
         start = time.monotonic()

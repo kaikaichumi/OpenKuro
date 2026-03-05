@@ -164,6 +164,16 @@
                 <summary style="cursor:pointer;color:var(--primary);font-weight:600" data-i18n="agents.securitySettings">Security Settings</summary>
                 <div style="padding:0.5rem 0">
                     <div class="form-group">
+                        <label>Max Risk Level</label>
+                        <select id="edit-max-risk-level">
+                            <option value="inherit">(inherit from main)</option>
+                            <option value="low">low</option>
+                            <option value="medium">medium</option>
+                            <option value="high">high</option>
+                            <option value="critical">critical</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
                         <label data-i18n="agents.autoApproveLevels">Auto-Approve Levels</label>
                         <input type="text" id="edit-auto-approve" placeholder="e.g. low,medium (inherit from main)">
                     </div>

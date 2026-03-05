@@ -105,7 +105,20 @@ class ApprovalPolicy:
 
         Returns an ApprovalDecision indicating the outcome.
         """
-        # 0. Force approval for specific tools (overrides auto-approve and session trust)
+        # 0. Hard cap: deny any tool above configured maximum risk (no prompt).
+        max_risk_name = (self.config.max_risk_level or "critical").strip().lower()
+        max_risk = RISK_MAP.get(max_risk_name, RiskLevel.CRITICAL)
+        if risk_level > max_risk:
+            return ApprovalDecision(
+                approved=False,
+                reason=(
+                    f"Blocked by policy: risk '{risk_level.value}' exceeds "
+                    f"maximum '{max_risk.value}'"
+                ),
+                method="policy_denied",
+            )
+
+        # 1. Force approval for specific tools (overrides auto-approve and session trust)
         if tool_name in self.config.require_approval_for:
             return ApprovalDecision(
                 approved=False,
@@ -113,7 +126,7 @@ class ApprovalPolicy:
                 method="pending",
             )
 
-        # 1. Check if risk level is in auto-approve list
+        # 2. Check if risk level is in auto-approve list
         auto_levels = {
             RISK_MAP[l] for l in self.config.auto_approve_levels if l in RISK_MAP
         }
@@ -124,7 +137,7 @@ class ApprovalPolicy:
                 method="auto",
             )
 
-        # 2. Check session trust escalation
+        # 3. Check session trust escalation
         if self.config.session_trust_enabled:
             trust = self.get_session_trust(session_id)
             current = trust.current_level()
@@ -135,7 +148,7 @@ class ApprovalPolicy:
                     method="session_trust",
                 )
 
-        # 3. Requires user approval
+        # 4. Requires user approval
         return ApprovalDecision(
             approved=False,
             reason=f"Requires approval: {tool_name} ({risk_level.value})",

@@ -7,7 +7,10 @@ from typing import Any
 from src.tools.base import BaseTool, RiskLevel, ToolContext, ToolResult
 
 # Shared with search.py
-from src.tools.memory_tools.search import _memory_manager, set_memory_manager
+from src.tools.memory_tools.search import (
+    _resolve_memory_manager,
+    set_memory_manager,
+)
 
 
 class MemoryStoreTool(BaseTool):
@@ -41,9 +44,8 @@ class MemoryStoreTool(BaseTool):
     risk_level = RiskLevel.LOW
 
     async def execute(self, params: dict[str, Any], context: ToolContext) -> ToolResult:
-        from src.tools.memory_tools.search import _memory_manager
-
-        if _memory_manager is None:
+        memory_manager = _resolve_memory_manager(context)
+        if memory_manager is None:
             return ToolResult.fail("Memory system not initialized")
 
         content = params.get("content", "")
@@ -54,7 +56,7 @@ class MemoryStoreTool(BaseTool):
             return ToolResult.fail("Content is required")
 
         try:
-            memory_id = await _memory_manager.store_fact(
+            memory_id = await memory_manager.store_fact(
                 content=content,
                 tags=tags,
                 also_write_md=save_to_file,
