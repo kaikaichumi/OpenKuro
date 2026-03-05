@@ -336,8 +336,36 @@ class DiscordAdapter(BaseAdapter):
                 return
 
             content = message.content.strip()
-            if not content:
+
+            # Extract image URLs from attachments and embeds
+            image_urls: list[str] = []
+            for att in message.attachments:
+                if att.content_type and att.content_type.startswith("image/"):
+                    image_urls.append(att.url)
+                elif att.filename and att.filename.lower().endswith(
+                    (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+                ):
+                    image_urls.append(att.url)
+            # Also check for image URLs in embeds
+            for embed in message.embeds:
+                if embed.image and embed.image.url:
+                    image_urls.append(embed.image.url)
+                if embed.thumbnail and embed.thumbnail.url:
+                    image_urls.append(embed.thumbnail.url)
+            # Extract image URLs pasted directly in message text
+            _IMG_URL_RE = re.compile(
+                r'(https?://\S+\.(?:png|jpg|jpeg|gif|webp|bmp)(?:\?\S*)?)',
+                re.IGNORECASE,
+            )
+            for url_match in _IMG_URL_RE.findall(content):
+                if url_match not in image_urls:
+                    image_urls.append(url_match)
+
+            # If no text content but has images, use a placeholder
+            if not content and not image_urls:
                 return
+            if not content and image_urls:
+                content = "(image attached)"
 
             # Handle prefix commands
             if content.startswith(prefix):
@@ -367,7 +395,7 @@ class DiscordAdapter(BaseAdapter):
 
             asyncio.create_task(
                 self._safe_handle(
-                    self._handle_message(message, content),
+                    self._handle_message(message, content, image_urls=image_urls),
                     message.channel,
                 )
             )
@@ -636,7 +664,9 @@ class DiscordAdapter(BaseAdapter):
                 f"Unknown command: `{cmd}`. Type `{prefix}help` for available commands."
             )
 
-    async def _handle_message(self, message, content: str) -> None:
+    async def _handle_message(
+        self, message, content: str, *, image_urls: list[str] | None = None,
+    ) -> None:
         """Process a regular chat message through the engine."""
         session_key = self._session_key(message.channel.id, message.author.id)
         session = self.get_or_create_session(session_key)
@@ -650,7 +680,13 @@ class DiscordAdapter(BaseAdapter):
             username=str(message.author),
             channel_id=message.channel.id,
             text_len=len(content),
+            images=len(image_urls) if image_urls else 0,
         )
+
+        # Download images to temp files for multimodal processing
+        image_paths: list[str] = []
+        if image_urls:
+            image_paths = await self._download_images(image_urls)
 
         # Send typing indicator
         async with message.channel.typing():
@@ -658,16 +694,26 @@ class DiscordAdapter(BaseAdapter):
                 # Get model override if set
                 model = session.metadata.get("model_override")
 
+                # Record tool image paths before processing
+                images_before = self._collect_session_images(session)
+
                 # Process through engine (routes to agent instance if bound)
                 response = await self.process_incoming(
-                    content, session, model=model
+                    content, session, model=model,
+                    images=image_paths if image_paths else None,
                 )
+
+                # Collect any new images generated during processing (screenshots, etc.)
+                new_images = self._collect_new_images(session, images_before)
 
                 # Send response (split if needed)
                 max_len = self.config.adapters.discord.max_message_length
                 chunks = split_message(response, max_len)
                 for chunk in chunks:
                     await message.channel.send(chunk)
+
+                # Send generated images as attachments
+                await self._send_images(message.channel, new_images)
 
             except Exception as e:
                 logger.error(
@@ -678,7 +724,109 @@ class DiscordAdapter(BaseAdapter):
                 await message.channel.send(
                     f"\u274c Error processing message: {str(e)[:200]}"
                 )
+        # Clean up downloaded temp images
+        self._cleanup_temp_images(image_paths)
 
+    # ── Image helpers ──────────────────────────────────────────
+
+    async def _download_images(self, urls: list[str]) -> list[str]:
+        """Download image URLs to temporary files.  Returns list of file paths."""
+        import tempfile
+        from pathlib import Path
+
+        try:
+            import aiohttp
+        except ImportError:
+            logger.warning("aiohttp_not_available", hint="pip install aiohttp")
+            return []
+
+        paths: list[str] = []
+        async with aiohttp.ClientSession() as http:
+            for url in urls[:5]:  # limit to 5 images
+                try:
+                    async with http.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                        if resp.status != 200:
+                            continue
+                        ct = resp.content_type or ""
+                        ext = ".png"
+                        if "jpeg" in ct or "jpg" in ct:
+                            ext = ".jpg"
+                        elif "gif" in ct:
+                            ext = ".gif"
+                        elif "webp" in ct:
+                            ext = ".webp"
+                        data = await resp.read()
+                        if len(data) > 20 * 1024 * 1024:  # skip >20 MB
+                            continue
+                        tmp = tempfile.NamedTemporaryFile(
+                            suffix=ext, prefix="kuro_discord_", delete=False
+                        )
+                        tmp.write(data)
+                        tmp.close()
+                        paths.append(tmp.name)
+                except Exception as e:
+                    logger.debug("discord_image_download_failed", url=url[:80], error=str(e))
+        return paths
+
+    def _collect_session_images(self, session: Any) -> set[str]:
+        """Collect image paths already present in session messages."""
+        paths: set[str] = set()
+        for msg in session.messages:
+            if isinstance(msg.content, list):
+                for part in msg.content:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        url = part.get("image_url", {}).get("url", "")
+                        if url.startswith("data:"):
+                            paths.add(url[:60])  # use prefix as key
+        return paths
+
+    def _collect_new_images(self, session: Any, before: set[str]) -> list[str]:
+        """Find image paths in tool results that were added during processing."""
+        from pathlib import Path
+        new_images: list[str] = []
+        for msg in session.messages:
+            if msg.role.value == "tool" and isinstance(msg.content, list):
+                for part in msg.content:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        url = part.get("image_url", {}).get("url", "")
+                        key = url[:60] if url.startswith("data:") else url
+                        if key and key not in before:
+                            # Try to find the original file path from the text part
+                            for p2 in msg.content:
+                                if isinstance(p2, dict) and p2.get("type") == "text":
+                                    text = p2.get("text", "")
+                                    # Extract path from "Screenshot saved: /path/to/file"
+                                    for line in text.split("\n"):
+                                        if "saved:" in line.lower() or "path:" in line.lower():
+                                            candidate = line.split(":", 1)[-1].strip()
+                                            if Path(candidate).is_file():
+                                                new_images.append(candidate)
+                                                break
+        return new_images
+
+    async def _send_images(self, channel: Any, image_paths: list[str]) -> None:
+        """Send image files as Discord attachments."""
+        import discord
+        from pathlib import Path
+
+        for path in image_paths[:5]:  # limit to 5 images
+            try:
+                p = Path(path)
+                if p.is_file() and p.stat().st_size < 8 * 1024 * 1024:  # Discord 8MB limit
+                    await channel.send(file=discord.File(str(p), filename=p.name))
+            except Exception as e:
+                logger.debug("discord_send_image_failed", path=path, error=str(e))
+
+    @staticmethod
+    def _cleanup_temp_images(paths: list[str]) -> None:
+        """Remove temporary downloaded image files."""
+        import os
+        for p in paths:
+            try:
+                if p and os.path.exists(p) and "kuro_discord_" in p:
+                    os.unlink(p)
+            except Exception:
+                pass
 
     @property
     def default_channel_id(self) -> int | None:

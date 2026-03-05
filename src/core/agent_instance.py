@@ -32,10 +32,11 @@ class AgentInstance:
     bound_adapter: Any = None  # BaseAdapter bound to this instance
 
     async def process_message(
-        self, text: str, session: Any, model: str | None = None
+        self, text: str, session: Any, model: str | None = None,
+        images: list[str] | None = None,
     ) -> str:
         """Process a message through this instance's engine."""
-        return await self.engine.process_message(text, session, model)
+        return await self.engine.process_message(text, session, model, images=images)
 
     async def stream_message(
         self, text: str, session: Any, model: str | None = None
@@ -72,6 +73,7 @@ class AgentInstance:
             "denied_tools": cfg.denied_tools,
             "security": {
                 "auto_approve_levels": cfg.security.auto_approve_levels,
+                "max_risk_level": cfg.security.max_risk_level,
                 "allowed_directories": cfg.security.allowed_directories,
                 "blocked_commands": cfg.security.blocked_commands,
                 "max_execution_time": cfg.security.max_execution_time,

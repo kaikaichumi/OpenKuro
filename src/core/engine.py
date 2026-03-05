@@ -179,6 +179,8 @@ class Engine:
             agent_manager=self.agent_manager,
             team_manager=self.team_manager,
             instance_manager=self.instance_manager,
+            memory_manager=self.memory,
+            agent_instance_id=getattr(self, "agent_instance_id", None),
         )
         result = await self.tools.execute(tool_name, params, context)
         if result.success:
@@ -200,6 +202,59 @@ class Engine:
     def _get_system_message(self) -> Message:
         """Build the system message with security rules."""
         return Message(role=Role.SYSTEM, content=self.config.system_prompt)
+
+    def _normalize_system_messages(
+        self, messages: list[Message]
+    ) -> list[Message]:
+        """Normalize message order for strict chat templates.
+
+        Some local templates (e.g., certain llama.cpp chat templates) require
+        SYSTEM messages to appear only at the beginning. This keeps relative
+        order within SYSTEM and non-SYSTEM groups while making SYSTEM-first.
+        """
+        if not messages:
+            return messages
+
+        system_msgs = [m for m in messages if m.role == Role.SYSTEM]
+        if not system_msgs:
+            return messages
+
+        non_system_msgs = [m for m in messages if m.role != Role.SYSTEM]
+
+        # Some local templates only allow a single system message.
+        # Merge all system instructions into one top message.
+        if len(system_msgs) > 1:
+            merged_parts: list[str] = []
+            for sm in system_msgs:
+                if isinstance(sm.content, str):
+                    text = sm.content.strip()
+                else:
+                    text = str(sm.content).strip()
+                if text:
+                    merged_parts.append(text)
+            merged_system = Message(
+                role=Role.SYSTEM,
+                content="\n\n".join(merged_parts),
+            )
+            logger.debug(
+                "system_messages_merged_for_template",
+                original=len(system_msgs),
+            )
+            return [merged_system] + non_system_msgs
+
+        already_normalized = (
+            messages[0].role == Role.SYSTEM
+            and all(m.role != Role.SYSTEM for m in messages[1:])
+        )
+        if already_normalized:
+            return messages
+
+        logger.debug(
+            "system_messages_reordered_for_template",
+            total=len(messages),
+            system=len(system_msgs),
+        )
+        return system_msgs + non_system_msgs
 
     def _get_agent_context_message(self) -> Message | None:
         """Build an agent-awareness message so the LLM knows available agents.
@@ -522,15 +577,23 @@ class Engine:
         user_text: str,
         session: Session,
         model: str | None = None,
+        images: list[str] | None = None,
     ) -> str:
         """Process a user message and return the assistant's response.
 
         This is the main entry point for the agent loop.
         Uses per-session locking to safely handle concurrent messages.
+
+        Args:
+            user_text: The user's text message.
+            session: The conversation session.
+            model: Optional model override.
+            images: Optional list of image file paths or data URIs to
+                    include as multimodal content with the user message.
         """
         async with self._get_session_lock(session.id):
             return await self._process_message_locked(
-                user_text, session, model
+                user_text, session, model, images=images
             )
 
     async def _process_message_locked(
@@ -538,6 +601,7 @@ class Engine:
         user_text: str,
         session: Session,
         model: str | None = None,
+        images: list[str] | None = None,
     ) -> str:
         """Internal message processing (called with session lock held)."""
         # Sanitize user input
@@ -576,8 +640,20 @@ class Engine:
             except Exception as e:
                 logger.debug("complexity_estimation_skipped", error=str(e))
 
-        # Add user message
-        user_msg = Message(role=Role.USER, content=user_text)
+        # Add user message (multimodal if images provided)
+        user_content: str | list[dict] = user_text
+        if images:
+            parts: list[dict] = [{"type": "text", "text": user_text}]
+            for img in images:
+                if img.startswith("data:"):
+                    url = img
+                else:
+                    url = _encode_image_base64(img)
+                if url:
+                    parts.append({"type": "image_url", "image_url": {"url": url}})
+            if len(parts) > 1:
+                user_content = parts
+        user_msg = Message(role=Role.USER, content=user_content)
         session.add_message(user_msg)
 
         # Log conversation if in full mode
@@ -614,9 +690,28 @@ class Engine:
 
         # Agent loop: call LLM -> handle tool calls -> repeat
         max_rounds = getattr(self.config, "max_tool_rounds", _DEFAULT_MAX_TOOL_ROUNDS)
+        blocked_tools_by_policy: set[str] = set()
+        risk_map = {
+            "low": RiskLevel.LOW,
+            "medium": RiskLevel.MEDIUM,
+            "high": RiskLevel.HIGH,
+            "critical": RiskLevel.CRITICAL,
+        }
+        max_risk_name = str(
+            getattr(self.config.security, "max_risk_level", "critical")
+        ).strip().lower()
+        max_risk_level = risk_map.get(max_risk_name, RiskLevel.CRITICAL)
         for round_num in range(max_rounds):
-            messages = [m.to_litellm() for m in context_messages]
-            tools = self.tools.registry.get_openai_tools() or None
+            request_context = self._normalize_system_messages(context_messages)
+            messages = [m.to_litellm() for m in request_context]
+            tool_defs: list[dict[str, Any]] = []
+            for t in self.tools.registry.get_all():
+                if t.risk_level > max_risk_level:
+                    continue
+                if t.name in blocked_tools_by_policy:
+                    continue
+                tool_defs.append(t.to_openai_tool())
+            tools = tool_defs or None
 
             try:
                 response = await self.model.complete(
@@ -635,7 +730,8 @@ class Engine:
                 context_messages = await self._emergency_compress(
                     context_messages, exc.limit
                 )
-                messages = [m.to_litellm() for m in context_messages]
+                request_context = self._normalize_system_messages(context_messages)
+                messages = [m.to_litellm() for m in request_context]
                 response = await self.model.complete(
                     messages=messages,
                     model=model,
@@ -650,7 +746,8 @@ class Engine:
                 context_messages = self._convert_images_to_text(
                     context_messages
                 )
-                messages = [m.to_litellm() for m in context_messages]
+                request_context = self._normalize_system_messages(context_messages)
+                messages = [m.to_litellm() for m in request_context]
                 response = await self.model.complete(
                     messages=messages,
                     model=model,
@@ -682,6 +779,8 @@ class Engine:
 
                 for tc in response.tool_calls:
                     result = await self._handle_tool_call(tc, session)
+                    if result.data.get("policy_denied"):
+                        blocked_tools_by_policy.add(tc.name)
 
                     # Sanitize tool output before adding to context
                     output = result.output if result.success else (result.error or "Error")
@@ -753,13 +852,10 @@ class Engine:
                         vague_content=content[:60],
                         round_num=round_num,
                     )
-                    # Add the vague response so the LLM sees it tried to be lazy
-                    context_messages.append(
-                        Message(role=Role.ASSISTANT, content=content)
-                    )
-                    context_messages.append(
+                    retry_context = list(context_messages)
+                    retry_context.append(
                         Message(
-                            role=Role.SYSTEM,
+                            role=Role.USER,
                             content=(
                                 "[Result Reporting Required] Your response was too brief. "
                                 "You MUST report the specific results of the tools you used. "
@@ -769,7 +865,10 @@ class Engine:
                         )
                     )
                     try:
-                        retry_messages = [m.to_litellm() for m in context_messages]
+                        retry_context = self._normalize_system_messages(
+                            retry_context
+                        )
+                        retry_messages = [m.to_litellm() for m in retry_context]
                         retry_resp = await self.model.complete(
                             messages=retry_messages, model=model, tools=None,
                         )
@@ -810,7 +909,8 @@ class Engine:
         # Use updated context_messages which now includes all tool results
         logger.warning("tool_rounds_exhausted", rounds=max_rounds)
         try:
-            messages = [m.to_litellm() for m in context_messages]
+            final_context = self._normalize_system_messages(context_messages)
+            messages = [m.to_litellm() for m in final_context]
             final = await self.model.complete(
                 messages=messages, model=model, tools=None,
             )
@@ -941,6 +1041,28 @@ class Engine:
         For messages that require tool calls, falls back to process_message.
         """
         user_text = self.sanitizer.sanitize_user_input(user_text)
+
+        # Keep stream path aligned with process_message complexity behavior.
+        trigger = self.config.task_complexity.trigger_mode
+        if (
+            self.complexity_estimator
+            and self.config.task_complexity.enabled
+            and trigger in ("auto", "auto_silent")
+        ):
+            try:
+                complexity = await self.complexity_estimator.estimate(user_text, session)
+                if self.config.task_complexity.track_accuracy:
+                    try:
+                        await self.action_log.log_complexity(
+                            session.id, complexity.to_dict()
+                        )
+                    except (AttributeError, TypeError):
+                        pass
+                if complexity.suggested_model:
+                    model = complexity.suggested_model
+            except Exception as e:
+                logger.debug("complexity_estimation_skipped", error=str(e))
+
         user_msg = Message(role=Role.USER, content=user_text)
         session.add_message(user_msg)
 
@@ -953,7 +1075,8 @@ class Engine:
                     0, Message(role=Role.SYSTEM, content=self.config.core_prompt)
                 )
 
-        messages = session.get_litellm_messages()
+        normalized = self._normalize_system_messages(session.messages)
+        messages = [m.to_litellm() for m in normalized]
         tools = self.tools.registry.get_openai_tools() or None
 
         # First try a non-streaming call to check for tool calls
@@ -1062,6 +1185,35 @@ class Engine:
         )
 
         if not decision.approved:
+            if decision.method == "policy_denied":
+                logger.warning(
+                    "tool_policy_denied",
+                    tool=tool_call.name,
+                    risk=tool.risk_level.value,
+                    reason=decision.reason,
+                )
+                await self.audit.log_tool_execution(
+                    session_id=session.id,
+                    source=session.adapter,
+                    tool_name=tool_call.name,
+                    parameters=tool_call.arguments,
+                    approved=False,
+                    risk_level=tool.risk_level.value,
+                    result_summary=decision.reason,
+                )
+                await self.action_log.log_tool_call(
+                    session_id=session.id,
+                    tool_name=tool_call.name,
+                    params=tool_call.arguments,
+                    status="denied",
+                    error=decision.reason,
+                )
+                return ToolResult(
+                    success=False,
+                    error=f"Denied: {decision.reason}",
+                    data={"policy_denied": True},
+                )
+
             # Need human approval
             logger.info(
                 "tool_approval_requested",
@@ -1107,6 +1259,8 @@ class Engine:
             session=session,
             team_manager=self.team_manager,
             instance_manager=self.instance_manager,
+            memory_manager=self.memory,
+            agent_instance_id=getattr(self, "agent_instance_id", None),
         )
 
         start = time.monotonic()

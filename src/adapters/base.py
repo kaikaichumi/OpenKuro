@@ -14,7 +14,7 @@ import structlog
 
 from src.config import KuroConfig
 from src.core.engine import Engine
-from src.core.types import Session
+from src.core.types import Message, Role, Session
 
 logger = structlog.get_logger()
 
@@ -52,15 +52,27 @@ class BaseAdapter(ABC):
         text: str,
         session: Session,
         model: str | None = None,
+        images: list[str] | None = None,
     ) -> str:
         """Route a message to the bound agent instance or main engine.
 
         If this adapter is bound to an AgentInstance, the message goes
         through the instance's Engine. Otherwise, uses the main engine.
+
+        Args:
+            text: The user message text.
+            session: The user's session.
+            model: Optional model override.
+            images: Optional list of image file paths or data URIs to
+                    include as multimodal content with the user message.
         """
         if self._agent_instance:
-            return await self._agent_instance.process_message(text, session, model)
-        return await self.engine.process_message(text, session, model)
+            return await self._agent_instance.process_message(
+                text, session, model, images=images
+            )
+        return await self.engine.process_message(
+            text, session, model, images=images
+        )
 
     @property
     def effective_engine(self) -> Engine:
