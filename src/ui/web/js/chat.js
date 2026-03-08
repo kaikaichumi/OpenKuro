@@ -53,6 +53,7 @@ let currentApprovalId = null;
 let settingsPanel, auditPanel, screenPanel;
 let modelSelect, trustSelect;
 let screenImage, screenAction, screenStep, screenPlaceholder;
+let oauthStatusLabel, btnOauthLogin, btnOauthLogout;
 
 // ========================================================================
 // ChatPanel class
@@ -163,7 +164,8 @@ class ChatPanel {
     updateStatus(data) {
         if (data.model && this.modelBadge) {
             const short = data.model.split("/").pop();
-            this.modelBadge.textContent = short;
+            const mode = data.model_auth_mode === "oauth" ? " OAuth" : "";
+            this.modelBadge.textContent = short + mode;
             this.modelBadge.title = data.model;
         }
         if (data.session_id) {
@@ -503,10 +505,28 @@ function routeMessage(data) {
 
 /** Update global badges (trust etc.) from main agent status. */
 function updateGlobalStatus(data) {
+    if ((data.agent_id || MAIN_AGENT_ID) !== MAIN_AGENT_ID) return;
     if (data.trust_level) {
         const tb = document.getElementById("trust-badge-global");
         if (tb) tb.textContent = data.trust_level.toUpperCase();
         if (trustSelect) trustSelect.value = data.trust_level;
+    }
+    if (modelSelect && data.model) {
+        if (!data.model_override) {
+            modelSelect.value = "";
+            return;
+        }
+        let expected = data.model;
+        if (data.model_auth_mode === "oauth") {
+            expected = "oauth:" + data.model;
+        } else if (data.model.startsWith("openai/")) {
+            expected = "api:" + data.model;
+        }
+        if ([...modelSelect.options].some(o => o.value === expected)) {
+            modelSelect.value = expected;
+        } else if ([...modelSelect.options].some(o => o.value === data.model)) {
+            modelSelect.value = data.model;
+        }
     }
 }
 
@@ -550,34 +570,91 @@ function loadModels() {
     fetch("/api/models")
         .then(r => r.json())
         .then(data => {
+            const previous = modelSelect.value;
             modelSelect.innerHTML = "";
             const opt = document.createElement("option");
             opt.value = "";
             opt.textContent = t("common.default") + " (" + (data.default || "").split("/").pop() + ")";
             modelSelect.appendChild(opt);
-            const groups = data.groups || {};
-            if (Object.keys(groups).length > 0) {
-                Object.keys(groups).forEach(provider => {
+            const catalog = Array.isArray(data.catalog) ? data.catalog : [];
+            if (catalog.length > 0) {
+                const grouped = new Map();
+                for (const item of catalog) {
+                    const key = item.group_label || item.provider || "Models";
+                    if (!grouped.has(key)) grouped.set(key, []);
+                    grouped.get(key).push(item);
+                }
+                for (const [groupLabel, items] of grouped.entries()) {
                     const optgroup = document.createElement("optgroup");
-                    optgroup.label = provider.charAt(0).toUpperCase() + provider.slice(1);
-                    groups[provider].forEach(m => {
+                    optgroup.label = groupLabel;
+                    for (const item of items) {
                         const o = document.createElement("option");
-                        o.value = m;
-                        o.textContent = m.split("/").pop();
+                        o.value = item.value;
+                        o.textContent = item.label || item.model || item.value;
                         optgroup.appendChild(o);
-                    });
+                    }
                     modelSelect.appendChild(optgroup);
-                });
+                }
             } else {
-                (data.available || []).forEach(m => {
+                (data.available || []).forEach((m) => {
                     const o = document.createElement("option");
                     o.value = m;
                     o.textContent = m;
                     modelSelect.appendChild(o);
                 });
             }
+            if (previous && [...modelSelect.options].some(o => o.value === previous)) {
+                modelSelect.value = previous;
+            }
         })
         .catch(() => {});
+}
+
+function loadOpenAIOAuthStatus() {
+    fetch("/api/oauth/openai/status")
+        .then(r => r.json())
+        .then(data => {
+            if (!oauthStatusLabel) return;
+            if (!data.configured) {
+                oauthStatusLabel.textContent = "OpenAI OAuth: Not configured";
+                if (btnOauthLogin) {
+                    btnOauthLogin.classList.remove("hidden");
+                    btnOauthLogin.disabled = false;
+                }
+                if (btnOauthLogout) {
+                    btnOauthLogout.classList.add("hidden");
+                    btnOauthLogout.disabled = true;
+                }
+                return;
+            }
+            if (data.logged_in) {
+                const email = data.email ? " (" + data.email + ")" : "";
+                oauthStatusLabel.textContent = "OpenAI OAuth: Connected" + email;
+                if (btnOauthLogin) {
+                    btnOauthLogin.classList.add("hidden");
+                    btnOauthLogin.disabled = false;
+                }
+                if (btnOauthLogout) {
+                    btnOauthLogout.classList.remove("hidden");
+                    btnOauthLogout.disabled = false;
+                }
+            } else {
+                oauthStatusLabel.textContent = "OpenAI OAuth: Not signed in";
+                if (btnOauthLogin) {
+                    btnOauthLogin.classList.remove("hidden");
+                    btnOauthLogin.disabled = false;
+                }
+                if (btnOauthLogout) {
+                    btnOauthLogout.classList.add("hidden");
+                    btnOauthLogout.disabled = false;
+                }
+            }
+        })
+        .catch(() => {
+            if (oauthStatusLabel) {
+                oauthStatusLabel.textContent = "OpenAI OAuth: Status unavailable";
+            }
+        });
 }
 
 function loadAudit() {
@@ -708,6 +785,9 @@ function bindGlobalEvents() {
     screenAction = document.getElementById("screen-action");
     screenStep = document.getElementById("screen-step");
     screenPlaceholder = document.getElementById("screen-placeholder");
+    oauthStatusLabel = document.getElementById("openai-oauth-status");
+    btnOauthLogin = document.getElementById("btn-openai-oauth-login");
+    btnOauthLogout = document.getElementById("btn-openai-oauth-logout");
 
     document.getElementById("btn-screen")?.addEventListener("click", () => {
         screenPanel?.classList.toggle("hidden");
@@ -722,6 +802,7 @@ function bindGlobalEvents() {
         if (settingsPanel && !settingsPanel.classList.contains("hidden")) {
             loadModels();
             loadSkills();
+            loadOpenAIOAuthStatus();
         }
     });
 
@@ -742,6 +823,30 @@ function bindGlobalEvents() {
 
     modelSelect?.addEventListener("change", () => {
         send({ type: "command", command: "model", args: modelSelect.value, agent_id: MAIN_AGENT_ID });
+    });
+
+    btnOauthLogin?.addEventListener("click", async () => {
+        try {
+            const r = await fetch("/api/oauth/openai/status");
+            const s = await r.json();
+            if (!s.configured) {
+                alert("OpenAI OAuth 尚未設定。請先在 .env 加上 OPENAI_OAUTH_CLIENT_ID（必要），再重啟服務。");
+                return;
+            }
+        } catch (e) {
+            // ignore and still try login redirect
+        }
+        window.location.href = "/api/oauth/openai/login";
+    });
+
+    btnOauthLogout?.addEventListener("click", async () => {
+        try {
+            await fetch("/api/oauth/openai/logout", { method: "POST" });
+        } catch (e) {
+            // ignore
+        }
+        loadOpenAIOAuthStatus();
+        loadModels();
     });
 
     trustSelect?.addEventListener("change", () => {
@@ -801,6 +906,8 @@ async function init() {
 
     // Connect WebSocket
     connect();
+    loadOpenAIOAuthStatus();
+    loadModels();
 
     onLocaleChange(() => {
         // Re-apply status text

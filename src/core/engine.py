@@ -145,6 +145,9 @@ class Engine:
         self.team_manager: Any = None  # Set externally after construction (Phase 2)
         self.instance_manager: Any = None  # AgentInstanceManager (Primary Agent instances)
 
+        # Event bus for live dashboard (set by build_engine)
+        self.event_bus: Any = None
+
         # Security components
         self.approval_policy = ApprovalPolicy(config.security)
         self.sandbox = Sandbox(config.sandbox)
@@ -607,6 +610,20 @@ class Engine:
                 user_text, session, model, images=images
             )
 
+    def _emit(self, event_type: str, agent_id: str = "main", **kwargs: Any) -> None:
+        """Emit an event to the event bus (best-effort, never raises)."""
+        bus = getattr(self, "event_bus", None)
+        if bus:
+            try:
+                from src.core.agent_events import AgentEvent
+                bus.emit(AgentEvent(
+                    event_type=event_type,
+                    source_agent=agent_id,
+                    **kwargs,
+                ))
+            except Exception:
+                pass
+
     async def _process_message_locked(
         self,
         user_text: str,
@@ -666,6 +683,9 @@ class Engine:
                 user_content = parts
         user_msg = Message(role=Role.USER, content=user_content)
         session.add_message(user_msg)
+
+        # Emit message_received event for dashboard
+        self._emit("message_received", content=user_text[:120])
 
         # Log conversation if in full mode
         await self.action_log.log_conversation(session.id, "user", user_text)
@@ -743,6 +763,7 @@ class Engine:
                 tool_defs.append(t.to_openai_tool())
             tools = tool_defs or None
 
+            self._emit("stream_start", content=f"LLM call round {round_num + 1}")
             try:
                 response = await self.model.complete(
                     messages=messages,
@@ -808,7 +829,27 @@ class Engine:
                 context_messages.append(assistant_msg)
 
                 for tc in response.tool_calls:
+                    self._emit(
+                        "tool_call",
+                        content=f"Tool: {tc.name}",
+                        metadata={"tool_name": tc.name},
+                    )
                     result = await self._handle_tool_call(tc, session)
+
+                    # Emit tool_result or error event
+                    if result.success:
+                        self._emit(
+                            "tool_result",
+                            content=f"{tc.name}: ok",
+                            metadata={"tool_name": tc.name},
+                        )
+                    else:
+                        self._emit(
+                            "error",
+                            content=f"{tc.name}: {(result.error or 'error')[:120]}",
+                            metadata={"tool_name": tc.name},
+                        )
+
                     if result.data.get("policy_denied"):
                         blocked_tools_by_policy.add(tc.name)
 
@@ -934,6 +975,10 @@ class Engine:
                 assistant_msg = Message(role=Role.ASSISTANT, content=content)
                 session.add_message(assistant_msg)
 
+                # Emit stream_end + response events for dashboard
+                self._emit("stream_end", content="LLM finished")
+                self._emit("response", content=content[:120])
+
                 await self.action_log.log_conversation(
                     session.id, "assistant", content
                 )
@@ -963,6 +1008,8 @@ class Engine:
             content = "I've reached the maximum number of tool call rounds. Please try a simpler request."
 
         session.add_message(Message(role=Role.ASSISTANT, content=content))
+        self._emit("stream_end", content="LLM finished (rounds exhausted)")
+        self._emit("response", content=content[:120])
         return content
 
     async def _handle_complex_decomposition(

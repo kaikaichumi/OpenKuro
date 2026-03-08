@@ -7,6 +7,7 @@ Uses WebSocket for real-time streaming and tool approval dialogs.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import time
@@ -18,12 +19,13 @@ from typing import Any
 import structlog
 import uvicorn
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.config import KuroConfig
 from src.core.engine import ApprovalCallback, Engine, ToolExecutionCallback, _encode_image_base64
 from src.core.types import Session
+from src.ui.openai_oauth import OpenAIOAuthManager
 from src.tools.base import RiskLevel, ToolResult
 
 logger = structlog.get_logger()
@@ -45,6 +47,8 @@ class ConnectionState:
 
     session: Session
     model_override: str | None = None
+    model_auth_mode: str = "api"  # api | oauth
+    oauth_session_id: str | None = None
     chat_task: asyncio.Task | None = None
 
     # Multi-agent panel support
@@ -254,6 +258,7 @@ class WebServer:
     def __init__(self, engine: Engine, config: KuroConfig) -> None:
         self.engine = engine
         self.config = config
+        self._oauth = OpenAIOAuthManager()
         self.approval_cb = WebApprovalCallback(
             timeout=60,
             approval_policy=engine.approval_policy,
@@ -271,6 +276,99 @@ class WebServer:
 
         self.app = self._create_app()
 
+    @staticmethod
+    def _parse_model_selection(raw: str) -> tuple[str | None, str]:
+        value = (raw or "").strip()
+        if not value:
+            return None, "api"
+        if value.startswith("oauth:"):
+            model = value[len("oauth:"):].strip()
+            return (model or None), "oauth"
+        if value.startswith("api:"):
+            model = value[len("api:"):].strip()
+            return (model or None), "api"
+        return value, "api"
+
+    @staticmethod
+    def _is_openai_model(model: str | None) -> bool:
+        return bool(model and model.startswith("openai/"))
+
+    def _build_status_payload(
+        self,
+        *,
+        conn: ConnectionState,
+        engine: Engine,
+        session: Session,
+        agent_id: str,
+        restored: bool | None = None,
+    ) -> dict[str, Any]:
+        model = conn.model_override or engine.model.default_model
+        mode = conn.model_auth_mode if self._is_openai_model(model) else "api"
+        payload: dict[str, Any] = {
+            "type": "status",
+            "model": model,
+            "model_override": conn.model_override,
+            "model_auth_mode": mode,
+            "trust_level": session.trust_level,
+            "session_id": session.id,
+            "agent_id": agent_id,
+        }
+        if restored is not None:
+            payload["restored"] = restored
+        return payload
+
+    def _build_model_catalog(
+        self,
+        groups: dict[str, list[str]],
+        oauth_logged_in: bool,
+    ) -> list[dict[str, str]]:
+        catalog: list[dict[str, str]] = []
+
+        for provider, models in groups.items():
+            for model in models:
+                short = model.split("/").pop()
+                if provider == "openai":
+                    catalog.append({
+                        "value": f"api:{model}",
+                        "model": model,
+                        "provider": provider,
+                        "auth": "api",
+                        "group_label": "OpenAI (API)",
+                        "label": f"{short} (API)",
+                    })
+                else:
+                    catalog.append({
+                        "value": model,
+                        "model": model,
+                        "provider": provider,
+                        "auth": "api",
+                        "group_label": provider.capitalize(),
+                        "label": short,
+                    })
+
+        if oauth_logged_in:
+            openai_models: list[str] = []
+            if "openai" in groups:
+                openai_models.extend(groups["openai"])
+            openai_cfg = self.config.models.providers.get("openai")
+            if openai_cfg:
+                for m in openai_cfg.known_models:
+                    if m not in openai_models:
+                        openai_models.append(m)
+
+            for model in openai_models:
+                short = model.split("/").pop()
+                catalog.append({
+                    "value": f"oauth:{model}",
+                    "model": model,
+                    "provider": "openai",
+                    "auth": "oauth",
+                    "group_label": "OpenAI (OAuth)",
+                    "label": f"{short} (OAuth)",
+                })
+
+        return catalog
+
     def _create_app(self) -> FastAPI:
         app = FastAPI(title="Kuro", docs_url=None, redoc_url=None)
 
@@ -286,14 +384,84 @@ class WebServer:
             return HTMLResponse("<h1>Kuro Web GUI</h1><p>index.html not found</p>")
 
         @app.get("/api/models")
-        async def get_models():
+        async def get_models(request: Request):
             groups = await self.engine.model.list_models_grouped()
             flat = await self.engine.model.list_models()
+            oauth_sid = self._oauth.get_session_id_from_cookies(request.cookies)
+            oauth_status = self._oauth.get_status(oauth_sid)
+            catalog = self._build_model_catalog(
+                groups=groups,
+                oauth_logged_in=bool(oauth_status.get("logged_in")),
+            )
             return {
                 "default": self.engine.model.default_model,
                 "groups": groups,
                 "available": flat,  # backward compat
+                "catalog": catalog,
+                "oauth": oauth_status,
             }
+
+        @app.get("/api/oauth/openai/status")
+        async def oauth_openai_status(request: Request):
+            sid = self._oauth.get_session_id_from_cookies(request.cookies)
+            return self._oauth.get_status(sid)
+
+        @app.get("/api/oauth/openai/login")
+        async def oauth_openai_login(request: Request):
+            if not self._oauth.configured:
+                return RedirectResponse(url="/?oauth=openai_not_configured", status_code=302)
+            sid = self._oauth.get_or_create_session_id(request)
+            try:
+                login_url = self._oauth.build_login_url(request, sid)
+            except Exception:
+                logger.exception("oauth_openai_login_build_failed")
+                return RedirectResponse(url="/?oauth=openai_login_failed", status_code=302)
+            resp = RedirectResponse(url=login_url, status_code=302)
+            self._oauth.attach_cookie(resp, sid)
+            return resp
+
+        @app.get("/api/oauth/openai/callback")
+        async def oauth_openai_callback(
+            request: Request,
+            code: str | None = Query(None),
+            state: str | None = Query(None),
+            error: str | None = Query(None),
+            error_description: str | None = Query(None),
+        ):
+            sid = self._oauth.get_session_id_from_cookies(request.cookies)
+            if not sid:
+                resp = RedirectResponse(url="/?oauth=openai_missing_session", status_code=302)
+                sid = self._oauth.get_or_create_session_id(request)
+                self._oauth.attach_cookie(resp, sid)
+                return resp
+
+            if error:
+                logger.warning(
+                    "oauth_openai_callback_error",
+                    error=error,
+                    description=error_description or "",
+                )
+                return RedirectResponse(url="/?oauth=openai_denied", status_code=302)
+            if not code or not state:
+                return RedirectResponse(url="/?oauth=openai_invalid_callback", status_code=302)
+
+            try:
+                await self._oauth.exchange_code(
+                    request=request,
+                    session_id=sid,
+                    state=state,
+                    code=code,
+                )
+                return RedirectResponse(url="/?oauth=openai_connected", status_code=302)
+            except Exception as e:
+                logger.warning("oauth_openai_exchange_failed", error=str(e))
+                return RedirectResponse(url="/?oauth=openai_exchange_failed", status_code=302)
+
+        @app.post("/api/oauth/openai/logout")
+        async def oauth_openai_logout(request: Request):
+            sid = self._oauth.get_session_id_from_cookies(request.cookies)
+            await self._oauth.logout(sid)
+            return {"status": "ok"}
 
         @app.get("/api/audit")
         async def get_audit(
@@ -1305,6 +1473,9 @@ class WebServer:
         if conn is None:
             session = Session(adapter="web")
             conn = ConnectionState(session=session)
+        conn.oauth_session_id = self._oauth.get_session_id_from_cookies(dict(ws.cookies or {}))
+        if conn.model_auth_mode == "oauth" and not conn.oauth_session_id:
+            conn.model_auth_mode = "api"
 
         session = conn.session
         self._connections[session.id] = conn
@@ -1314,14 +1485,13 @@ class WebServer:
         # Send initial status + history if restored
         try:
             agent_id = "main"
-            status_msg = {
-                "type": "status",
-                "model": conn.model_override or self.engine.model.default_model,
-                "trust_level": session.trust_level,
-                "session_id": session.id,
-                "restored": restored,
-                "agent_id": agent_id,
-            }
+            status_msg = self._build_status_payload(
+                conn=conn,
+                engine=self.engine,
+                session=session,
+                agent_id=agent_id,
+                restored=restored,
+            )
             await ws.send_json(status_msg)
 
             # If restored, send conversation history back to frontend
@@ -1436,16 +1606,16 @@ class WebServer:
 
         # Resolve the engine for this agent
         engine = self._resolve_engine(agent_id)
-        default_model = engine.model.default_model if engine else self.engine.model.default_model
 
-        await ws.send_json({
-            "type": "status",
-            "model": default_model,
-            "trust_level": session.trust_level,
-            "session_id": session.id,
-            "agent_id": agent_id,
-            "restored": False,
-        })
+        await ws.send_json(
+            self._build_status_payload(
+                conn=conn,
+                engine=engine or self.engine,
+                session=session,
+                agent_id=agent_id,
+                restored=False,
+            )
+        )
 
     def _resolve_engine(self, agent_id: str):
         """Resolve the Engine for a given agent_id."""
@@ -1500,11 +1670,30 @@ class WebServer:
                 self.approval_cb.register_websocket(session.id, ws, agent_id=agent_id)
                 self._tool_cb.register_websocket(session.id, ws, agent_id=agent_id)
 
+            model_name = conn.model_override
+            model_is_openai = self._is_openai_model(model_name)
+            oauth_mode = conn.model_auth_mode == "oauth" and model_is_openai
+
+            model_ctx = contextlib.nullcontext()
+            if oauth_mode:
+                oauth_token = await self._oauth.get_access_token(conn.oauth_session_id)
+                if not oauth_token:
+                    await ws.send_json({
+                        "type": "error",
+                        "message": "OpenAI OAuth token missing or expired. Please sign in again.",
+                        "agent_id": agent_id,
+                    })
+                    await ws.send_json({"type": "stream_end", "agent_id": agent_id})
+                    return
+                if hasattr(engine.model, "provider_api_key_override"):
+                    model_ctx = engine.model.provider_api_key_override("openai", oauth_token)
+
             # Use stream_message for streaming support
-            async for chunk in engine.stream_message(
-                text, session, model=conn.model_override
-            ):
-                await ws.send_json({"type": "stream_chunk", "text": chunk, "agent_id": agent_id})
+            with model_ctx:
+                async for chunk in engine.stream_message(
+                    text, session, model=model_name
+                ):
+                    await ws.send_json({"type": "stream_chunk", "text": chunk, "agent_id": agent_id})
 
             await ws.send_json({"type": "stream_end", "agent_id": agent_id})
         except WebSocketDisconnect:
@@ -1529,16 +1718,18 @@ class WebServer:
         agent_id = data.get("agent_id", "main")
 
         if command == "model":
-            if args:
-                conn.model_override = args
+            model_name, auth_mode = self._parse_model_selection(args)
+            conn.model_override = model_name
+            conn.model_auth_mode = auth_mode
             engine = self._resolve_engine(agent_id)
-            await ws.send_json({
-                "type": "status",
-                "model": conn.model_override or engine.model.default_model,
-                "trust_level": conn.get_session(agent_id).trust_level,
-                "session_id": conn.get_session(agent_id).id,
-                "agent_id": agent_id,
-            })
+            await ws.send_json(
+                self._build_status_payload(
+                    conn=conn,
+                    engine=engine,
+                    session=conn.get_session(agent_id),
+                    agent_id=agent_id,
+                )
+            )
 
         elif command == "clear":
             session = conn.get_session(agent_id)
@@ -1554,13 +1745,14 @@ class WebServer:
                 self._session_cache.pop(old_id, None)
                 self._connections[new_session.id] = conn
             engine = self._resolve_engine(agent_id)
-            await ws.send_json({
-                "type": "status",
-                "model": conn.model_override or engine.model.default_model,
-                "trust_level": new_session.trust_level,
-                "session_id": new_session.id,
-                "agent_id": agent_id,
-            })
+            await ws.send_json(
+                self._build_status_payload(
+                    conn=conn,
+                    engine=engine,
+                    session=new_session,
+                    agent_id=agent_id,
+                )
+            )
 
         elif command == "trust":
             level = args if args in ("low", "medium", "high", "critical") else "low"
@@ -1571,13 +1763,14 @@ class WebServer:
             engine = self._resolve_engine(agent_id)
             engine.approval_policy.elevate_session_trust(
                 session.id, level_map[level])
-            await ws.send_json({
-                "type": "status",
-                "model": conn.model_override or engine.model.default_model,
-                "trust_level": session.trust_level,
-                "session_id": session.id,
-                "agent_id": agent_id,
-            })
+            await ws.send_json(
+                self._build_status_payload(
+                    conn=conn,
+                    engine=engine,
+                    session=session,
+                    agent_id=agent_id,
+                )
+            )
 
         elif command == "skills":
             sm = self.engine.skills

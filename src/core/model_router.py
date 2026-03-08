@@ -6,8 +6,10 @@ with automatic fallback chain.
 
 from __future__ import annotations
 
+import contextvars
 import os
 import re
+from contextlib import contextmanager
 from urllib.parse import urlparse
 from typing import Any, AsyncIterator
 
@@ -147,7 +149,32 @@ class ModelRouter:
     def __init__(self, config: KuroConfig) -> None:
         self.config = config
         self._text_only_cache: set[str] = set()  # runtime cache from vision errors
+        self._provider_api_keys_ctx: contextvars.ContextVar[dict[str, str] | None] = (
+            contextvars.ContextVar("provider_api_keys_ctx", default=None)
+        )
         self._setup_provider_keys()
+
+    @contextmanager
+    def provider_api_key_override(
+        self,
+        provider: str,
+        api_key: str | None,
+    ):
+        """Temporarily override provider API key for the current async context."""
+        current = dict(self._provider_api_keys_ctx.get() or {})
+        if api_key:
+            current[provider] = api_key
+        else:
+            current.pop(provider, None)
+        token = self._provider_api_keys_ctx.set(current or None)
+        try:
+            yield
+        finally:
+            self._provider_api_keys_ctx.reset(token)
+
+    def _provider_api_key(self, provider: str) -> str | None:
+        current = self._provider_api_keys_ctx.get() or {}
+        return current.get(provider)
 
     def _setup_provider_keys(self) -> None:
         """Set up API keys from config into environment variables."""
@@ -275,6 +302,9 @@ class ModelRouter:
                 provider_cfg = self.config.models.providers.get(provider)
                 if provider_cfg and provider_cfg.base_url and provider != "ollama":
                     kwargs["api_base"] = provider_cfg.base_url
+                override_key = self._provider_api_key(provider)
+                if override_key:
+                    kwargs["api_key"] = override_key
 
                 if tools:
                     if self._should_disable_tools_for_model(model_name, provider_cfg):
@@ -403,6 +433,9 @@ class ModelRouter:
         provider_cfg = self.config.models.providers.get(provider)
         if provider_cfg and provider_cfg.base_url and provider != "ollama":
             kwargs["api_base"] = provider_cfg.base_url
+        override_key = self._provider_api_key(provider)
+        if override_key:
+            kwargs["api_key"] = override_key
 
         if tools and self._should_disable_tools_for_model(target_model, provider_cfg):
             kwargs.pop("tools", None)

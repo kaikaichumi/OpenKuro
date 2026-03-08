@@ -185,6 +185,10 @@ def build_engine(
         skills_manager=skills_manager,
     )
 
+    # Attach event bus for live dashboard
+    from src.core.agent_events import AgentEventBus
+    engine.event_bus = AgentEventBus()
+
     # Initialize agent manager (needs engine's approval infrastructure)
     if config.agents.enabled:
         from src.core.agents import AgentManager

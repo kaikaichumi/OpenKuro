@@ -67,6 +67,11 @@
             <label for="model-select" data-i18n="settings.model">Model</label>
             <select id="model-select"></select>
 
+            <label>OpenAI OAuth</label>
+            <div id="openai-oauth-status" class="skill-item" style="opacity:0.9;">OpenAI OAuth: Checking...</div>
+            <button id="btn-openai-oauth-login" class="btn">Sign in with OpenAI OAuth</button>
+            <button id="btn-openai-oauth-logout" class="btn hidden">Sign out OpenAI OAuth</button>
+
             <label for="trust-select" data-i18n="settings.trustLevel">Trust Level</label>
             <select id="trust-select">
                 <option value="low" data-i18n="settings.low">Low</option>

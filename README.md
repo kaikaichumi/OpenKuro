@@ -93,6 +93,21 @@ poetry run kuro --web
 
 Browser-based chat with dark theme, split-screen panels (1–6), agent management, real-time dashboard, approval modals, settings panel, and audit log viewer.
 
+#### Optional: OpenAI OAuth in Web UI
+
+If you want a browser sign-in flow (instead of only `OPENAI_API_KEY`), set these env vars:
+
+```bash
+OPENAI_OAUTH_CLIENT_ID=...
+OPENAI_OAUTH_CLIENT_SECRET=...
+# Optional overrides:
+# OPENAI_OAUTH_SCOPE="openid profile email offline_access"
+# OPENAI_OAUTH_REDIRECT_URI="http://127.0.0.1:7860/api/oauth/openai/callback"
+```
+
+Then open Web UI Settings and use **Sign in with OpenAI OAuth**.  
+OpenAI models are shown as separate entries: `OpenAI (API)` vs `OpenAI (OAuth)`.
+
 ### Telegram Bot Mode
 
 ```bash
