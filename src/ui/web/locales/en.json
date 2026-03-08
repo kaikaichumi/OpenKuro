@@ -177,7 +177,19 @@
         "mlModelPath": "Model Path",
         "mlModelPathDesc": "ONNX model file (empty = auto-detect)",
         "mlTokenizerPath": "Tokenizer Path",
-        "mlTokenizerPathDesc": "Tokenizer directory (empty = auto-detect)"
+        "mlTokenizerPathDesc": "Tokenizer directory (empty = auto-detect)",
+        "diagnostics": "Self-Diagnostics & Repair",
+        "diagDesc": "LLM self-diagnostic tools for error analysis, performance profiling, and auto-repair",
+        "diagRepairModel": "Repair Model",
+        "diagRepairModelDesc": "Model for self-repair: \"main\" = same as main agent, or specify custom model",
+        "diagAutoDiagnose": "Auto-Diagnose on Error",
+        "diagAutoDiagnoseDesc": "Automatically trigger diagnostics when tool errors occur",
+        "diagErrorThreshold": "Error Threshold",
+        "diagErrorThresholdDesc": "Consecutive errors before auto-triggering repair",
+        "diagIncludeAgents": "Include in Agents",
+        "diagIncludeAgentsDesc": "Give sub-agents and agent instances access to diagnostic tools",
+        "diagMatchingModel": "Only Matching Model",
+        "diagMatchingModelDesc": "Only include diagnostics for agents using the same model as main"
     },
     "security": {
         "title": "Security Dashboard",

@@ -183,14 +183,46 @@ class AgentRunner:
                 content=f"[Agent Depth: {self._depth}/{self.definition.max_depth}]",
             ))
 
+        # Inject diagnostic guidance for sub-agents when configured
+        try:
+            from src.tools.analytics.diagnostic_tools import (
+                should_include_diagnostics_for_agent,
+                get_diagnostic_guidance_message,
+            )
+            if should_include_diagnostics_for_agent(self.config, self.definition.model):
+                diag_guidance = get_diagnostic_guidance_message(self.config)
+                if diag_guidance:
+                    messages.append(Message(
+                        role=Role.SYSTEM, content=diag_guidance,
+                    ))
+        except Exception:
+            pass  # Diagnostic guidance injection is best-effort
+
         # User task
         task = self.sanitizer.sanitize_user_input(task)
         messages.append(Message(role=Role.USER, content=task))
         self.session.add_message(Message(role=Role.USER, content=task))
 
         # Get filtered tools
+        allowed_list = list(self.definition.allowed_tools) if self.definition.allowed_tools else None
+
+        # Inject diagnostic tools for sub-agents when configured
+        if allowed_list is not None:
+            try:
+                from src.tools.analytics.diagnostic_tools import (
+                    should_include_diagnostics_for_agent,
+                    get_enabled_diagnostic_tool_names,
+                )
+                if should_include_diagnostics_for_agent(self.config, self.definition.model):
+                    diag_names = get_enabled_diagnostic_tool_names(self.config)
+                    for dn in diag_names:
+                        if dn not in allowed_list and dn not in (self.definition.denied_tools or []):
+                            allowed_list.append(dn)
+            except Exception:
+                pass  # Diagnostic injection is best-effort
+
         base_tools = self.tools.registry.get_openai_tools_filtered(
-            allowed=self.definition.allowed_tools or None,
+            allowed=allowed_list,
             denied=self.definition.denied_tools or None,
         ) or []
         blocked_tools_by_policy: set[str] = set()

@@ -177,7 +177,19 @@
         "mlModelPath": "模型路徑",
         "mlModelPathDesc": "ONNX 模型檔案（空白=自動偵測）",
         "mlTokenizerPath": "分詞器路徑",
-        "mlTokenizerPathDesc": "分詞器目錄（空白=自動偵測）"
+        "mlTokenizerPathDesc": "分詞器目錄（空白=自動偵測）",
+        "diagnostics": "自我診斷與修復",
+        "diagDesc": "LLM 自我診斷工具：錯誤分析、效能分析、自動修復",
+        "diagRepairModel": "修復模型",
+        "diagRepairModelDesc": "自我修復用的模型：「main」= 與主模型一致，或指定自訂模型",
+        "diagAutoDiagnose": "錯誤時自動診斷",
+        "diagAutoDiagnoseDesc": "工具執行錯誤時自動觸發診斷",
+        "diagErrorThreshold": "錯誤閾值",
+        "diagErrorThresholdDesc": "連續錯誤達到此數量時自動觸發修復",
+        "diagIncludeAgents": "包含代理",
+        "diagIncludeAgentsDesc": "讓子代理和代理實例也擁有診斷工具",
+        "diagMatchingModel": "僅匹配模型",
+        "diagMatchingModelDesc": "僅為使用與主代理相同模型的代理提供診斷工具"
     },
     "security": {
         "title": "安全儀表板",

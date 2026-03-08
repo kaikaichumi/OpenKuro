@@ -262,6 +262,7 @@ class TelegramAdapter(BaseAdapter):
         self._app.add_handler(CommandHandler("stats", self._on_stats))
         self._app.add_handler(CommandHandler("costs", self._on_costs))
         self._app.add_handler(CommandHandler("security", self._on_security))
+        self._app.add_handler(CommandHandler("diagnose", self._on_diagnose))
         self._app.add_handler(CallbackQueryHandler(self._on_callback_query))
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_message)
@@ -431,6 +432,15 @@ class TelegramAdapter(BaseAdapter):
         from src.adapters.dashboard_commands import handle_security_command
         max_chars = self.config.adapters.telegram.max_message_length - 100
         text = await handle_security_command(max_chars)
+        await update.message.reply_text(f"```\n{text}\n```", parse_mode="Markdown")
+
+    async def _on_diagnose(self, update, context) -> None:
+        """Handle /diagnose command — system health check."""
+        if not self._is_user_allowed(update.effective_user.id):
+            return
+        from src.adapters.dashboard_commands import handle_diagnose_command
+        max_chars = self.config.adapters.telegram.max_message_length - 100
+        text = await handle_diagnose_command(max_chars)
         await update.message.reply_text(f"```\n{text}\n```", parse_mode="Markdown")
 
     async def _on_message(self, update, context) -> None:

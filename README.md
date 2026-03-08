@@ -24,7 +24,8 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 - **Security Dashboard** - Real-time security visualization, posture scoring, integrity verification
 - **Usage Analytics** - Tool usage statistics, cost estimation, smart optimization suggestions
 - **Experience Learning** - Learns from past interactions; extracts error patterns, tool usage optimizations, and model performance insights
-- **42 built-in tools** - Files, shell, screenshots, clipboard, desktop control, calendar, browser automation, memory, time, scheduling, agent delegation, agent instance management, team orchestration, remote delegation, workflows, version check, self-update
+- **Self-Diagnostics & Auto-Repair** - Built-in diagnostic tools for LLM self-debugging: error analysis, session health, performance profiling, and automated repair recommendations; configurable repair model (main or custom); `/diagnose` system command across all adapters
+- **46 built-in tools** - Files, shell, screenshots, clipboard, desktop control, calendar, browser automation, memory, time, scheduling, agent delegation, agent instance management, team orchestration, remote delegation, workflows, version check, self-update, self-diagnostics
 - **10+ Built-in Skills** - Translator, code reviewer, git helper, debug assistant, data analyst, and more
 - **Skills + Plugins** - On-demand SKILL.md instructions, external Python tool plugins, one-click install
 - **Messaging integration** - Telegram, Discord, Slack (Socket Mode), LINE (webhook), Email (IMAP IDLE + SMTP)
@@ -36,6 +37,9 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 - **System prompt encryption** - Protect AI guidance from casual reading
 - **Zero-token action logging** - JSONL operation history without LLM cost
 - **Auto Date/Time Context** - Current date and time automatically injected into LLM context for temporal awareness
+- **LangSmith Tracing** - Optional LLM observability with trace visualization, token usage, latency tracking, and cost estimation via LangSmith
+- **DPI-Aware Desktop Automation** - Automatic display scaling detection; coordinates are converted to logical pixels so mouse clicks land accurately on high-DPI screens (125%, 150%, 200%)
+- **Universal Text Input** - CJK/Unicode text typing support via clipboard bridge; works with Chinese, Japanese, Korean, and all non-ASCII characters
 
 ---
 
@@ -506,6 +510,224 @@ Lessons are stored at `~/.kuro/memory/lessons.json` and automatically loaded int
 
 ---
 
+## LangSmith Tracing (Observability)
+
+Optional integration with [LangSmith](https://smith.langchain.com) for full LLM observability. Every LLM call and tool execution is traced with model name, token usage, latency, and cost.
+
+### What You Get
+
+| Feature | Description |
+|---|---|
+| **LLM Call Traces** | Every `litellm.acompletion()` is logged with input messages, model, tokens, latency |
+| **Tool Execution Traces** | Each tool call recorded with parameters, result, duration |
+| **Visual Trace Tree** | See the full conversation flow (LLM → tool → LLM → tool → response) in LangSmith dashboard |
+| **Token Cost Tracking** | Automatic per-call and cumulative token usage and cost estimation |
+| **Latency Analysis** | Identify slow LLM calls and tool executions |
+| **Filtering by Tags** | Filter traces by custom tags in LangSmith UI |
+
+### Setup
+
+```bash
+# 1. Install langsmith (optional dependency)
+poetry install -E tracing
+
+# 2. Set environment variables
+export LANGCHAIN_TRACING_V2=true
+export LANGCHAIN_API_KEY=lsv2_pt_...   # Get from https://smith.langchain.com
+export LANGCHAIN_PROJECT=kuro           # Optional, defaults to "kuro"
+```
+
+### Configuration (config.yaml)
+
+```yaml
+tracing:
+  enabled: true
+  project_name: "kuro"
+  tags: ["kuro", "production"]  # Custom tags for filtering
+  trace_tools: true              # Log tool executions as child spans
+  trace_memory: false            # Log memory operations (verbose)
+```
+
+### Architecture
+
+LangSmith tracing is completely optional and non-intrusive:
+
+- **Zero overhead when disabled** — all tracing calls are no-ops when `enabled: false`
+- **Never breaks the main flow** — all tracing errors are silently caught
+- **Sanitized data** — base64 images are stripped, large outputs are truncated before sending
+- **No dependency lock-in** — `langsmith` is an optional Poetry extra
+
+```
+User Message → Engine
+                ├── [LangSmith: trace_llm_call] → LiteLLM → Provider
+                ├── [LangSmith: trace_tool_call] → Tool Execution
+                ├── [LangSmith: trace_llm_call] → LiteLLM → Provider
+                └── Response
+```
+
+---
+
+## Desktop Automation (Computer Use)
+
+Kuro can see and control the desktop through screenshots, OCR, and mouse/keyboard automation. Works with both vision-capable models (Claude, GPT-4o, Gemini) and text-only models (DeepSeek, Llama, Mistral).
+
+### DPI Scaling Awareness
+
+On Windows with display scaling (125%, 150%, 200%), screenshot pixels and mouse coordinates are in different coordinate spaces. Kuro automatically detects and corrects this:
+
+```
+Physical pixels (mss screenshot):  2880 x 1620  (150% scaling)
+Logical pixels (pyautogui/mouse):  1920 x 1080
+
+OCR detects "OK" button at physical (1440, 810)
+ → Auto-converted to logical (960, 540)
+ → mouse_action(action="click", x=960, y=540)  ← correct!
+```
+
+Detection method: compares `mss` capture size with `pyautogui.size()` to calculate the exact scale factor. Falls back to Windows DPI API if needed.
+
+### Text-Only Model Support
+
+When using models without vision (DeepSeek, Llama, Mistral, etc.), screenshots are automatically converted to structured text via OCR + OpenCV:
+
+```
+[Screen Analysis] 1920x1080 (logical coordinates — use directly with mouse_action)
+
+== Text Elements (5 found) ==
+[T1] "File" at (0,0)-(45,22) center:(22,11) — top-left
+[T2] "Edit" at (50,0)-(95,22) center:(72,11) — top-left
+...
+
+== Click Targets (use these coordinates with mouse_action) ==
+   1. "File" -> mouse_action(action="click", x=22, y=11)
+   2. "Edit" -> mouse_action(action="click", x=72, y=11)
+```
+
+The LLM reads this structured text and can operate the desktop by calling `mouse_action` with the provided coordinates.
+
+### CJK/Unicode Text Input
+
+`pyautogui.write()` only supports ASCII characters. Kuro automatically detects non-ASCII text and uses a clipboard bridge:
+
+1. Saves current clipboard content
+2. Copies the target text to clipboard
+3. Sends Ctrl+V (or Cmd+V on macOS) to paste
+4. Restores original clipboard content
+
+This works transparently for Chinese, Japanese, Korean, and all other Unicode text.
+
+### Vision Auto-Fallback Modes
+
+Configured via `config.yaml`:
+
+```yaml
+vision:
+  image_analysis_mode: "auto"      # auto | always | disabled
+  fallback_format: "text"          # text | svg
+  fallback_detail_level: "standard"  # brief | standard | detailed
+  grid_size: 4                     # NxN spatial grid
+```
+
+| Mode | Vision Model | Text-Only Model |
+|---|---|---|
+| `auto` (default) | Raw image | OCR + OpenCV analysis |
+| `always` | Image + analysis | OCR + OpenCV analysis |
+| `disabled` | Raw image | Image skipped |
+
+---
+
+## Self-Diagnostics & Auto-Repair
+
+Kuro can diagnose its own problems at runtime through 4 LLM-callable diagnostic tools. When something goes wrong, the LLM can introspect system state, identify root causes, and suggest fixes — without you needing to read log files manually.
+
+### Diagnostic Tools
+
+| Tool | Purpose | Example Question |
+|---|---|---|
+| `debug_recent_errors` | Query recent tool failures with error details, parameters, and frequency | "Why did that last operation fail?" |
+| `debug_session_info` | Inspect current session: message count, token estimate, DPI scale, memory size, diagnostics config, tracing status | "Why is the response so slow?" |
+| `debug_performance` | Tool duration profiling, model routing decisions, complexity routing history, slow operation detection | "Which model is being used and why?" |
+| `diagnose_and_repair` | Full system health check: error patterns, session health, performance bottlenecks, config audit, memory health, and actionable repair recommendations | "Fix the system" / "Diagnose everything" |
+
+### System Command
+
+All adapters support a `/diagnose` (or `!diagnose`) command for instant health checks without LLM round-trip:
+- Telegram: `/diagnose`
+- Discord: `!diagnose`
+- Web UI: via chat or API
+
+### Configuration
+
+Diagnostics are fully configurable via `config.yaml`:
+
+```yaml
+diagnostics:
+  enabled: true                    # Enable/disable all diagnostic tools
+  auto_diagnose_on_error: true     # Auto-trigger diagnostics on errors
+  error_threshold: 3               # Consecutive errors before auto-repair
+  repair_model: "main"             # "main" = use main model, or custom model
+  include_in_agents: true          # Include diagnostics in sub-agents
+  only_matching_model: false       # Only for agents with matching model
+  enabled_tools:                   # Which diagnostic tools to enable
+    - debug_recent_errors
+    - debug_session_info
+    - debug_performance
+    - diagnose_and_repair
+```
+
+**Repair model options:**
+- `"main"` — use the same model as the main agent (default)
+- `"gemini/gemini-3-flash"` — use a fast/cheap model for diagnostics
+- `"anthropic/claude-opus-4.6"` — use a frontier model for complex diagnosis
+
+### How It Works
+
+All diagnostic tools are **LOW risk** (auto-approved) and read from existing data sources:
+
+```
+debug_recent_errors   ← reads action_logs/*.jsonl (failed tool calls)
+debug_session_info    ← reads Session object + memory state + DPI + diagnostics config
+debug_performance     ← reads action_logs + audit.db (durations, models, routing)
+diagnose_and_repair   ← combines all above + config audit + memory health check
+```
+
+### Agent Integration
+
+Sub-agents and agent instances automatically receive diagnostic tools when:
+1. `diagnostics.include_in_agents` is `true` (default)
+2. If `diagnostics.only_matching_model` is `true`, only agents using the same model as the main agent get diagnostics
+3. Diagnostic tools are injected even when an agent has a restricted `allowed_tools` list
+
+### Example Flows
+
+```
+User: "Why did the screenshot click not work?"
+
+LLM → calls debug_recent_errors(tool_name="mouse_action")
+     → sees: "Coordinates (1440, 810) out of screen bounds (0-1919, 0-1079)"
+     → diagnosis: DPI scaling was causing physical coords to be used instead of logical
+     → explains to user and retries with analyze_image for correct coordinates
+```
+
+```
+User: "Fix the system"
+
+LLM → calls diagnose_and_repair(scope="full")
+     → scans errors, session, performance, config, memory
+     → returns structured report with severity levels and recommended fixes
+     → explains issues and applies safe auto-fixes if requested
+```
+
+### Combined with LangSmith
+
+| Layer | What | When |
+|---|---|---|
+| **Diagnostic tools** | Instant, in-conversation, LLM can act on results | "Fix this now" |
+| **`/diagnose` command** | Quick health check, no LLM cost | "Is everything OK?" |
+| **LangSmith traces** | Historical, external dashboard, human reviews | "Analyze last week's performance" |
+
+---
+
 ## Configuration
 
 Config file: `~/.kuro/config.yaml` (created by `kuro --init`)
@@ -854,11 +1076,14 @@ PUT  /api/personality   # Update personality (JSON body: {"content": "..."})
 | **Shell** |||
 | `shell_execute` | HIGH | Execute shell commands |
 | **Screen & Desktop** |||
-| `screenshot` | LOW | Capture screen (mss + Pillow) |
+| `screenshot` | LOW | Capture screen with DPI metadata (mss + Pillow) |
+| `analyze_image` | LOW | OCR + OpenCV analysis with logical coordinates for text-only models |
 | `clipboard_read` | LOW | Read clipboard |
 | `clipboard_write` | MEDIUM | Write clipboard |
-| `desktop_control` | MEDIUM | Mouse/keyboard control via pyautogui |
-| `computer_use` | MEDIUM | Vision-based screen analysis |
+| `mouse_action` | MEDIUM | Mouse control: click, double-click, right-click, drag, scroll (DPI-aware) |
+| `keyboard_action` | MEDIUM | Keyboard control: type (Unicode/CJK), press, hotkey |
+| `screen_info` | LOW | Get screen resolution and mouse position |
+| `computer_use` | HIGH | Start desktop automation session with guided workflow |
 | **Calendar & Time** |||
 | `calendar_read` | LOW | Read local ICS calendar |
 | `calendar_write` | MEDIUM | Add calendar events |
@@ -904,6 +1129,11 @@ PUT  /api/personality   # Update personality (JSON body: {"content": "..."})
 | `get_version` | LOW | Show current Kuro version |
 | `check_update` | LOW | Check if updates are available |
 | `perform_update` | HIGH | Update Kuro from GitHub |
+| **Diagnostics & Self-Repair** |||
+| `debug_recent_errors` | LOW | Query recent tool failures with error details and frequency |
+| `debug_session_info` | LOW | Inspect session state: messages, tokens, DPI, memory, diagnostics config, tracing |
+| `debug_performance` | LOW | Tool durations, model routing, complexity decisions, slow ops |
+| `diagnose_and_repair` | LOW | Full system health check with repair recommendations (configurable model) |
 
 ---
 
@@ -1003,6 +1233,7 @@ src/
     complexity.py             # Task complexity estimation (heuristic + ML)
     complexity_ml.py          # ONNX ML classifier for complexity scoring
     learning.py               # Experience learning engine (error patterns, lessons)
+    tracing.py                # LangSmith observability integration
     code_feedback.py          # Code quality feedback system
     types.py                  # Message, Session, ToolCall, AgentDefinition
     agents.py                 # AgentRunner, AgentManager (recursive delegation, structured output)
@@ -1043,7 +1274,7 @@ src/
     base.py                   # BaseTool ABC + RiskLevel
     filesystem/               # file_read, file_write, file_search
     shell/                    # shell_execute
-    screen/                   # screenshot, clipboard, desktop_control, computer_use
+    screen/                   # screenshot, clipboard, desktop_control, computer_use, analyze_image, dpi
     calendar/                 # calendar_read, calendar_write, get_time
     web/                      # browser automation (Playwright)
     memory_tools/             # memory_search, memory_store
@@ -1052,6 +1283,7 @@ src/
     a2a/                      # remote_delegate, discover_remote_agents
     scheduler/                # schedule_add, schedule_list, etc.
     workflow/                 # workflow_create, workflow_run, etc.
+    analytics/                # dashboard_summary, token_usage, security_report, diagnostics
     system/                   # get_version, check_update, perform_update
   adapters/
     base.py                   # BaseAdapter ABC

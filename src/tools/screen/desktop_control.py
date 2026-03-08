@@ -2,11 +2,16 @@
 
 Uses pyautogui for cross-platform mouse/keyboard control.
 Safety: pyautogui FAILSAFE is enabled (move mouse to top-left corner to abort).
+
+DPI scaling: On Windows with display scaling, screenshot (mss) coordinates
+are in physical pixels, but pyautogui operates in logical pixels.  All
+coordinate-based tools now auto-detect and correct for this mismatch.
 """
 
 from __future__ import annotations
 
 import asyncio
+import platform
 import time
 from typing import Any
 
@@ -36,12 +41,15 @@ async def _rate_limit() -> None:
 
 
 def _validate_coordinates(x: int, y: int, pyautogui) -> str | None:
-    """Validate that coordinates are within screen bounds. Returns error or None."""
+    """Validate that coordinates are within screen bounds (logical). Returns error or None."""
     screen_w, screen_h = pyautogui.size()
     if x < 0 or x >= screen_w or y < 0 or y >= screen_h:
         return (
             f"Coordinates ({x}, {y}) out of screen bounds "
-            f"(0-{screen_w - 1}, 0-{screen_h - 1})"
+            f"(0-{screen_w - 1}, 0-{screen_h - 1}). "
+            f"Note: coordinates should be in LOGICAL pixels. "
+            f"If you got coordinates from screenshot/analyze_image, "
+            f"they are already converted to logical coordinates."
         )
     return None
 
@@ -196,6 +204,54 @@ class KeyboardActionTool(BaseTool):
     }
     risk_level = RiskLevel.MEDIUM
 
+    @staticmethod
+    def _type_via_clipboard(text: str, pyautogui) -> None:
+        """Type Unicode text by injecting it through the clipboard.
+
+        Saves the current clipboard, sets it to our text, pastes, then restores.
+        """
+        import subprocess
+
+        old_clip = None
+        try:
+            if platform.system() == "Windows":
+                # Save current clipboard
+                try:
+                    r = subprocess.run(
+                        ["powershell", "-Command", "Get-Clipboard"],
+                        capture_output=True, text=True, timeout=3,
+                    )
+                    old_clip = r.stdout.rstrip("\r\n") if r.returncode == 0 else None
+                except Exception:
+                    pass
+
+                # Set clipboard to our text
+                subprocess.run(
+                    ["powershell", "-Command", f"Set-Clipboard -Value '{text}'"],
+                    capture_output=True, timeout=3,
+                )
+                pyautogui.hotkey("ctrl", "v")
+            elif platform.system() == "Darwin":
+                subprocess.run(["pbcopy"], input=text.encode("utf-8"), timeout=3)
+                pyautogui.hotkey("command", "v")
+            else:
+                subprocess.run(
+                    ["xclip", "-selection", "clipboard"],
+                    input=text.encode("utf-8"), timeout=3,
+                )
+                pyautogui.hotkey("ctrl", "v")
+        finally:
+            # Restore clipboard (best effort)
+            if old_clip is not None:
+                try:
+                    if platform.system() == "Windows":
+                        subprocess.run(
+                            ["powershell", "-Command", f"Set-Clipboard -Value '{old_clip}'"],
+                            capture_output=True, timeout=3,
+                        )
+                except Exception:
+                    pass
+
     async def execute(self, params: dict[str, Any], context: ToolContext) -> ToolResult:
         action = params.get("action", "")
 
@@ -213,7 +269,13 @@ class KeyboardActionTool(BaseTool):
                 text = params.get("text", "")
                 if not text:
                     return ToolResult.fail("type action requires text")
-                pyautogui.write(text, interval=0.02)
+                # pyautogui.write() only supports ASCII.
+                # For Unicode/CJK text, use clipboard paste.
+                if all(ord(c) < 128 for c in text):
+                    pyautogui.write(text, interval=0.02)
+                else:
+                    # Clipboard-based typing for Unicode
+                    self._type_via_clipboard(text, pyautogui)
                 preview = text[:100] + ("..." if len(text) > 100 else "")
                 return ToolResult.ok(f"Typed: {preview}")
 

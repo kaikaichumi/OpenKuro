@@ -77,6 +77,7 @@ function updateBadges() {
     setBadge("badge-learning", document.getElementById("le-enabled").checked);
     setBadge("badge-code", document.getElementById("cf-enabled").checked);
     setBadge("badge-vision", document.getElementById("vi-mode").value !== "disabled");
+    setBadge("badge-diagnostics", document.getElementById("diag-enabled").checked);
     setBadge("badge-complexity", document.getElementById("tc-enabled").checked);
     setBadge("badge-ml", document.getElementById("tc-ml-enabled").checked);
 }
@@ -141,13 +142,25 @@ function populateForm(cfg) {
     document.getElementById("vi-vision-models").value = (vi.vision_models || []).join(", ");
     document.getElementById("vi-text-only-models").value = (vi.text_only_models || []).join(", ");
 
+    const diag = cfg.diagnostics || {};
+    document.getElementById("diag-enabled").checked = diag.enabled !== false;
+    document.getElementById("diag-auto").checked = diag.auto_diagnose_on_error !== false;
+    document.getElementById("diag-error-threshold").value = diag.error_threshold || 3;
+    document.getElementById("diag-agents").checked = diag.include_in_agents !== false;
+    document.getElementById("diag-matching").checked = diag.only_matching_model === true;
+
+    // Populate model dropdowns from providers (shared across sections)
+    const knownModels = getAllKnownModels(cfg);
+
+    // Diagnostics repair model: "main" is a special value + known models
+    const repairModels = ["main", ...knownModels];
+    populateModelSelect("diag-repair-model", repairModels, diag.repair_model || "main");
+
     const tc = cfg.task_complexity || {};
     document.getElementById("tc-enabled").checked = tc.enabled !== false;
     document.getElementById("tc-trigger").value = tc.trigger_mode || "auto";
     document.getElementById("tc-llm-refine").checked = tc.llm_refinement !== false;
 
-    // Populate model dropdowns from providers
-    const knownModels = getAllKnownModels(cfg);
     populateModelSelect("tc-refine-model", knownModels, tc.refinement_model || "");
     populateModelSelect("tc-fast-model", knownModels, tc.fast_model || "");
     populateModelSelect("tc-standard-model", knownModels, tc.standard_model || "");
@@ -209,6 +222,14 @@ function collectForm() {
             max_elements: parseInt(document.getElementById("vi-max-elements").value),
             vision_models: document.getElementById("vi-vision-models").value.split(",").map(s => s.trim()).filter(Boolean),
             text_only_models: document.getElementById("vi-text-only-models").value.split(",").map(s => s.trim()).filter(Boolean),
+        },
+        diagnostics: {
+            enabled: document.getElementById("diag-enabled").checked,
+            repair_model: document.getElementById("diag-repair-model").value || "main",
+            auto_diagnose_on_error: document.getElementById("diag-auto").checked,
+            error_threshold: parseInt(document.getElementById("diag-error-threshold").value),
+            include_in_agents: document.getElementById("diag-agents").checked,
+            only_matching_model: document.getElementById("diag-matching").checked,
         },
         task_complexity: {
             enabled: document.getElementById("tc-enabled").checked,

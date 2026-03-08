@@ -215,3 +215,33 @@ action_log:
   enabled: true
   directory: "~/.kuro/action_logs"
   rotation: "daily"
+
+# Self-Diagnostics & Auto-Repair
+diagnostics:
+  enabled: true
+  # Auto-trigger diagnostics when tool execution errors occur
+  auto_diagnose_on_error: true
+  # Number of consecutive errors before auto-triggering repair
+  error_threshold: 3
+  # Model for self-repair: "main" = use main agent model, or specify custom model
+  # Examples: "main", "gemini/gemini-3-flash", "anthropic/claude-opus-4.6"
+  repair_model: "main"
+  # Include diagnostic tools in sub-agents and agent instances
+  include_in_agents: true
+  # Only include diagnostics for agents whose model matches the main model
+  # false = ALL agents get diagnostic tools regardless of model
+  only_matching_model: false
+  # Which diagnostic tools to enable
+  enabled_tools:
+    - debug_recent_errors
+    - debug_session_info
+    - debug_performance
+    - diagnose_and_repair
+
+# LangSmith Tracing (Observability)
+# tracing:
+#   enabled: false
+#   project_name: "kuro"
+#   tags: ["kuro"]
+#   trace_tools: true
+#   trace_memory: false

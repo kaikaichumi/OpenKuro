@@ -613,9 +613,10 @@ class DiscordAdapter(BaseAdapter):
                         f"\u274c Agent `{agent_name}` failed: {str(e)[:200]}"
                     )
 
-        elif cmd in ("stats", "costs", "security"):
+        elif cmd in ("stats", "costs", "security", "diagnose"):
             from src.adapters.dashboard_commands import (
                 handle_costs_command,
+                handle_diagnose_command,
                 handle_security_command,
                 handle_stats_command,
             )
@@ -625,6 +626,8 @@ class DiscordAdapter(BaseAdapter):
                 result = await handle_stats_command(max_len)
             elif cmd == "costs":
                 result = await handle_costs_command(max_len)
+            elif cmd == "diagnose":
+                result = await handle_diagnose_command(max_len)
             else:
                 result = await handle_security_command(max_len)
 

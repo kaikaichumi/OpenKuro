@@ -377,6 +377,22 @@ class AgentInstanceManager:
                 set(existing) | set(cfg.denied_tools)
             )
 
+        # Ensure diagnostic tools are NOT disabled for instances when configured
+        try:
+            from src.tools.analytics.diagnostic_tools import (
+                should_include_diagnostics_for_agent,
+                get_enabled_diagnostic_tool_names,
+            )
+            instance_model = cfg.model or self._config.models.default
+            if should_include_diagnostics_for_agent(self._config, instance_model):
+                diag_names = get_enabled_diagnostic_tool_names(self._config)
+                disabled = data["security"].get("disabled_tools", [])
+                data["security"]["disabled_tools"] = [
+                    t for t in disabled if t not in diag_names
+                ]
+        except Exception:
+            pass  # Diagnostic integration is best-effort
+
         # Per-instance security overrides
         sec = cfg.security
         if sec.auto_approve_levels:

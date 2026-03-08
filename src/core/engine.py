@@ -154,6 +154,17 @@ class Engine:
         # Task complexity estimator (set externally after construction)
         self.complexity_estimator: ComplexityEstimator | None = None
 
+        # Initialize LangSmith tracing if configured
+        if config.tracing.enabled:
+            try:
+                from src.core.tracing import init_tracing
+                init_tracing(
+                    project_name=config.tracing.project_name,
+                    tags=config.tracing.tags,
+                )
+            except Exception as e:
+                logger.debug("tracing_init_skipped", error=str(e))
+
         # Per-session locks for concurrency safety
         self._session_locks: dict[str, asyncio.Lock] = {}
 
@@ -687,6 +698,25 @@ class Engine:
             else:
                 insert_idx = len(context_messages)
             context_messages.insert(insert_idx, agent_ctx)
+
+        # Inject diagnostic guidance so the LLM knows about self-diagnostic tools
+        try:
+            from src.tools.analytics.diagnostic_tools import get_diagnostic_guidance_message
+            diag_guidance = get_diagnostic_guidance_message(self.config)
+            if diag_guidance:
+                # Insert after system messages but before conversation
+                insert_idx = 0
+                for i, m in enumerate(context_messages):
+                    if m.role != Role.SYSTEM:
+                        insert_idx = i
+                        break
+                else:
+                    insert_idx = len(context_messages)
+                context_messages.insert(insert_idx, Message(
+                    role=Role.SYSTEM, content=diag_guidance,
+                ))
+        except Exception:
+            pass  # Diagnostic guidance injection is best-effort
 
         # Agent loop: call LLM -> handle tool calls -> repeat
         max_rounds = getattr(self.config, "max_tool_rounds", _DEFAULT_MAX_TOOL_ROUNDS)
@@ -1299,5 +1329,21 @@ class Engine:
             duration_ms=duration_ms,
             error=result.error,
         )
+
+        # === LangSmith tool trace ===
+        if self.config.tracing.enabled and self.config.tracing.trace_tools:
+            try:
+                from src.core.tracing import trace_tool_call
+                trace_tool_call(
+                    tool_name=tool_call.name,
+                    params=tool_call.arguments,
+                    result_output=result.output if result.success else None,
+                    result_error=result.error,
+                    success=result.success,
+                    latency_ms=float(duration_ms),
+                    tags=self.config.tracing.tags,
+                )
+            except Exception:
+                pass
 
         return result

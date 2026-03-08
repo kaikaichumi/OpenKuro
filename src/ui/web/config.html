@@ -206,6 +206,35 @@
             </div>
         </div>
 
+        <!-- Diagnostics & Self-Repair -->
+        <div class="section">
+            <h2><span data-i18n="config.diagnostics">Self-Diagnostics & Repair</span> <span class="badge" id="badge-diagnostics">ON</span></h2>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.enabled">Enabled</span><small data-i18n="config.diagDesc">LLM self-diagnostic tools for error analysis, performance profiling, and auto-repair</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="diag-enabled"><span class="slider"></span></label></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.diagRepairModel">Repair Model</span><small data-i18n="config.diagRepairModelDesc">Model for self-repair: "main" = use main model, or specify custom model</small></div>
+                <div class="field-input"><select id="diag-repair-model" class="model-select"></select></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.diagAutoDiagnose">Auto-Diagnose on Error</span><small data-i18n="config.diagAutoDiagnoseDesc">Automatically trigger diagnostics when tool errors occur</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="diag-auto"><span class="slider"></span></label></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.diagErrorThreshold">Error Threshold</span><small data-i18n="config.diagErrorThresholdDesc">Consecutive errors before auto-triggering repair</small></div>
+                <div class="field-input"><input type="number" id="diag-error-threshold" min="1" max="20"></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.diagIncludeAgents">Include in Agents</span><small data-i18n="config.diagIncludeAgentsDesc">Give sub-agents and agent instances access to diagnostic tools</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="diag-agents"><span class="slider"></span></label></div>
+            </div>
+            <div class="field">
+                <div class="field-label"><span data-i18n="config.diagMatchingModel">Only Matching Model</span><small data-i18n="config.diagMatchingModelDesc">Only include diagnostics for agents with the same model as main</small></div>
+                <div class="field-input"><label class="toggle"><input type="checkbox" id="diag-matching"><span class="slider"></span></label></div>
+            </div>
+        </div>
+
         <!-- Task Complexity -->
         <div class="section">
             <h2><span data-i18n="config.taskComplexity">Task Complexity</span> <span class="badge" id="badge-complexity">ON</span></h2>

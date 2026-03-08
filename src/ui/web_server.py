@@ -1209,6 +1209,23 @@ class WebServer:
             self.engine.sandbox = self.engine.sandbox.__class__(new_config.sandbox)
             applied.append("sandbox")
 
+        # Diagnostics settings (applied via config reference, no engine restart needed)
+        if new_config.diagnostics != old.diagnostics:
+            applied.append("diagnostics")
+
+        # Tracing settings
+        if new_config.tracing != old.tracing:
+            if new_config.tracing.enabled:
+                try:
+                    from src.core.tracing import init_tracing
+                    init_tracing(
+                        project_name=new_config.tracing.project_name,
+                        tags=new_config.tracing.tags,
+                    )
+                except Exception:
+                    pass
+            applied.append("tracing")
+
         # Task complexity + ML classifier settings
         if new_config.task_complexity != old.task_complexity:
             estimator = getattr(self.engine, "complexity_estimator", None)

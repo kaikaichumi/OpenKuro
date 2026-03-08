@@ -536,6 +536,75 @@ class VisionConfig(BaseModel):
     text_only_models: list[str] = Field(default_factory=list)
 
 
+class DiagnosticsConfig(BaseModel):
+    """Self-diagnostics and auto-repair configuration.
+
+    Controls the built-in diagnostic tools (debug_recent_errors,
+    debug_session_info, debug_performance) and the self-repair system.
+
+    The diagnostic tools let the LLM introspect Kuro's internal state
+    when things go wrong — query recent errors, inspect session health,
+    and profile performance.
+
+    The self-repair tool (diagnose_and_repair) can be triggered manually
+    or automatically when errors occur. It runs a diagnostic scan and
+    suggests / applies fixes using a configurable model.
+    """
+
+    enabled: bool = True
+    # Auto-trigger diagnostics when tool execution errors occur
+    auto_diagnose_on_error: bool = True
+    # Number of consecutive errors before auto-triggering repair
+    error_threshold: int = 3
+
+    # --- Model for self-repair ---
+    # "main" = use the same model as the main agent
+    # Or specify a custom model: "gemini/gemini-3-flash", "anthropic/claude-opus-4.6", etc.
+    repair_model: str = "main"
+
+    # --- Agent integration ---
+    # Include diagnostic tools in sub-agents and agent instances
+    include_in_agents: bool = True
+    # Only include for agents whose model matches the main model
+    # (False = include for ALL agents regardless of model)
+    only_matching_model: bool = False
+
+    # --- Which diagnostic tools to enable ---
+    enabled_tools: list[str] = Field(default_factory=lambda: [
+        "debug_recent_errors",
+        "debug_session_info",
+        "debug_performance",
+        "diagnose_and_repair",
+    ])
+
+
+class TracingConfig(BaseModel):
+    """LangSmith tracing configuration.
+
+    Enable observability for all LLM calls with trace visualization,
+    token counting, latency tracking, and cost estimation.
+
+    Requires: pip install langsmith (or: poetry install -E tracing)
+
+    Setup:
+      1. Get API key from https://smith.langchain.com
+      2. Set environment variables:
+           LANGCHAIN_TRACING_V2=true
+           LANGCHAIN_API_KEY=lsv2_...
+           LANGCHAIN_PROJECT=kuro   (optional, defaults to "kuro")
+      3. Set tracing.enabled=true in config.yaml
+    """
+
+    enabled: bool = False
+    project_name: str = "kuro"
+    # Trace tags for filtering in LangSmith UI
+    tags: list[str] = Field(default_factory=lambda: ["kuro"])
+    # Log tool calls as child spans
+    trace_tools: bool = True
+    # Log memory operations as child spans
+    trace_memory: bool = False
+
+
 class TaskComplexityConfig(BaseModel):
     """Task complexity estimation and adaptive model routing.
 
@@ -623,6 +692,8 @@ class KuroConfig(BaseModel):
     code_feedback: CodeFeedbackConfig = Field(default_factory=CodeFeedbackConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)
     task_complexity: TaskComplexityConfig = Field(default_factory=TaskComplexityConfig)
+    diagnostics: DiagnosticsConfig = Field(default_factory=DiagnosticsConfig)
+    tracing: TracingConfig = Field(default_factory=TracingConfig)
 
     # Core prompt: encrypted, always present as the first SYSTEM message.
     # Loaded from ~/.kuro/system_prompt.enc at startup. Not user-editable via config.

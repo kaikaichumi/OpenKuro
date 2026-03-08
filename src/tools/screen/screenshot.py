@@ -1,4 +1,9 @@
-"""Screenshot tool: capture screen using mss + Pillow."""
+"""Screenshot tool: capture screen using mss + Pillow.
+
+DPI scaling: On Windows with display scaling, the captured image is in
+physical pixels.  The tool reports both physical and logical dimensions
+and the DPI scale factor so coordinate-consuming tools can convert correctly.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +22,8 @@ class ScreenshotTool(BaseTool):
     description = (
         "Take a screenshot of the entire screen or a specific monitor. "
         "The screenshot is saved as a PNG file and the file path is returned. "
+        "Coordinates in the screenshot are in PHYSICAL pixels. "
+        "Use analyze_image to get LOGICAL coordinates suitable for mouse_action. "
         "Use this to see what's currently on the user's screen."
     )
     parameters = {
@@ -69,14 +76,32 @@ class ScreenshotTool(BaseTool):
                 width, height = img.size
                 file_size = filepath.stat().st_size
 
+            # Detect DPI scaling
+            from src.tools.screen.dpi import get_dpi_scale
+            scale = get_dpi_scale()
+            logical_w = int(width / scale)
+            logical_h = int(height / scale)
+
+            scale_note = ""
+            if scale != 1.0:
+                scale_note = (
+                    f"\nDPI scale: {scale}x "
+                    f"(logical: {logical_w}x{logical_h})\n"
+                    f"IMPORTANT: Coordinates from analyze_image are in LOGICAL pixels "
+                    f"and can be used directly with mouse_action."
+                )
+
             return ToolResult.ok(
                 f"Screenshot saved: {filepath}\n"
-                f"Resolution: {width}x{height}\n"
+                f"Resolution: {width}x{height} (physical){scale_note}\n"
                 f"Size: {file_size / 1024:.1f} KB",
                 image_path=str(filepath),
                 path=str(filepath),
                 width=width,
                 height=height,
+                logical_width=logical_w,
+                logical_height=logical_h,
+                dpi_scale=scale,
                 file_size=file_size,
             )
 

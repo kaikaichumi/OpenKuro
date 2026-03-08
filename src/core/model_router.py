@@ -11,6 +11,8 @@ import re
 from urllib.parse import urlparse
 from typing import Any, AsyncIterator
 
+import time as _time
+
 import litellm
 import structlog
 
@@ -286,9 +288,29 @@ class ModelRouter:
                         kwargs["tool_choice"] = "auto"
 
                 logger.debug("model_request", model=model_name)
+                _t0 = _time.monotonic()
                 response = await litellm.acompletion(**kwargs)
+                _latency = (_time.monotonic() - _t0) * 1000
 
-                return self._parse_response(response, model_name)
+                parsed = self._parse_response(response, model_name)
+
+                # Trace LLM call to LangSmith (non-blocking, never raises)
+                try:
+                    from src.core.tracing import trace_llm_call
+                    trace_llm_call(
+                        model=model_name,
+                        messages=messages,
+                        response=parsed,
+                        usage=parsed.usage,
+                        latency_ms=_latency,
+                        tags=getattr(self.config, "tracing", None)
+                        and self.config.tracing.tags
+                        or [],
+                    )
+                except Exception:
+                    pass
+
+                return parsed
 
             except Exception as e:
                 error_str = str(e)

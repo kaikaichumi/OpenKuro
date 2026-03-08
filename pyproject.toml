@@ -40,6 +40,10 @@ aiosmtplib = "^3.0"
 aioimaplib = "^2.0"
 rapidocr-onnxruntime = {version = "^1.4", python = ">=3.12,<3.13"}
 opencv-python-headless = "^4.8"
+langsmith = {version = ">=0.1.0", optional = true}
+
+[tool.poetry.extras]
+tracing = ["langsmith"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

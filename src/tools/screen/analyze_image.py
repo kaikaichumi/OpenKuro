@@ -268,8 +268,16 @@ def _analyze(
     image_path: str,
     grid_size: int = 4,
     max_elements: int = 50,
+    use_logical_coords: bool = True,
 ) -> ImageAnalysis:
-    """Core analysis: OCR + OpenCV on a single image file."""
+    """Core analysis: OCR + OpenCV on a single image file.
+
+    Args:
+        use_logical_coords: If True (default), output coordinates are
+            converted to logical pixels (divided by DPI scale) so they
+            can be used directly with mouse_action/pyautogui.  If False,
+            output raw physical pixel coordinates.
+    """
     from PIL import Image
 
     img = Image.open(image_path).convert("RGB")
@@ -307,8 +315,37 @@ def _analyze(
         ui_elements=ui_elements,
     )
 
-    # Scale coordinates back to original resolution
-    return _scale_coordinates(analysis, orig_w, orig_h, resized_w, resized_h)
+    # Scale coordinates back to original (physical) resolution
+    analysis = _scale_coordinates(analysis, orig_w, orig_h, resized_w, resized_h)
+
+    # Convert physical pixels to logical pixels for mouse_action compatibility
+    if use_logical_coords:
+        try:
+            from src.tools.screen.dpi import get_dpi_scale
+            dpi_scale = get_dpi_scale()
+            if dpi_scale != 1.0:
+                analysis = _apply_dpi_scale(analysis, dpi_scale)
+        except Exception as e:
+            logger.debug("dpi_scale_skipped", error=str(e))
+
+    return analysis
+
+
+def _apply_dpi_scale(analysis: ImageAnalysis, scale: float) -> ImageAnalysis:
+    """Convert all coordinates from physical to logical pixels."""
+    for t in analysis.text_elements:
+        x1, y1, x2, y2 = t.bbox
+        t.bbox = (int(x1 / scale), int(y1 / scale), int(x2 / scale), int(y2 / scale))
+        t.center = (int(t.center[0] / scale), int(t.center[1] / scale))
+
+    for u in analysis.ui_elements:
+        x1, y1, x2, y2 = u.bbox
+        u.bbox = (int(x1 / scale), int(y1 / scale), int(x2 / scale), int(y2 / scale))
+        u.center = (int(u.center[0] / scale), int(u.center[1] / scale))
+
+    analysis.width = int(analysis.width / scale)
+    analysis.height = int(analysis.height / scale)
+    return analysis
 
 
 # ---------------------------------------------------------------------------
@@ -382,10 +419,12 @@ def analyze_image_to_text(
     Returns:
         Structured text description of the image.
     """
-    analysis = _analyze(image_path, grid_size, max_elements)
+    analysis = _analyze(image_path, grid_size, max_elements, use_logical_coords=True)
     w, h = analysis.width, analysis.height
 
-    lines: list[str] = [f"[Screen Analysis] {w}x{h}"]
+    lines: list[str] = [
+        f"[Screen Analysis] {w}x{h} (logical coordinates — use directly with mouse_action)",
+    ]
 
     # --- Text elements ---
     if analysis.text_elements:
@@ -420,12 +459,18 @@ def analyze_image_to_text(
         lines.append(_format_grid(analysis, grid_size))
 
     # --- Click targets ---
-    lines.append("\n== Click Targets ==")
-    for t in analysis.text_elements[:20]:
-        lines.append(f'"{t.text}" -> click({t.center[0]}, {t.center[1]})')
+    lines.append("\n== Click Targets (use these coordinates with mouse_action) ==")
+    for i, t in enumerate(analysis.text_elements[:20], 1):
+        lines.append(
+            f'  {i:>2}. "{t.text}" -> mouse_action(action="click", x={t.center[0]}, y={t.center[1]})'
+        )
+    btn_idx = len(analysis.text_elements[:20])
     for u in analysis.ui_elements[:10]:
         if u.elem_type in ("icon", "button"):
-            lines.append(f"[{u.elem_type}] -> click({u.center[0]}, {u.center[1]})")
+            btn_idx += 1
+            lines.append(
+                f'  {btn_idx:>2}. [{u.elem_type}] -> mouse_action(action="click", x={u.center[0]}, y={u.center[1]})'
+            )
 
     return "\n".join(lines)
 
@@ -439,7 +484,7 @@ def analyze_image_to_svg(
 
     Returns compact SVG XML + a text summary with click targets.
     """
-    analysis = _analyze(image_path, grid_size, max_elements)
+    analysis = _analyze(image_path, grid_size, max_elements, use_logical_coords=True)
     w, h = analysis.width, analysis.height
 
     svg_lines: list[str] = [
