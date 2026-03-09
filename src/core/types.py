@@ -125,6 +125,7 @@ class AgentDefinition:
     max_tool_rounds: int = 5
     temperature: float | None = None
     max_tokens: int | None = None
+    complexity_tier: str = "moderate"  # trivial|simple|moderate|complex|expert
     created_by: str = "user"  # "user" | "config" | "runtime" | "complexity_decomposer"
     # Phase 1 enhancements
     max_depth: int = 3  # Max recursive delegation depth (0 = no sub-agents)

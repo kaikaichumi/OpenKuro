@@ -10,6 +10,7 @@ import { t, onLocaleChange } from "./i18n.js";
 
 const API = "/api/agents/instances";
 let instances = [];
+let mainSubAgents = [];
 const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 let availableModels = [];
 
@@ -17,19 +18,29 @@ document.addEventListener("DOMContentLoaded", async () => {
     await initLayout({ activePath: "/agents" });
     onLocaleChange(() => render());
     await loadModels();
-    await loadInstances();
+    await reloadData();
     initModals();
 });
 
 // ─── Data ────────────────────────────────────────────────────
 
 async function loadInstances() {
+    const res = await fetch(API);
+    const data = await res.json();
+    instances = data.instances || [];
+}
+
+async function loadMainSubAgents() {
+    const res = await fetch("/api/agents/main/sub-agents");
+    const data = await res.json();
+    mainSubAgents = Array.isArray(data.definitions) ? data.definitions : [];
+}
+
+async function reloadData() {
     try {
-        const res = await fetch(API);
-        const data = await res.json();
-        instances = data.instances || [];
+        await Promise.all([loadInstances(), loadMainSubAgents()]);
         render();
-    } catch (e) {
+    } catch (_e) {
         document.getElementById("loading").textContent = t("agents.loadFailed") || "Failed to load agents";
     }
 }
@@ -101,6 +112,35 @@ function selectToBoolOverride(id) {
     return null;
 }
 
+function getInstanceSubAgentDefs(inst) {
+    if (Array.isArray(inst.sub_agent_defs) && inst.sub_agent_defs.length > 0) {
+        return inst.sub_agent_defs;
+    }
+    return (inst.sub_agents || []).map(name => ({ name }));
+}
+
+function renderSubAgentTags(ownerId, defs) {
+    return (defs || []).map((sa) => {
+        const encoded = encodeURIComponent(sa.name || "");
+        const tier = sa.complexity_tier || "moderate";
+        const tierLabel = t("agents.complexityTier") || "Complexity Tier";
+        const editLabel = t("common.edit") || "Edit";
+        return `<span class="sub-agent-tag" title="${tierLabel}: ${tier}">${sa.name} (${tier})
+            <button class="btn btn-xs" data-sub-edit="1" data-owner="${ownerId}" data-name="${encoded}" title="${editLabel}">${editLabel}</button>
+            <button class="tag-remove" data-sub-del="1" data-owner="${ownerId}" data-name="${encoded}" title="Remove">&times;</button>
+        </span>`;
+    }).join(" ");
+}
+
+function findSubAgentDefinition(ownerId, name) {
+    if (ownerId === "main") {
+        return (mainSubAgents || []).find(sa => sa.name === name) || null;
+    }
+    const inst = instances.find(i => i.id === ownerId);
+    if (!inst) return null;
+    return getInstanceSubAgentDefs(inst).find(sa => sa.name === name) || null;
+}
+
 // ─── Render ──────────────────────────────────────────────────
 
 function render() {
@@ -109,7 +149,8 @@ function render() {
     // Stats bar
     const enabled = instances.filter(i => i.enabled).length;
     const withBot = instances.filter(i => i.bot_binding).length;
-    const totalSubs = instances.reduce((s, i) => s + (i.sub_agents?.length || 0), 0);
+    const totalSubs = (mainSubAgents?.length || 0)
+        + instances.reduce((s, i) => s + getInstanceSubAgentDefs(i).length, 0);
 
     let html = `
         <div class="stats-grid">
@@ -128,6 +169,16 @@ function render() {
             <div class="stat-card">
                 <div class="stat-value">${totalSubs}</div>
                 <div class="stat-label">${t("agents.totalSubAgents") || "Sub-Agents"}</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+                <h2>Main Sub-Agents</h2>
+                <button class="btn btn-primary" id="add-sub-main">+ Add</button>
+            </div>
+            <div class="sub-agents-list">
+                ${renderSubAgentTags("main", mainSubAgents) || `<span class="empty-hint">${t("agents.noSubAgents") || "None"}</span>`}
             </div>
         </div>
 
@@ -156,6 +207,7 @@ function render() {
 
     // Bind events
     document.getElementById("btn-create")?.addEventListener("click", () => openCreateModal());
+    document.getElementById("add-sub-main")?.addEventListener("click", () => openSubAgentModal("main"));
 
     for (const inst of instances) {
         document.getElementById(`toggle-${inst.id}`)?.addEventListener("click", () => toggleInstance(inst));
@@ -163,28 +215,36 @@ function render() {
         document.getElementById(`delete-${inst.id}`)?.addEventListener("click", () => deleteInstance(inst.id));
         document.getElementById(`personality-${inst.id}`)?.addEventListener("click", () => openPersonalityModal(inst.id));
         document.getElementById(`add-sub-${inst.id}`)?.addEventListener("click", () => openSubAgentModal(inst.id));
-
-        // Delete sub-agent buttons
-        for (const sa of (inst.sub_agents || [])) {
-            document.getElementById(`del-sub-${inst.id}-${sa}`)?.addEventListener("click", () => deleteSubAgent(inst.id, sa));
-        }
     }
+
+    document.querySelectorAll("[data-sub-del]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+            const owner = btn.getAttribute("data-owner") || "";
+            const name = decodeURIComponent(btn.getAttribute("data-name") || "");
+            await deleteSubAgent(owner, name);
+        });
+    });
+
+    document.querySelectorAll("[data-sub-edit]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+            const owner = btn.getAttribute("data-owner") || "";
+            const name = decodeURIComponent(btn.getAttribute("data-name") || "");
+            const def = findSubAgentDefinition(owner, name) || { name };
+            openSubAgentModal(owner, def);
+        });
+    });
 }
 
 function renderCard(inst) {
     const statusClass = inst.enabled ? "status-on" : "status-off";
-    const statusText = inst.enabled ? (t("common.on") || "ON") : (t("common.off") || "OFF");
 
     const memoryBadge = `<span class="badge badge-${inst.memory_mode}">${inst.memory_mode}</span>`;
     const botBadge = inst.bot_binding
         ? `<span class="badge badge-bot">${inst.bot_binding.adapter_type}</span>`
         : "";
 
-    const subList = (inst.sub_agents || []).map(name =>
-        `<span class="sub-agent-tag">${name}
-            <button class="tag-remove" id="del-sub-${inst.id}-${name}" title="Remove">&times;</button>
-        </span>`
-    ).join(" ");
+    const subDefs = getInstanceSubAgentDefs(inst);
+    const subList = renderSubAgentTags(inst.id, subDefs);
 
     return `
         <div class="agent-card">
@@ -239,7 +299,7 @@ async function deleteInstance(id) {
     if (!confirm(`Delete agent instance "${id}"? This cannot be undone.`)) return;
     try {
         await fetch(`${API}/${id}`, { method: "DELETE" });
-        await loadInstances();
+        await reloadData();
     } catch (e) {
         alert("Delete failed: " + e.message);
     }
@@ -260,7 +320,7 @@ async function toggleInstance(inst) {
             alert(data.message || `Failed to ${action} instance.`);
             return;
         }
-        await loadInstances();
+        await reloadData();
     } catch (e) {
         alert(`${action} failed: ` + e.message);
     }
@@ -268,11 +328,19 @@ async function toggleInstance(inst) {
 
 // ─── Sub-Agent CRUD ──────────────────────────────────────────
 
-async function deleteSubAgent(instanceId, name) {
-    if (!confirm(`Remove sub-agent "${name}" from ${instanceId}?`)) return;
+async function deleteSubAgent(ownerId, name) {
+    if (!confirm(`Remove sub-agent "${name}" from ${ownerId}?`)) return;
+    const base = ownerId === "main"
+        ? "/api/agents/main/sub-agents"
+        : `${API}/${ownerId}/sub-agents`;
     try {
-        await fetch(`${API}/${instanceId}/sub-agents/${name}`, { method: "DELETE" });
-        await loadInstances();
+        const res = await fetch(`${base}/${encodeURIComponent(name)}`, { method: "DELETE" });
+        const data = await res.json();
+        if (data.status === "error") {
+            alert(data.message || "Delete failed");
+            return;
+        }
+        await reloadData();
     } catch (e) {
         alert("Delete failed: " + e.message);
     }
@@ -475,7 +543,7 @@ async function saveInstance() {
             return;
         }
         closeModal("instance-modal");
-        await loadInstances();
+        await reloadData();
     } catch (e) {
         alert("Save failed: " + e.message);
     }
@@ -513,30 +581,42 @@ async function savePersonality() {
 
 // ─── Sub-Agent ───────────────────────────────────────────────
 
-function openSubAgentModal(instanceId) {
-    document.getElementById("subagent-instance-id").value = instanceId;
-    document.getElementById("subagent-name").value = "";
-    document.getElementById("subagent-model").value = "";
-    document.getElementById("subagent-system-prompt").value = "";
-    document.getElementById("subagent-max-rounds").value = "5";
+function openSubAgentModal(ownerId, existing = null) {
+    document.getElementById("subagent-instance-id").value = ownerId;
+    document.getElementById("subagent-original-name").value = existing?.name || "";
+    document.getElementById("subagent-title").textContent = existing
+        ? (t("agents.editSubAgent") || "Edit Sub-Agent")
+        : (t("agents.addSubAgent") || "Add Sub-Agent");
+    document.getElementById("subagent-name").value = existing?.name || "";
+    document.getElementById("subagent-model").value = existing?.model || "";
+    document.getElementById("subagent-system-prompt").value = existing?.system_prompt || "";
+    document.getElementById("subagent-max-rounds").value = String(existing?.max_tool_rounds || 5);
+    document.getElementById("subagent-complexity-tier").value = existing?.complexity_tier || "moderate";
     document.getElementById("subagent-modal").style.display = "";
 }
 
 async function saveSubAgent() {
-    const instanceId = document.getElementById("subagent-instance-id").value;
+    const ownerId = document.getElementById("subagent-instance-id").value;
+    const originalName = document.getElementById("subagent-original-name").value.trim();
     const body = {
         name: document.getElementById("subagent-name").value.trim(),
         model: document.getElementById("subagent-model").value.trim(),
         system_prompt: document.getElementById("subagent-system-prompt").value.trim(),
         max_tool_rounds: parseInt(document.getElementById("subagent-max-rounds").value) || 5,
+        complexity_tier: document.getElementById("subagent-complexity-tier").value || "moderate",
     };
     if (!body.name) {
         alert("Name is required.");
         return;
     }
     try {
-        const res = await fetch(`${API}/${instanceId}/sub-agents`, {
-            method: "POST",
+        const base = ownerId === "main"
+            ? "/api/agents/main/sub-agents"
+            : `${API}/${ownerId}/sub-agents`;
+        const isEdit = !!originalName;
+        const url = isEdit ? `${base}/${encodeURIComponent(originalName)}` : base;
+        const res = await fetch(url, {
+            method: isEdit ? "PUT" : "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
         });
@@ -546,7 +626,7 @@ async function saveSubAgent() {
             return;
         }
         closeModal("subagent-modal");
-        await loadInstances();
+        await reloadData();
     } catch (e) {
         alert("Save failed: " + e.message);
     }

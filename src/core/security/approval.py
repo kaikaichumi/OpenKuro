@@ -105,6 +105,13 @@ class ApprovalPolicy:
 
         Returns an ApprovalDecision indicating the outcome.
         """
+        if getattr(self.config, "full_access_mode", False):
+            return ApprovalDecision(
+                approved=True,
+                reason="Full access mode enabled",
+                method="full_access",
+            )
+
         # 0. Hard cap: deny any tool above configured maximum risk (no prompt).
         max_risk_name = (self.config.max_risk_level or "critical").strip().lower()
         max_risk = RISK_MAP.get(max_risk_name, RiskLevel.CRITICAL)

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from src.config import save_config
 from src.tools.base import BaseTool, RiskLevel, ToolContext, ToolResult
 
 
@@ -55,6 +56,10 @@ class CreateAgentInstanceTool(BaseTool):
                 "enum": ["independent", "shared"],
                 "description": "Personality mode: independent (own personality.md) or shared (main's)",
             },
+            "persist": {
+                "type": "boolean",
+                "description": "Persist the new instance into config.yaml so it survives restart (default: false)",
+            },
         },
         "required": ["id", "name"],
     }
@@ -70,17 +75,25 @@ class CreateAgentInstanceTool(BaseTool):
 
         from src.config import (
             AgentInstanceConfig,
-            BotBindingConfig,
-            InvocationConfig,
             MemoryModeConfig,
         )
 
         instance_id = params["id"]
         name = params["name"]
+        persist = bool(params.get("persist", False))
+
+        root_cfg = getattr(manager, "_config", None)
+        if root_cfg is None and context.config is not None and hasattr(context.config, "agents"):
+            root_cfg = context.config
 
         # Check if already exists
         if manager.get(instance_id):
             return ToolResult.error(f"Agent instance '{instance_id}' already exists.")
+        if root_cfg is not None:
+            if any(cfg.id == instance_id for cfg in root_cfg.agents.instances):
+                return ToolResult.error(
+                    f"Agent instance '{instance_id}' already exists in configuration."
+                )
 
         # Build config
         memory_cfg = MemoryModeConfig(
@@ -98,13 +111,28 @@ class CreateAgentInstanceTool(BaseTool):
 
         try:
             inst = await manager.create_instance(cfg)
+            if persist:
+                if root_cfg is None:
+                    await manager.delete_instance(instance_id)
+                    return ToolResult.error(
+                        "Configuration is unavailable; cannot persist instance."
+                    )
+                root_cfg.agents.instances.append(cfg.model_copy(deep=True))
+                save_config(root_cfg)
+
             return ToolResult.ok(
                 f"Created Primary Agent instance '{inst.name}' (id={inst.id})\n"
                 f"  Model: {cfg.model or 'inherited from main'}\n"
                 f"  Memory: {cfg.memory.mode}\n"
-                f"  Personality: {cfg.personality_mode}"
+                f"  Personality: {cfg.personality_mode}\n"
+                f"  Persisted: {'Yes' if persist else 'No (runtime-only)'}"
             )
         except Exception as e:
+            if persist:
+                try:
+                    await manager.delete_instance(instance_id)
+                except Exception:
+                    pass
             return ToolResult.error(f"Failed to create instance: {e}")
 
 

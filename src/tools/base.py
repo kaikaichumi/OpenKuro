@@ -59,6 +59,9 @@ class ToolContext:
     """Execution context passed to tools."""
 
     session_id: str
+    config: Any = None  # KuroConfig | None
+    model_router: Any = None  # ModelRouter | None
+    active_model: str | None = None  # Effective model of the current request
     working_directory: str | None = None
     allowed_directories: list[str] = field(default_factory=list)
     max_execution_time: int = 30

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import re
 import time
 import uuid
@@ -24,7 +25,12 @@ from fastapi.staticfiles import StaticFiles
 
 from src.config import KuroConfig
 from src.core.engine import ApprovalCallback, Engine, ToolExecutionCallback, _encode_image_base64
-from src.core.types import Session
+from src.core.types import AgentDefinition, Session
+from src.openai_catalog import (
+    OPENAI_CODEX_OAUTH_MODELS,
+    is_codex_oauth_model_supported,
+    normalize_openai_model,
+)
 from src.ui.openai_oauth import OpenAIOAuthManager
 from src.tools.base import RiskLevel, ToolResult
 
@@ -33,6 +39,7 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Path to static web files
 WEB_DIR = Path(__file__).parent / "web"
+_OPENAI_OAUTH_MODEL_DEFAULTS: list[str] = list(OPENAI_CODEX_OAUTH_MODELS)
 
 
 @dataclass
@@ -293,6 +300,10 @@ class WebServer:
     def _is_openai_model(model: str | None) -> bool:
         return bool(model and model.startswith("openai/"))
 
+    @staticmethod
+    def _is_openai_oauth_model_candidate(model: str) -> bool:
+        return is_codex_oauth_model_supported(model)
+
     def _build_status_payload(
         self,
         *,
@@ -334,26 +345,40 @@ class WebServer:
                         "provider": provider,
                         "auth": "api",
                         "group_label": "OpenAI (API)",
-                        "label": f"{short} (API)",
+                        "label": f"[API] {short}",
                     })
                 else:
+                    group_label = provider.capitalize()
+                    if provider == "openai-compatible":
+                        group_label = "OpenAI-Compatible (Local)"
                     catalog.append({
                         "value": model,
                         "model": model,
                         "provider": provider,
                         "auth": "api",
-                        "group_label": provider.capitalize(),
+                        "group_label": group_label,
                         "label": short,
                     })
 
         if oauth_logged_in:
-            openai_models: list[str] = []
+            openai_models: list[str] = list(_OPENAI_OAUTH_MODEL_DEFAULTS)
+            extra_models = [
+                m.strip()
+                for m in os.environ.get("OPENAI_CODEX_OAUTH_MODELS", "").split(",")
+                if m.strip()
+            ]
+            for m in extra_models:
+                candidate = normalize_openai_model(m)
+                if self._is_openai_oauth_model_candidate(candidate) and candidate not in openai_models:
+                    openai_models.append(candidate)
             if "openai" in groups:
-                openai_models.extend(groups["openai"])
+                for m in groups["openai"]:
+                    if self._is_openai_oauth_model_candidate(m) and m not in openai_models:
+                        openai_models.append(m)
             openai_cfg = self.config.models.providers.get("openai")
             if openai_cfg:
                 for m in openai_cfg.known_models:
-                    if m not in openai_models:
+                    if self._is_openai_oauth_model_candidate(m) and m not in openai_models:
                         openai_models.append(m)
 
             for model in openai_models:
@@ -363,8 +388,8 @@ class WebServer:
                     "model": model,
                     "provider": "openai",
                     "auth": "oauth",
-                    "group_label": "OpenAI (OAuth)",
-                    "label": f"{short} (OAuth)",
+                    "group_label": "OpenAI (OAuth Subscription)",
+                    "label": f"[OAuth] {short}",
                 })
 
         return catalog
@@ -957,15 +982,136 @@ class WebServer:
             """List sub-agents for an instance."""
             im = getattr(self.engine, "instance_manager", None)
             if not im:
-                return {"sub_agents": []}
+                return {"sub_agents": [], "definitions": []}
             inst = im.get(instance_id)
             if inst and inst.agent_manager:
-                agents = inst.agent_manager.list_definitions()
-                return {"sub_agents": [a.name for a in agents]}
+                agents = list(inst.agent_manager.list_definitions())
+                return {
+                    "sub_agents": [a.name for a in agents],
+                    "definitions": [self._agent_definition_to_dict(a) for a in agents],
+                }
             cfg = self._find_agent_instance_config(instance_id)
             if not cfg:
-                return {"sub_agents": []}
-            return {"sub_agents": [a.name for a in cfg.sub_agents]}
+                return {"sub_agents": [], "definitions": []}
+            defs = list(cfg.sub_agents)
+            return {
+                "sub_agents": [a.name for a in defs],
+                "definitions": [self._agent_definition_to_dict(a) for a in defs],
+            }
+
+        @app.get("/api/agents/main/sub-agents")
+        async def list_main_sub_agents():
+            """List sub-agents for the main agent."""
+            defs = self._get_main_sub_agent_definitions()
+            return {
+                "sub_agents": [d.name for d in defs],
+                "definitions": [self._agent_definition_to_dict(d) for d in defs],
+            }
+
+        @app.post("/api/agents/main/sub-agents")
+        async def add_main_sub_agent(request: Request):
+            """Add a sub-agent to the main agent and persist it."""
+            manager = getattr(self.engine, "agent_manager", None)
+            if manager is None:
+                return {"status": "error", "message": "Main agent manager not available"}
+            data = await request.json()
+            try:
+                defn = self._agent_payload_to_definition(data)
+                if not defn.name:
+                    return {"status": "error", "message": "Sub-agent name is required"}
+                if manager.has_agent(defn.name):
+                    return {"status": "error", "message": f"Sub-agent '{defn.name}' already exists"}
+
+                manager.register(defn)
+                self.config.agents.sub_agents = [
+                    *self.config.agents.sub_agents,
+                    self._agent_definition_to_config(defn),
+                ]
+                self._save_runtime_config()
+                return {"status": "ok", "sub_agent": self._agent_definition_to_dict(defn)}
+            except Exception as e:
+                try:
+                    if data.get("name"):
+                        manager.unregister(str(data.get("name")))
+                except Exception:
+                    pass
+                return {"status": "error", "message": str(e)}
+
+        @app.put("/api/agents/main/sub-agents/{agent_name}")
+        async def update_main_sub_agent(agent_name: str, request: Request):
+            """Edit a sub-agent in the main agent and persist changes."""
+            manager = getattr(self.engine, "agent_manager", None)
+            if manager is None:
+                return {"status": "error", "message": "Main agent manager not available"}
+            data = await request.json()
+            existing_runtime = manager.get_definition(agent_name)
+            existing_cfg = next(
+                (sa for sa in self.config.agents.sub_agents if sa.name == agent_name),
+                None,
+            )
+            if existing_runtime is None and existing_cfg is None:
+                return {"status": "error", "message": f"Sub-agent '{agent_name}' not found"}
+
+            base = (
+                existing_runtime
+                if existing_runtime is not None
+                else self._agent_payload_to_definition(existing_cfg.model_dump(), created_by="config")
+            )
+            try:
+                updated = self._agent_payload_to_definition(data, fallback=base)
+                if not updated.name:
+                    return {"status": "error", "message": "Sub-agent name is required"}
+                if updated.name != agent_name and manager.has_agent(updated.name):
+                    return {"status": "error", "message": f"Sub-agent '{updated.name}' already exists"}
+
+                manager.unregister(agent_name)
+                manager.register(updated)
+
+                replaced = False
+                new_cfgs = []
+                for sa in self.config.agents.sub_agents:
+                    if sa.name == agent_name:
+                        new_cfgs.append(self._agent_definition_to_config(updated))
+                        replaced = True
+                    else:
+                        new_cfgs.append(sa)
+                if not replaced:
+                    new_cfgs.append(self._agent_definition_to_config(updated))
+                self.config.agents.sub_agents = new_cfgs
+                self._save_runtime_config()
+                return {"status": "ok", "sub_agent": self._agent_definition_to_dict(updated)}
+            except Exception as e:
+                try:
+                    manager.unregister(updated.name if "updated" in locals() else agent_name)
+                    if existing_runtime is not None:
+                        manager.register(existing_runtime)
+                except Exception:
+                    pass
+                return {"status": "error", "message": str(e)}
+
+        @app.delete("/api/agents/main/sub-agents/{agent_name}")
+        async def delete_main_sub_agent(agent_name: str):
+            """Delete a sub-agent from main agent and persisted config."""
+            manager = getattr(self.engine, "agent_manager", None)
+            existing_runtime = manager.get_definition(agent_name) if manager else None
+            removed_runtime = manager.unregister(agent_name) if manager else False
+            old_len = len(self.config.agents.sub_agents)
+            self.config.agents.sub_agents = [
+                sa for sa in self.config.agents.sub_agents if sa.name != agent_name
+            ]
+            removed_cfg = len(self.config.agents.sub_agents) != old_len
+            if not removed_runtime and not removed_cfg:
+                return {"status": "error", "message": f"Sub-agent '{agent_name}' not found"}
+            try:
+                self._save_runtime_config()
+                return {"status": "ok"}
+            except Exception as e:
+                try:
+                    if removed_runtime and existing_runtime is not None and manager:
+                        manager.register(existing_runtime)
+                except Exception:
+                    pass
+                return {"status": "error", "message": str(e)}
 
         @app.post("/api/agents/instances/{instance_id}/sub-agents")
         async def add_sub_agent(instance_id: str, request: Request):
@@ -973,56 +1119,88 @@ class WebServer:
             im = getattr(self.engine, "instance_manager", None)
             if not im:
                 return {"status": "error", "message": "Instance manager not available"}
+            cfg = self._find_agent_instance_config(instance_id)
+            if not cfg:
+                return {"status": "error", "message": f"Instance '{instance_id}' not found"}
             inst = im.get(instance_id)
-            if not inst or not inst.agent_manager:
-                return {"status": "error", "message": "Instance not running. Enable it first."}
+            target_cfg = inst.config if inst else cfg
             data = await request.json()
             try:
-                from src.config import AgentDefinitionConfig
-                from src.core.types import AgentDefinition
+                defn = self._agent_payload_to_definition(data)
+                if not defn.name:
+                    return {"status": "error", "message": "Sub-agent name is required"}
+                if any(sa.name == defn.name for sa in target_cfg.sub_agents):
+                    return {"status": "error", "message": f"Sub-agent '{defn.name}' already exists"}
 
-                defn = AgentDefinition(
-                    name=data["name"],
-                    model=data.get("model", ""),
-                    system_prompt=data.get("system_prompt", ""),
-                    allowed_tools=list(data.get("allowed_tools", [])),
-                    denied_tools=list(data.get("denied_tools", [])),
-                    max_tool_rounds=data.get("max_tool_rounds", 5),
-                    temperature=data.get("temperature"),
-                    max_tokens=data.get("max_tokens"),
-                    created_by="web_ui",
-                    max_depth=data.get("max_depth", 3),
-                    inherit_context=bool(data.get("inherit_context", False)),
-                    output_schema=data.get("output_schema"),
-                )
-                inst.agent_manager.register(defn)
+                if inst and inst.agent_manager:
+                    inst.agent_manager.register(defn)
+                target_cfg.sub_agents.append(self._agent_definition_to_config(defn))
+                if inst:
+                    inst.config.sub_agents = list(target_cfg.sub_agents)
 
-                inst.config.sub_agents.append(
-                    AgentDefinitionConfig(
-                        name=defn.name,
-                        model=defn.model,
-                        system_prompt=defn.system_prompt,
-                        allowed_tools=list(defn.allowed_tools),
-                        denied_tools=list(defn.denied_tools),
-                        max_tool_rounds=defn.max_tool_rounds,
-                        temperature=defn.temperature,
-                        max_tokens=defn.max_tokens,
-                        max_depth=defn.max_depth,
-                        inherit_context=defn.inherit_context,
-                        output_schema=defn.output_schema,
-                    )
-                )
-                self._upsert_agent_instance_config(inst.config)
+                self._upsert_agent_instance_config(target_cfg)
                 self._save_runtime_config()
-                return {"status": "ok"}
+                return {"status": "ok", "sub_agent": self._agent_definition_to_dict(defn)}
             except Exception as e:
                 # Best-effort rollback if config save failed after runtime register.
                 name = data.get("name")
-                if name:
+                if name and inst and inst.agent_manager:
                     try:
                         inst.agent_manager.unregister(name)
                     except Exception:
                         pass
+                return {"status": "error", "message": str(e)}
+
+        @app.put("/api/agents/instances/{instance_id}/sub-agents/{agent_name}")
+        async def update_sub_agent(instance_id: str, agent_name: str, request: Request):
+            """Edit a sub-agent on an instance."""
+            im = getattr(self.engine, "instance_manager", None)
+            if not im:
+                return {"status": "error", "message": "Instance manager not available"}
+            cfg = self._find_agent_instance_config(instance_id)
+            if not cfg:
+                return {"status": "error", "message": f"Instance '{instance_id}' not found"}
+            inst = im.get(instance_id)
+            target_cfg = inst.config if inst else cfg
+            existing_cfg = next((sa for sa in target_cfg.sub_agents if sa.name == agent_name), None)
+            if existing_cfg is None:
+                return {"status": "error", "message": f"Sub-agent '{agent_name}' not found"}
+            data = await request.json()
+
+            base = self._agent_payload_to_definition(existing_cfg.model_dump(), created_by="config")
+            try:
+                updated = self._agent_payload_to_definition(data, fallback=base)
+                if not updated.name:
+                    return {"status": "error", "message": "Sub-agent name is required"}
+                if updated.name != agent_name and any(
+                    sa.name == updated.name for sa in target_cfg.sub_agents
+                ):
+                    return {"status": "error", "message": f"Sub-agent '{updated.name}' already exists"}
+
+                if inst and inst.agent_manager:
+                    inst.agent_manager.unregister(agent_name)
+                    inst.agent_manager.register(updated)
+
+                target_cfg.sub_agents = [
+                    self._agent_definition_to_config(updated)
+                    if sa.name == agent_name
+                    else sa
+                    for sa in target_cfg.sub_agents
+                ]
+                if inst:
+                    inst.config.sub_agents = list(target_cfg.sub_agents)
+                self._upsert_agent_instance_config(target_cfg)
+                self._save_runtime_config()
+                return {"status": "ok", "sub_agent": self._agent_definition_to_dict(updated)}
+            except Exception as e:
+                try:
+                    if inst and inst.agent_manager:
+                        inst.agent_manager.unregister(
+                            updated.name if "updated" in locals() else agent_name
+                        )
+                        inst.agent_manager.register(base)
+                except Exception:
+                    pass
                 return {"status": "error", "message": str(e)}
 
         @app.delete("/api/agents/instances/{instance_id}/sub-agents/{agent_name}")
@@ -1031,19 +1209,39 @@ class WebServer:
             im = getattr(self.engine, "instance_manager", None)
             if not im:
                 return {"status": "error", "message": "Instance manager not available"}
+            cfg = self._find_agent_instance_config(instance_id)
+            if not cfg:
+                return {"status": "error", "message": f"Instance '{instance_id}' not found"}
             inst = im.get(instance_id)
-            if not inst or not inst.agent_manager:
-                return {"status": "error", "message": "Instance not running. Enable it first."}
-            removed = inst.agent_manager.unregister(agent_name)
-            if not removed:
-                return {"status": "error", "message": f"Sub-agent '{agent_name}' not found"}
+            target_cfg = inst.config if inst else cfg
+            existing_runtime = (
+                inst.agent_manager.get_definition(agent_name)
+                if inst and inst.agent_manager
+                else None
+            )
+            removed_runtime = (
+                inst.agent_manager.unregister(agent_name)
+                if inst and inst.agent_manager
+                else False
+            )
             try:
-                inst.config.sub_agents = [
-                    sa for sa in inst.config.sub_agents if sa.name != agent_name
+                old_len = len(target_cfg.sub_agents)
+                target_cfg.sub_agents = [
+                    sa for sa in target_cfg.sub_agents if sa.name != agent_name
                 ]
-                self._upsert_agent_instance_config(inst.config)
+                removed_cfg = len(target_cfg.sub_agents) != old_len
+                if not removed_runtime and not removed_cfg:
+                    return {"status": "error", "message": f"Sub-agent '{agent_name}' not found"}
+                if inst:
+                    inst.config.sub_agents = list(target_cfg.sub_agents)
+                self._upsert_agent_instance_config(target_cfg)
                 self._save_runtime_config()
             except Exception as e:
+                try:
+                    if removed_runtime and existing_runtime is not None and inst and inst.agent_manager:
+                        inst.agent_manager.register(existing_runtime)
+                except Exception:
+                    pass
                 return {"status": "error", "message": str(e)}
             return {"status": "ok"}
 
@@ -1076,9 +1274,28 @@ class WebServer:
         async def dashboard_stats():
             """Return aggregated agent event statistics."""
             event_bus = getattr(self.engine, "event_bus", None)
-            if not event_bus:
-                return {"total_events": 0, "agents": {}, "agent_states": {}}
-            return event_bus.get_stats()
+            if event_bus:
+                payload = event_bus.get_stats()
+            else:
+                payload = {"total_events": 0, "agents": {}, "agent_states": {}}
+
+            available_agents: set[str] = {"main"}
+            im = getattr(self.engine, "instance_manager", None)
+            if im:
+                for inst in im.list_all():
+                    inst_id = getattr(inst, "id", None)
+                    if inst_id:
+                        available_agents.add(str(inst_id))
+
+            try:
+                for cfg in self.config.agents.instances:
+                    if cfg.enabled and cfg.id:
+                        available_agents.add(cfg.id)
+            except Exception:
+                pass
+
+            payload["available_agents"] = sorted(available_agents)
+            return payload
 
         @app.get("/api/dashboard/events")
         async def dashboard_events(limit: int = Query(50)):
@@ -1210,17 +1427,127 @@ class WebServer:
                 return cfg
         return None
 
+    @staticmethod
+    def _agent_definition_to_dict(defn: Any) -> dict[str, Any]:
+        """Serialize an AgentDefinition / AgentDefinitionConfig for API responses."""
+        allowed_tiers = {"trivial", "simple", "moderate", "complex", "expert"}
+        tier = str(getattr(defn, "complexity_tier", "moderate") or "moderate").strip().lower()
+        if tier not in allowed_tiers:
+            tier = "moderate"
+        return {
+            "name": str(getattr(defn, "name", "") or ""),
+            "model": str(getattr(defn, "model", "") or ""),
+            "system_prompt": str(getattr(defn, "system_prompt", "") or ""),
+            "allowed_tools": list(getattr(defn, "allowed_tools", []) or []),
+            "denied_tools": list(getattr(defn, "denied_tools", []) or []),
+            "max_tool_rounds": int(getattr(defn, "max_tool_rounds", 5) or 5),
+            "temperature": getattr(defn, "temperature", None),
+            "max_tokens": getattr(defn, "max_tokens", None),
+            "complexity_tier": tier,
+            "max_depth": int(getattr(defn, "max_depth", 3) or 3),
+            "inherit_context": bool(getattr(defn, "inherit_context", False)),
+            "output_schema": getattr(defn, "output_schema", None),
+        }
+
+    @staticmethod
+    def _agent_definition_to_config(defn: AgentDefinition) -> "AgentDefinitionConfig":
+        """Convert runtime AgentDefinition to persisted AgentDefinitionConfig."""
+        from src.config import AgentDefinitionConfig
+
+        return AgentDefinitionConfig(
+            name=defn.name,
+            model=defn.model,
+            system_prompt=defn.system_prompt,
+            allowed_tools=list(defn.allowed_tools),
+            denied_tools=list(defn.denied_tools),
+            max_tool_rounds=defn.max_tool_rounds,
+            temperature=defn.temperature,
+            max_tokens=defn.max_tokens,
+            complexity_tier=defn.complexity_tier,
+            max_depth=defn.max_depth,
+            inherit_context=defn.inherit_context,
+            output_schema=defn.output_schema,
+        )
+
+    @staticmethod
+    def _agent_payload_to_definition(
+        payload: dict[str, Any],
+        *,
+        fallback: AgentDefinition | None = None,
+        created_by: str = "web_ui",
+    ) -> AgentDefinition:
+        """Build AgentDefinition from partial JSON payload."""
+
+        def _list(name: str, fallback_list: list[str]) -> list[str]:
+            value = payload.get(name, fallback_list)
+            if value is None:
+                return list(fallback_list)
+            if isinstance(value, str):
+                value = value.split(",")
+            return [str(v).strip() for v in value if str(v).strip()]
+
+        def _int(name: str, fallback_value: int) -> int:
+            value = payload.get(name, fallback_value)
+            if value in (None, ""):
+                return fallback_value
+            return int(value)
+
+        def _float_or_none(name: str, fallback_value: float | None) -> float | None:
+            value = payload.get(name, fallback_value)
+            if value in (None, ""):
+                return None
+            return float(value)
+
+        def _tier(name: str, fallback_value: str) -> str:
+            value = str(payload.get(name, fallback_value) or fallback_value).strip().lower()
+            if value not in {"trivial", "simple", "moderate", "complex", "expert"}:
+                return "moderate"
+            return value
+
+        base = fallback or AgentDefinition(name="", model="")
+        return AgentDefinition(
+            name=str(payload.get("name", base.name) or "").strip(),
+            model=str(payload.get("model", base.model) or "").strip(),
+            system_prompt=str(payload.get("system_prompt", base.system_prompt) or ""),
+            allowed_tools=_list("allowed_tools", list(base.allowed_tools)),
+            denied_tools=_list("denied_tools", list(base.denied_tools)),
+            max_tool_rounds=_int("max_tool_rounds", base.max_tool_rounds or 5),
+            temperature=_float_or_none("temperature", base.temperature),
+            max_tokens=(
+                None
+                if payload.get("max_tokens", base.max_tokens) in (None, "")
+                else int(payload.get("max_tokens", base.max_tokens))
+            ),
+            complexity_tier=_tier("complexity_tier", base.complexity_tier or "moderate"),
+            created_by=created_by,
+            max_depth=_int("max_depth", base.max_depth or 3),
+            inherit_context=bool(payload.get("inherit_context", base.inherit_context)),
+            output_schema=payload.get("output_schema", base.output_schema),
+        )
+
+    def _get_main_sub_agent_definitions(self) -> list[Any]:
+        """Get main agent sub-agent definitions from runtime, fallback to config."""
+        manager = getattr(self.engine, "agent_manager", None)
+        if manager is not None:
+            try:
+                return list(manager.list_definitions())
+            except Exception:
+                pass
+        return list(self.config.agents.sub_agents)
+
     def _instance_info_from_cfg(
         self, cfg: "AgentInstanceConfig", runtime_inst: Any | None = None
     ) -> dict[str, Any]:
         """Build API info from persisted config, with optional runtime fields."""
-        sub_agent_names = [a.name for a in cfg.sub_agents]
+        sub_defs: list[Any] = list(cfg.sub_agents)
+        sub_agent_names = [a.name for a in sub_defs]
+        sub_agent_defs = [self._agent_definition_to_dict(a) for a in sub_defs]
         active_sessions = 0
         if runtime_inst:
             try:
-                sub_agent_names = [
-                    a.name for a in runtime_inst.agent_manager.list_definitions()
-                ]
+                sub_defs = list(runtime_inst.agent_manager.list_definitions())
+                sub_agent_names = [a.name for a in sub_defs]
+                sub_agent_defs = [self._agent_definition_to_dict(a) for a in sub_defs]
             except Exception:
                 pass
             active_sessions = len(getattr(runtime_inst, "sessions", {}))
@@ -1263,6 +1590,7 @@ class WebServer:
                 "task_complexity_enabled": cfg.feature_overrides.task_complexity_enabled,
             },
             "sub_agents": sub_agent_names,
+            "sub_agent_defs": sub_agent_defs,
             "active_sessions": active_sessions,
             "running": bool(runtime_inst),
         }
@@ -1357,6 +1685,15 @@ class WebServer:
         # Security settings
         if new_config.security != old.security:
             self.engine.approval_policy = self.engine.approval_policy.__class__(new_config.security)
+            self.approval_cb.approval_policy = self.engine.approval_policy
+            if getattr(self.engine, "agent_manager", None):
+                self.engine.agent_manager.approval_policy = self.engine.approval_policy
+                self.engine.agent_manager.config = new_config
+            if getattr(self.engine, "instance_manager", None):
+                # Keep newly-created instance runners aligned with latest security config.
+                with contextlib.suppress(Exception):
+                    self.engine.instance_manager._approval_policy = self.engine.approval_policy
+                    self.engine.instance_manager._config = new_config
             applied.append("security")
 
         # Model settings (default model, temperature, etc.)
@@ -1416,6 +1753,10 @@ class WebServer:
                     applied.append(f"task_complexity(created+{ml_status})")
                 else:
                     applied.append("task_complexity(created)")
+
+        # Delegation complexity routing settings (used directly by delegation tool)
+        if new_config.delegation_complexity != old.delegation_complexity:
+            applied.append("delegation_complexity")
 
         # Update the stored config reference
         self.config = new_config
@@ -1605,7 +1946,14 @@ class WebServer:
         self._tool_cb.register_websocket(session.id, ws, agent_id=agent_id)
 
         # Resolve the engine for this agent
-        engine = self._resolve_engine(agent_id)
+        engine = self._resolve_engine(agent_id, fallback_to_main=False)
+        if engine is None:
+            await ws.send_json({
+                "type": "error",
+                "message": f"Agent '{agent_id}' is not running or unavailable.",
+                "agent_id": agent_id,
+            })
+            return
 
         await ws.send_json(
             self._build_status_payload(
@@ -1617,7 +1965,7 @@ class WebServer:
             )
         )
 
-    def _resolve_engine(self, agent_id: str):
+    def _resolve_engine(self, agent_id: str, *, fallback_to_main: bool = True):
         """Resolve the Engine for a given agent_id."""
         if not agent_id or agent_id == "main":
             return self.engine
@@ -1626,7 +1974,14 @@ class WebServer:
             inst = instance_manager.get(agent_id)
             if inst:
                 return inst.engine
-        return self.engine
+        logger.warning(
+            "agent_engine_not_found",
+            agent_id=agent_id,
+            fallback_to_main=fallback_to_main,
+        )
+        if fallback_to_main:
+            return self.engine
+        return None
 
     async def _process_ws_message(
         self, ws: WebSocket, conn: ConnectionState, data: dict
@@ -1660,8 +2015,24 @@ class WebServer:
             await ws.send_json({"type": "stream_start", "agent_id": agent_id})
 
             # Resolve engine and session for this agent
-            engine = self._resolve_engine(agent_id)
+            engine = self._resolve_engine(agent_id, fallback_to_main=False)
+            if engine is None:
+                await ws.send_json({
+                    "type": "error",
+                    "message": f"Agent '{agent_id}' is not running or unavailable.",
+                    "agent_id": agent_id,
+                })
+                await ws.send_json({"type": "stream_end", "agent_id": agent_id})
+                return
             session = conn.get_session(agent_id)
+            logger.info(
+                "web_agent_chat_routed",
+                agent_id=agent_id,
+                session_id=session.id,
+                engine_default_model=getattr(engine.model, "default_model", None),
+                model_override=conn.model_override,
+                model_auth_mode=conn.model_auth_mode,
+            )
 
             # If the agent panel has no session yet, create one
             if session is conn.session and agent_id != "main":
@@ -1669,15 +2040,36 @@ class WebServer:
                 conn.set_session(agent_id, session)
                 self.approval_cb.register_websocket(session.id, ws, agent_id=agent_id)
                 self._tool_cb.register_websocket(session.id, ws, agent_id=agent_id)
+            session.metadata["_dashboard_agent_id"] = agent_id or "main"
 
             model_name = conn.model_override
             model_is_openai = self._is_openai_model(model_name)
             oauth_mode = conn.model_auth_mode == "oauth" and model_is_openai
+            session.metadata["model_auth_mode"] = conn.model_auth_mode
+            if model_name:
+                session.metadata["model_override"] = model_name
 
             model_ctx = contextlib.nullcontext()
+            cached_provider_ctx: dict[str, Any] | None = None
+            if conn.oauth_session_id:
+                auth_context = await self._oauth.get_auth_context(conn.oauth_session_id)
+                if auth_context and auth_context.get("access_token"):
+                    cached_provider_ctx = {
+                        "mode": "codex_oauth",
+                        "access_token": auth_context.get("access_token", ""),
+                        "account_id": auth_context.get("account_id", ""),
+                        "plan_type": auth_context.get("plan_type", ""),
+                        "email": auth_context.get("email", ""),
+                        "originator": "codex_cli_rs",
+                    }
+            if cached_provider_ctx:
+                session.metadata["_openai_oauth_provider_ctx"] = cached_provider_ctx
+            else:
+                session.metadata.pop("_openai_oauth_provider_ctx", None)
+
             if oauth_mode:
-                oauth_token = await self._oauth.get_access_token(conn.oauth_session_id)
-                if not oauth_token:
+                auth_context = await self._oauth.get_auth_context(conn.oauth_session_id)
+                if not auth_context or not auth_context.get("access_token"):
                     await ws.send_json({
                         "type": "error",
                         "message": "OpenAI OAuth token missing or expired. Please sign in again.",
@@ -1685,8 +2077,21 @@ class WebServer:
                     })
                     await ws.send_json({"type": "stream_end", "agent_id": agent_id})
                     return
-                if hasattr(engine.model, "provider_api_key_override"):
-                    model_ctx = engine.model.provider_api_key_override("openai", oauth_token)
+                provider_ctx = cached_provider_ctx or {
+                    "mode": "codex_oauth",
+                    "access_token": auth_context.get("access_token", ""),
+                    "account_id": auth_context.get("account_id", ""),
+                    "plan_type": auth_context.get("plan_type", ""),
+                    "email": auth_context.get("email", ""),
+                    "originator": "codex_cli_rs",
+                }
+                if hasattr(engine.model, "provider_auth_override"):
+                    model_ctx = engine.model.provider_auth_override("openai", provider_ctx)
+                elif hasattr(engine.model, "provider_api_key_override"):
+                    model_ctx = engine.model.provider_api_key_override(
+                        "openai",
+                        str(auth_context.get("access_token", "")),
+                    )
 
             # Use stream_message for streaming support
             with model_ctx:
@@ -1716,11 +2121,97 @@ class WebServer:
         command = data.get("command", "")
         args = data.get("args", "")
         agent_id = data.get("agent_id", "main")
+        if agent_id != "main":
+            resolved = self._resolve_engine(agent_id, fallback_to_main=False)
+            if resolved is None:
+                await ws.send_json({
+                    "type": "error",
+                    "message": f"Agent '{agent_id}' is not running or unavailable.",
+                    "agent_id": agent_id,
+                })
+                return
 
         if command == "model":
             model_name, auth_mode = self._parse_model_selection(args)
+            if auth_mode == "oauth":
+                if not self._is_openai_model(model_name):
+                    await ws.send_json({
+                        "type": "error",
+                        "message": "OAuth mode is only available for OpenAI models.",
+                        "agent_id": agent_id,
+                    })
+                    engine = self._resolve_engine(agent_id)
+                    await ws.send_json(
+                        self._build_status_payload(
+                            conn=conn,
+                            engine=engine,
+                            session=conn.get_session(agent_id),
+                            agent_id=agent_id,
+                        )
+                    )
+                    return
+                if not conn.oauth_session_id:
+                    await ws.send_json({
+                        "type": "error",
+                        "message": "OpenAI OAuth is not connected in this browser session.",
+                        "agent_id": agent_id,
+                    })
+                    engine = self._resolve_engine(agent_id)
+                    await ws.send_json(
+                        self._build_status_payload(
+                            conn=conn,
+                            engine=engine,
+                            session=conn.get_session(agent_id),
+                            agent_id=agent_id,
+                        )
+                    )
+                    return
+                auth_context = await self._oauth.get_auth_context(conn.oauth_session_id)
+                if not auth_context or not auth_context.get("access_token"):
+                    await ws.send_json({
+                        "type": "error",
+                        "message": "OpenAI OAuth token missing or expired. Please sign in again.",
+                        "agent_id": agent_id,
+                    })
+                    engine = self._resolve_engine(agent_id)
+                    await ws.send_json(
+                        self._build_status_payload(
+                            conn=conn,
+                            engine=engine,
+                            session=conn.get_session(agent_id),
+                            agent_id=agent_id,
+                        )
+                    )
+                    return
+                if model_name and not self._is_openai_oauth_model_candidate(model_name):
+                    await ws.send_json({
+                        "type": "error",
+                        "message": (
+                            f"Model '{model_name}' is not supported in OpenAI OAuth mode. "
+                            "Choose a model from OpenAI (OAuth Subscription)."
+                        ),
+                        "agent_id": agent_id,
+                    })
+                    engine = self._resolve_engine(agent_id)
+                    await ws.send_json(
+                        self._build_status_payload(
+                            conn=conn,
+                            engine=engine,
+                            session=conn.get_session(agent_id),
+                            agent_id=agent_id,
+                        )
+                    )
+                    return
             conn.model_override = model_name
             conn.model_auth_mode = auth_mode
+            logger.info(
+                "web_model_override_set",
+                session_id=conn.get_session(agent_id).id,
+                agent_id=agent_id,
+                model=model_name,
+                mode=auth_mode,
+                raw=args,
+            )
             engine = self._resolve_engine(agent_id)
             await ws.send_json(
                 self._build_status_payload(

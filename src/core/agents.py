@@ -232,6 +232,9 @@ class AgentRunner:
             "high": RiskLevel.HIGH,
             "critical": RiskLevel.CRITICAL,
         }
+        full_access_mode = bool(
+            getattr(self.config.security, "full_access_mode", False)
+        )
         max_risk_name = str(
             getattr(self.config.security, "max_risk_level", "critical")
         ).strip().lower()
@@ -247,7 +250,7 @@ class AgentRunner:
                 t_obj = self.tools.registry.get(name) if name else None
                 if t_obj is None:
                     continue
-                if t_obj.risk_level > max_risk_level:
+                if (not full_access_mode) and (t_obj.risk_level > max_risk_level):
                     continue
                 if name in blocked_tools_by_policy:
                     continue
@@ -613,6 +616,9 @@ class AgentRunner:
         tool = self.tools.registry.get(tool_call.name)
         if tool is None:
             return ToolResult.fail(f"Unknown tool: {tool_call.name}")
+        full_access_mode = bool(
+            getattr(self.config.security, "full_access_mode", False)
+        )
 
         # Phase 1: Recursive delegation depth check
         if tool_call.name == "delegate_to_agent":
@@ -641,18 +647,22 @@ class AgentRunner:
             )
 
         # Disabled tools check
-        if tool_call.name in self.config.security.disabled_tools:
+        if (not full_access_mode) and (
+            tool_call.name in self.config.security.disabled_tools
+        ):
             return ToolResult.denied(
                 f"Tool '{tool_call.name}' is disabled by configuration"
             )
 
         # Sandbox pre-check (same as Engine)
-        if tool_call.name == "shell_execute":
+        if (not full_access_mode) and tool_call.name == "shell_execute":
             command = tool_call.arguments.get("command", "")
             if not self.sandbox.is_command_allowed(command):
                 return ToolResult.denied("Command blocked by sandbox policy")
 
-        if tool_call.name in ("file_read", "file_write", "file_search"):
+        if (not full_access_mode) and (
+            tool_call.name in ("file_read", "file_write", "file_search")
+        ):
             path = tool_call.arguments.get(
                 "path", tool_call.arguments.get("directory", "")
             )
@@ -698,6 +708,9 @@ class AgentRunner:
 
         context = ToolContext(
             session_id=self.session.id,
+            config=self.config,
+            model_router=self.model,
+            active_model=self.definition.model,
             allowed_directories=[
                 str(p) for p in self.config.sandbox.allowed_directories
             ],
@@ -789,6 +802,7 @@ class AgentManager:
                 max_tool_rounds=agent_cfg.max_tool_rounds,
                 temperature=agent_cfg.temperature,
                 max_tokens=agent_cfg.max_tokens,
+                complexity_tier=agent_cfg.complexity_tier,
                 created_by="config",
                 max_depth=agent_cfg.max_depth,
                 inherit_context=agent_cfg.inherit_context,

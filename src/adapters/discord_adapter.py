@@ -12,6 +12,8 @@ Features:
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
 import re
 from typing import Any
 from uuid import uuid4
@@ -22,6 +24,11 @@ from src.adapters.base import BaseAdapter
 from src.config import KuroConfig
 from src.core.engine import ApprovalCallback, Engine
 from src.core.types import Session
+from src.openai_catalog import (
+    OPENAI_CODEX_OAUTH_MODELS,
+    is_codex_oauth_model_supported,
+    normalize_openai_model,
+)
 from src.tools.base import RiskLevel
 
 logger = structlog.get_logger()
@@ -244,6 +251,11 @@ class DiscordAdapter(BaseAdapter):
         self._bot = None
         self._bot_token_override = bot_token_override
         self._config_overrides = config_overrides or {}
+        try:
+            from src.ui.openai_oauth import OpenAIOAuthManager
+            self._oauth = OpenAIOAuthManager()
+        except Exception:
+            self._oauth = None
 
         # Use the effective engine's approval policy
         target_engine = self.effective_engine
@@ -266,6 +278,19 @@ class DiscordAdapter(BaseAdapter):
         if _ENV_VAR_NAME_RE.fullmatch(ref):
             return ref
         return "<DISCORD_BOT_TOKEN_ENV>"
+
+    @staticmethod
+    def _parse_model_selection(raw: str) -> tuple[str | None, str]:
+        value = (raw or "").strip()
+        if not value:
+            return None, "api"
+        if value.startswith("oauth:"):
+            model = value[len("oauth:"):].strip()
+            return (model or None), "oauth"
+        if value.startswith("api:"):
+            model = value[len("api:"):].strip()
+            return (model or None), "api"
+        return value, "api"
 
     async def start(self) -> None:
         """Initialize the Discord bot and start it."""
@@ -470,6 +495,7 @@ class DiscordAdapter(BaseAdapter):
                 f"`{prefix}help` — Show this help\n"
                 f"`{prefix}model` — Show current model\n"
                 f"`{prefix}model <name>` — Switch AI model\n"
+                f"`{prefix}model oauth:<openai/model>` — Switch OpenAI model via OAuth\n"
                 f"`{prefix}models` — List available models\n"
                 f"`{prefix}agents` — List available sub-agents\n"
                 f"`{prefix}delegate <agent> <task>` — Delegate task to a sub-agent\n"
@@ -485,34 +511,103 @@ class DiscordAdapter(BaseAdapter):
 
         elif cmd == "model":
             if args_text:
-                model_name = args_text.strip()
+                model_name, auth_mode = self._parse_model_selection(args_text)
+                if auth_mode == "oauth":
+                    if not model_name or not model_name.startswith("openai/"):
+                        await message.channel.send(
+                            "\u274c OAuth mode only supports `openai/...` models."
+                        )
+                        return
+                    if not is_codex_oauth_model_supported(model_name):
+                        await message.channel.send(
+                            f"\u274c `{model_name}` is not supported in OpenAI OAuth mode."
+                        )
+                        return
+                    if not self._oauth:
+                        await message.channel.send(
+                            "\u274c OpenAI OAuth support is unavailable in this runtime."
+                        )
+                        return
+                    oauth_status = self._oauth.get_status(None)
+                    if not oauth_status.get("logged_in"):
+                        await message.channel.send(
+                            "\u274c OpenAI OAuth is not available for Discord right now. "
+                            "Run `codex login` on this machine first."
+                        )
+                        return
                 session.metadata["model_override"] = model_name
+                session.metadata["model_auth_mode"] = auth_mode
+                logger.info(
+                    "discord_model_override_set",
+                    user_id=message.author.id,
+                    channel_id=message.channel.id,
+                    model=model_name,
+                    mode=auth_mode,
+                    session_id=session.id,
+                )
                 await message.channel.send(
-                    f"\u2705 Model switched to: `{model_name}`"
+                    f"\u2705 Model switched to: `{model_name}` ({auth_mode.upper()})"
                 )
             else:
                 current = session.metadata.get(
                     "model_override", self.config.models.default
                 )
+                mode = str(session.metadata.get("model_auth_mode", "api")).strip().lower()
+                if not (isinstance(current, str) and current.startswith("openai/")):
+                    mode = "api"
                 await message.channel.send(
-                    f"\U0001f916 Current model: `{current}`"
+                    f"\U0001f916 Current model: `{current}` ({mode.upper()})"
                 )
 
         elif cmd == "models":
             try:
                 groups = await self.effective_engine.model.list_models_grouped()
+                oauth_status = self._oauth.get_status(None) if self._oauth else {}
+                if oauth_status.get("logged_in"):
+                    oauth_models: list[str] = list(OPENAI_CODEX_OAUTH_MODELS)
+                    extra_oauth = [
+                        m.strip()
+                        for m in os.environ.get("OPENAI_CODEX_OAUTH_MODELS", "").split(",")
+                        if m.strip()
+                    ]
+                    for m in extra_oauth:
+                        candidate = normalize_openai_model(m)
+                        if (
+                            is_codex_oauth_model_supported(candidate)
+                            and candidate not in oauth_models
+                        ):
+                            oauth_models.append(candidate)
+                    groups["openai-oauth"] = oauth_models
                 if not groups:
                     await message.channel.send("No models available.")
                 else:
                     lines = ["**Available models:**"]
+                    active_model = session.metadata.get(
+                        "model_override", self.config.models.default
+                    )
+                    active_mode = str(
+                        session.metadata.get("model_auth_mode", "api")
+                    ).strip().lower()
+                    if not (isinstance(active_model, str) and active_model.startswith("openai/")):
+                        active_mode = "api"
                     for provider, models in groups.items():
-                        lines.append(f"\n**{provider.capitalize()}:**")
-                        active_model = session.metadata.get(
-                            "model_override", self.config.models.default
-                        )
+                        title = provider.capitalize()
+                        if provider == "openai-compatible":
+                            title = "OpenAI-Compatible (Local)"
+                        elif provider == "openai-oauth":
+                            title = "OpenAI (OAuth Subscription)"
+                        lines.append(f"\n**{title}:**")
                         for m in models:
-                            marker = " \u2705" if m == active_model else ""
-                            lines.append(f"  `{m}`{marker}")
+                            display = f"oauth:{m}" if provider == "openai-oauth" else m
+                            is_active = (
+                                m == active_model
+                                and (
+                                    (provider == "openai-oauth" and active_mode == "oauth")
+                                    or (provider != "openai-oauth" and active_mode != "oauth")
+                                )
+                            )
+                            marker = " \u2705" if is_active else ""
+                            lines.append(f"  `{display}`{marker}")
                     await message.channel.send("\n".join(lines))
             except Exception as e:
                 await message.channel.send(f"\u274c Error listing models: {str(e)[:200]}")
@@ -676,12 +771,21 @@ class DiscordAdapter(BaseAdapter):
 
         # Register channel for approval callbacks
         self._approval_cb.register_channel(session.id, message.channel.id)
+        selected_model = session.metadata.get("model_override") or self.config.models.default
+        selected_mode = str(session.metadata.get("model_auth_mode", "api")).strip().lower()
+        effective_mode = (
+            selected_mode
+            if isinstance(selected_model, str) and selected_model.startswith("openai/")
+            else "api"
+        )
 
         logger.info(
             "discord_message",
             user_id=message.author.id,
             username=str(message.author),
             channel_id=message.channel.id,
+            model=selected_model,
+            model_auth_mode=effective_mode,
             text_len=len(content),
             images=len(image_urls) if image_urls else 0,
         )
@@ -696,16 +800,85 @@ class DiscordAdapter(BaseAdapter):
             try:
                 # Get model override if set
                 model = session.metadata.get("model_override")
+                session.metadata["model_auth_mode"] = selected_mode
+                if model:
+                    session.metadata["model_override"] = model
+
+                # Cache OAuth context in session metadata for internal tool model calls
+                # (e.g., diagnostics repair model) that happen in the same request.
+                cached_provider_ctx = None
+                if self._oauth:
+                    auth_context = await self._oauth.get_auth_context(None)
+                    if auth_context and auth_context.get("access_token"):
+                        cached_provider_ctx = {
+                            "mode": "codex_oauth",
+                            "access_token": auth_context.get("access_token", ""),
+                            "account_id": auth_context.get("account_id", ""),
+                            "plan_type": auth_context.get("plan_type", ""),
+                            "email": auth_context.get("email", ""),
+                            "originator": "codex_cli_rs",
+                        }
+                if cached_provider_ctx:
+                    session.metadata["_openai_oauth_provider_ctx"] = cached_provider_ctx
+                else:
+                    session.metadata.pop("_openai_oauth_provider_ctx", None)
+
+                oauth_mode = (
+                    effective_mode == "oauth"
+                    and isinstance(model, str)
+                    and model.startswith("openai/")
+                )
+                model_ctx = contextlib.nullcontext()
+                if oauth_mode:
+                    if not is_codex_oauth_model_supported(model or ""):
+                        await message.channel.send(
+                            f"\u274c OAuth model not supported: `{model}`"
+                        )
+                        return
+                    if not self._oauth:
+                        await message.channel.send(
+                            "\u274c OpenAI OAuth support is unavailable in this runtime."
+                        )
+                        return
+                    auth_context = await self._oauth.get_auth_context(None)
+                    if not auth_context or not auth_context.get("access_token"):
+                        await message.channel.send(
+                            "\u274c OpenAI OAuth token missing. Run `codex login` first."
+                        )
+                        return
+                    provider_ctx = cached_provider_ctx or {
+                        "mode": "codex_oauth",
+                        "access_token": auth_context.get("access_token", ""),
+                        "account_id": auth_context.get("account_id", ""),
+                        "plan_type": auth_context.get("plan_type", ""),
+                        "email": auth_context.get("email", ""),
+                        "originator": "codex_cli_rs",
+                    }
+                    target_engine = self.effective_engine
+                    if hasattr(target_engine.model, "provider_auth_override"):
+                        model_ctx = target_engine.model.provider_auth_override("openai", provider_ctx)
+                    elif hasattr(target_engine.model, "provider_api_key_override"):
+                        model_ctx = target_engine.model.provider_api_key_override(
+                            "openai",
+                            str(auth_context.get("access_token", "")),
+                        )
+                    logger.info(
+                        "discord_oauth_model_request",
+                        user_id=message.author.id,
+                        channel_id=message.channel.id,
+                        model=model,
+                    )
 
                 # Record generated image paths before processing
                 images_before = set(self._collect_generated_images(session))
                 legacy_before = self._collect_session_images(session)
 
                 # Process through engine (routes to agent instance if bound)
-                response = await self.process_incoming(
-                    content, session, model=model,
-                    images=image_paths if image_paths else None,
-                )
+                with model_ctx:
+                    response = await self.process_incoming(
+                        content, session, model=model,
+                        images=image_paths if image_paths else None,
+                    )
 
                 # Collect any new images generated during processing (screenshots, etc.)
                 new_images = [

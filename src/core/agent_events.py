@@ -79,7 +79,9 @@ class AgentEventBus:
         total_events = len(self._history)
         agents = {}
         for agent_id, counters in self._agent_stats.items():
+            total_for_agent = sum(int(v) for v in counters.values())
             agents[agent_id] = {
+                "total_events": total_for_agent,
                 "messages": counters.get("message_received", 0),
                 "tool_calls": counters.get("tool_call", 0),
                 "delegations": counters.get("delegation", 0),

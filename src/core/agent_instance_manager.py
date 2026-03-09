@@ -37,6 +37,7 @@ class AgentInstanceManager:
         main_memory_manager: MemoryManager,
         skills_manager: Any,
         action_logger: Any,
+        event_bus: Any | None = None,
     ) -> None:
         self._config = config
         self._model_router = model_router
@@ -47,6 +48,7 @@ class AgentInstanceManager:
         self._main_memory = main_memory_manager
         self._skills_manager = skills_manager
         self._action_logger = action_logger
+        self._event_bus = event_bus
         self._instances: dict[str, AgentInstance] = {}
 
     async def initialize_all(self) -> None:
@@ -149,6 +151,9 @@ class AgentInstanceManager:
             memory_manager=mm,
             skills_manager=self._skills_manager,
         )
+        # Share main event bus so dashboard shows activities from all engines.
+        if self._event_bus is not None:
+            instance_engine.event_bus = self._event_bus
         # Mark engine with its owning instance ID for tool routing.
         instance_engine.agent_instance_id = cfg.id
         self._initialize_instance_runtime_features(instance_engine, instance_config)
@@ -177,6 +182,7 @@ class AgentInstanceManager:
                 max_tool_rounds=sa_cfg.max_tool_rounds,
                 temperature=sa_cfg.temperature,
                 max_tokens=sa_cfg.max_tokens,
+                complexity_tier=sa_cfg.complexity_tier,
                 created_by="config",
                 max_depth=sa_cfg.max_depth,
                 inherit_context=sa_cfg.inherit_context,

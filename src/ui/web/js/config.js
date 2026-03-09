@@ -10,26 +10,70 @@ import KuroPlugins from "./plugins.js";
 let isDirty = false;
 let currentConfig = {};
 
+function _addModel(list, seen, rawModel) {
+    const model = String(rawModel || "").trim();
+    if (!model || seen.has(model)) return;
+    seen.add(model);
+    list.push(model);
+}
+
 /**
- * Collect all known model names from providers config.
- * Returns a sorted array of "provider/model" strings.
+ * Build model options from config + runtime model catalog.
+ * Returns { models: string[], oauthModels: Set<string> }.
  */
-function getAllKnownModels(cfg) {
+async function getModelOptions(cfg) {
     const models = [];
+    const seen = new Set();
+    const oauthModels = new Set();
+
     const providers = (cfg.models && cfg.models.providers) || {};
     for (const [, providerCfg] of Object.entries(providers)) {
-        if (providerCfg.known_models) {
-            models.push(...providerCfg.known_models);
+        if (Array.isArray(providerCfg.known_models)) {
+            for (const m of providerCfg.known_models) {
+                _addModel(models, seen, m);
+            }
         }
     }
-    return models;
+
+    try {
+        const resp = await fetch("/api/models");
+        if (resp.ok) {
+            const data = await resp.json();
+            const groups = data.groups || {};
+            for (const arr of Object.values(groups)) {
+                if (!Array.isArray(arr)) continue;
+                for (const m of arr) {
+                    _addModel(models, seen, m);
+                }
+            }
+
+            const catalog = Array.isArray(data.catalog) ? data.catalog : [];
+            for (const item of catalog) {
+                const model = String(item && item.model ? item.model : "").trim();
+                if (!model) continue;
+                _addModel(models, seen, model);
+                if (item && item.auth === "oauth") {
+                    oauthModels.add(model);
+                }
+            }
+
+            const available = Array.isArray(data.available) ? data.available : [];
+            for (const m of available) {
+                _addModel(models, seen, m);
+            }
+        }
+    } catch (e) {
+        // Fallback to config-known models only.
+    }
+
+    return { models, oauthModels };
 }
 
 /**
  * Populate a <select> element with model options.
  * Includes an empty "Auto / Default" option at the top.
  */
-function populateModelSelect(selectId, models, currentValue) {
+function populateModelSelect(selectId, models, currentValue, oauthModels = new Set()) {
     const el = document.getElementById(selectId);
     if (!el) return;
 
@@ -49,12 +93,66 @@ function populateModelSelect(selectId, models, currentValue) {
     for (const model of models) {
         const opt = document.createElement("option");
         opt.value = model;
-        opt.textContent = model;
+        opt.textContent = oauthModels.has(model) ? (model + " [OAuth]") : model;
         el.appendChild(opt);
     }
 
     // If current value is not in the list but is non-empty, add it as a custom option
     if (val && !models.includes(val)) {
+        const customOpt = document.createElement("option");
+        customOpt.value = val;
+        customOpt.textContent = val + " (custom)";
+        el.appendChild(customOpt);
+    }
+
+    el.value = val;
+}
+
+/**
+ * Populate diagnostics repair model selector with explicit API/OAuth variants.
+ * Stores OAuth choice as `oauth:<model>` so backend can preserve auth mode.
+ */
+function populateRepairModelSelect(selectId, models, currentValue, oauthModels = new Set()) {
+    const el = document.getElementById(selectId);
+    if (!el) return;
+
+    const val = currentValue || "main";
+    el.innerHTML = "";
+
+    const autoOpt = document.createElement("option");
+    autoOpt.value = "";
+    autoOpt.textContent = t("config.modelAuto") || "Auto / Default";
+    el.appendChild(autoOpt);
+
+    for (const model of models) {
+        if (!model) continue;
+        if (model === "main") {
+            const opt = document.createElement("option");
+            opt.value = "main";
+            opt.textContent = "main";
+            el.appendChild(opt);
+            continue;
+        }
+        if (oauthModels.has(model)) {
+            const apiOpt = document.createElement("option");
+            apiOpt.value = model;
+            apiOpt.textContent = model + " [API]";
+            el.appendChild(apiOpt);
+
+            const oauthOpt = document.createElement("option");
+            oauthOpt.value = "oauth:" + model;
+            oauthOpt.textContent = model + " [OAuth]";
+            el.appendChild(oauthOpt);
+            continue;
+        }
+        const opt = document.createElement("option");
+        opt.value = model;
+        opt.textContent = model;
+        el.appendChild(opt);
+    }
+
+    const hasValue = Array.from(el.options).some((o) => o.value === val);
+    if (val && !hasValue) {
         const customOpt = document.createElement("option");
         customOpt.value = val;
         customOpt.textContent = val + " (custom)";
@@ -72,6 +170,7 @@ function markDirty() {
 }
 
 function updateBadges() {
+    setBadge("badge-full-access", document.getElementById("sec-full-access").checked);
     setBadge("badge-compression", document.getElementById("cc-enabled").checked);
     setBadge("badge-lifecycle", document.getElementById("ml-enabled").checked);
     setBadge("badge-learning", document.getElementById("le-enabled").checked);
@@ -80,6 +179,7 @@ function updateBadges() {
     setBadge("badge-diagnostics", document.getElementById("diag-enabled").checked);
     setBadge("badge-complexity", document.getElementById("tc-enabled").checked);
     setBadge("badge-ml", document.getElementById("tc-ml-enabled").checked);
+    setBadge("badge-delegation-complexity", document.getElementById("dc-enabled").checked);
 }
 
 function setBadge(id, enabled) {
@@ -94,13 +194,17 @@ async function loadConfig() {
         const resp = await fetch("/api/config");
         const data = await resp.json();
         currentConfig = data.config;
-        populateForm(currentConfig);
+        const modelOptions = await getModelOptions(currentConfig);
+        populateForm(currentConfig, modelOptions);
     } catch (e) {
         showToast(t("config.loadFailed"), "error");
     }
 }
 
-function populateForm(cfg) {
+function populateForm(cfg, modelOptions) {
+    const sec = cfg.security || {};
+    document.getElementById("sec-full-access").checked = sec.full_access_mode === true;
+
     const cc = cfg.context_compression || {};
     document.getElementById("cc-enabled").checked = cc.enabled !== false;
     document.getElementById("cc-budget").value = cc.token_budget || 100000;
@@ -149,22 +253,32 @@ function populateForm(cfg) {
     document.getElementById("diag-agents").checked = diag.include_in_agents !== false;
     document.getElementById("diag-matching").checked = diag.only_matching_model === true;
 
-    // Populate model dropdowns from providers (shared across sections)
-    const knownModels = getAllKnownModels(cfg);
+    // Populate model dropdowns from config + runtime model catalog.
+    const knownModels = (modelOptions && Array.isArray(modelOptions.models))
+        ? modelOptions.models
+        : [];
+    const oauthModels = (modelOptions && modelOptions.oauthModels instanceof Set)
+        ? modelOptions.oauthModels
+        : new Set();
 
     // Diagnostics repair model: "main" is a special value + known models
     const repairModels = ["main", ...knownModels];
-    populateModelSelect("diag-repair-model", repairModels, diag.repair_model || "main");
+    populateRepairModelSelect(
+        "diag-repair-model",
+        repairModels,
+        diag.repair_model || "main",
+        oauthModels,
+    );
 
     const tc = cfg.task_complexity || {};
     document.getElementById("tc-enabled").checked = tc.enabled !== false;
     document.getElementById("tc-trigger").value = tc.trigger_mode || "auto";
     document.getElementById("tc-llm-refine").checked = tc.llm_refinement !== false;
 
-    populateModelSelect("tc-refine-model", knownModels, tc.refinement_model || "");
-    populateModelSelect("tc-fast-model", knownModels, tc.fast_model || "");
-    populateModelSelect("tc-standard-model", knownModels, tc.standard_model || "");
-    populateModelSelect("tc-frontier-model", knownModels, tc.frontier_model || "");
+    populateModelSelect("tc-refine-model", knownModels, tc.refinement_model || "", oauthModels);
+    populateModelSelect("tc-fast-model", knownModels, tc.fast_model || "", oauthModels);
+    populateModelSelect("tc-standard-model", knownModels, tc.standard_model || "", oauthModels);
+    populateModelSelect("tc-frontier-model", knownModels, tc.frontier_model || "", oauthModels);
 
     document.getElementById("tc-decompose").checked = tc.decomposition_enabled !== false;
     document.getElementById("tc-decompose-threshold").value = tc.decomposition_threshold || 0.80;
@@ -177,11 +291,35 @@ function populateForm(cfg) {
     document.getElementById("tc-ml-model-path").value = tc.ml_model_path || "";
     document.getElementById("tc-ml-tokenizer-path").value = tc.ml_tokenizer_path || "";
 
+    const dc = cfg.delegation_complexity || {};
+    const dct = dc.tier_boundaries || {};
+    const dcm = dc.tier_models || {};
+    document.getElementById("dc-enabled").checked = dc.enabled === true;
+    document.getElementById("dc-default-use").checked = dc.default_use_complexity === true;
+    document.getElementById("dc-auto-select").checked = dc.allow_auto_select !== false;
+    document.getElementById("dc-enforce-tier").checked = dc.enforce_min_tier !== false;
+    populateModelSelect("dc-model-trivial", knownModels, dcm.trivial || "", oauthModels);
+    populateModelSelect("dc-model-simple", knownModels, dcm.simple || "", oauthModels);
+    populateModelSelect("dc-model-moderate", knownModels, dcm.moderate || "", oauthModels);
+    populateModelSelect("dc-model-complex", knownModels, dcm.complex || "", oauthModels);
+    document.getElementById("dc-tier-trivial").value = dct.trivial ?? 0.15;
+    document.getElementById("dc-tier-simple").value = dct.simple ?? 0.35;
+    document.getElementById("dc-tier-moderate").value = dct.moderate ?? 0.60;
+    document.getElementById("dc-tier-complex").value = dct.complex ?? 0.85;
+
     updateBadges();
 }
 
 function collectForm() {
+    const dcTrivial = parseFloat(document.getElementById("dc-tier-trivial").value);
+    const dcSimple = parseFloat(document.getElementById("dc-tier-simple").value);
+    const dcModerate = parseFloat(document.getElementById("dc-tier-moderate").value);
+    const dcComplex = parseFloat(document.getElementById("dc-tier-complex").value);
+
     return {
+        security: {
+            full_access_mode: document.getElementById("sec-full-access").checked,
+        },
         context_compression: {
             enabled: document.getElementById("cc-enabled").checked,
             token_budget: parseInt(document.getElementById("cc-budget").value),
@@ -247,6 +385,24 @@ function collectForm() {
             ml_estimation_mode: document.getElementById("tc-ml-mode").value,
             ml_model_path: document.getElementById("tc-ml-model-path").value,
             ml_tokenizer_path: document.getElementById("tc-ml-tokenizer-path").value,
+        },
+        delegation_complexity: {
+            enabled: document.getElementById("dc-enabled").checked,
+            default_use_complexity: document.getElementById("dc-default-use").checked,
+            allow_auto_select: document.getElementById("dc-auto-select").checked,
+            enforce_min_tier: document.getElementById("dc-enforce-tier").checked,
+            tier_models: {
+                trivial: document.getElementById("dc-model-trivial").value,
+                simple: document.getElementById("dc-model-simple").value,
+                moderate: document.getElementById("dc-model-moderate").value,
+                complex: document.getElementById("dc-model-complex").value,
+            },
+            tier_boundaries: {
+                trivial: Number.isFinite(dcTrivial) ? dcTrivial : 0.15,
+                simple: Number.isFinite(dcSimple) ? dcSimple : 0.35,
+                moderate: Number.isFinite(dcModerate) ? dcModerate : 0.60,
+                complex: Number.isFinite(dcComplex) ? dcComplex : 0.85,
+            },
         },
     };
 }
@@ -338,8 +494,35 @@ async function runMaintenance(action) {
 // === Bind Events ===
 
 function bindEvents() {
+    const fullAccessToggle = document.getElementById("sec-full-access");
+    fullAccessToggle?.addEventListener("change", () => {
+        if (fullAccessToggle.checked) {
+            const confirmed = window.confirm(
+                t(
+                    "config.fullAccessConfirm",
+                    "Warning: Full Access Mode disables approval/sandbox protection. Continue?",
+                ),
+            );
+            if (!confirmed) {
+                fullAccessToggle.checked = false;
+                showToast(
+                    t("config.fullAccessCancelled", "Full Access Mode was cancelled."),
+                    "error",
+                );
+                return;
+            }
+            showToast(
+                t(
+                    "config.fullAccessEnabledToast",
+                    "Full Access Mode enabled. Save to apply.",
+                ),
+            );
+        }
+        markDirty();
+    });
+
     // All toggle/input changes trigger markDirty
-    document.querySelectorAll("#app input, #app select").forEach(el => {
+    document.querySelectorAll("#app input:not(#sec-full-access), #app select").forEach(el => {
         el.addEventListener("change", markDirty);
     });
 

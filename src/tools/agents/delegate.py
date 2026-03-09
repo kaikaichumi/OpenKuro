@@ -1,31 +1,123 @@
-"""Delegate tool: allows the main LLM to delegate tasks to sub-agents.
-
-Supports recursive delegation (Phase 1) — sub-agents can delegate to further
-sub-agents up to the configured max_depth.
-"""
+"""Delegate tools for sub-agent execution and discovery."""
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import Any
 
+from src.config import TaskComplexityConfig
+from src.core.complexity import ComplexityEstimator
+from src.core.types import Session
 from src.tools.base import BaseTool, RiskLevel, ToolContext, ToolResult
+
+_DEFAULT_TIER_BOUNDARIES: dict[str, float] = {
+    "trivial": 0.15,
+    "simple": 0.35,
+    "moderate": 0.60,
+    "complex": 0.85,
+}
+
+_TIER_LEVELS: dict[str, int] = {
+    "trivial": 0,
+    "simple": 1,
+    "moderate": 2,
+    "complex": 3,
+    "expert": 4,
+}
+
+
+def _normalize_tier(value: Any) -> str:
+    tier = str(value or "moderate").strip().lower()
+    return tier if tier in _TIER_LEVELS else "moderate"
+
+
+def _normalize_boundaries(raw: Any) -> dict[str, float]:
+    values = raw if isinstance(raw, dict) else {}
+    normalized: dict[str, float] = {}
+    prev = 0.0
+    for key in ("trivial", "simple", "moderate", "complex"):
+        default_val = _DEFAULT_TIER_BOUNDARIES[key]
+        try:
+            val = float(values.get(key, default_val))
+        except Exception:
+            val = default_val
+        val = max(0.0, min(1.0, val))
+        # Keep thresholds monotonic to avoid invalid ranges.
+        val = max(prev, val)
+        normalized[key] = val
+        prev = val
+    return normalized
+
+
+def _score_to_tier(score: float, boundaries: dict[str, float]) -> str:
+    if score < boundaries.get("trivial", _DEFAULT_TIER_BOUNDARIES["trivial"]):
+        return "trivial"
+    if score < boundaries.get("simple", _DEFAULT_TIER_BOUNDARIES["simple"]):
+        return "simple"
+    if score < boundaries.get("moderate", _DEFAULT_TIER_BOUNDARIES["moderate"]):
+        return "moderate"
+    if score < boundaries.get("complex", _DEFAULT_TIER_BOUNDARIES["complex"]):
+        return "complex"
+    return "expert"
+
+
+def _pick_best_agent(
+    definitions: list[Any],
+    required_tier: str,
+    *,
+    enforce_min_tier: bool,
+    preferred_model: str = "",
+) -> Any | None:
+    if not definitions:
+        return None
+
+    required_level = _TIER_LEVELS[_normalize_tier(required_tier)]
+    ranked = sorted(
+        definitions,
+        key=lambda d: (
+            _TIER_LEVELS[_normalize_tier(getattr(d, "complexity_tier", "moderate"))],
+            str(getattr(d, "name", "")),
+        ),
+    )
+
+    sufficient = [
+        d for d in ranked
+        if _TIER_LEVELS[_normalize_tier(getattr(d, "complexity_tier", "moderate"))] >= required_level
+    ]
+    if preferred_model:
+        preferred_sufficient = [
+            d for d in sufficient
+            if str(getattr(d, "model", "") or "").strip() == preferred_model
+        ]
+        if preferred_sufficient:
+            return preferred_sufficient[0]
+
+    if sufficient:
+        # Choose the lowest capable tier first.
+        return sufficient[0]
+    if enforce_min_tier:
+        return None
+    # Fallback to the highest available tier.
+    if preferred_model:
+        preferred_ranked = [
+            d for d in ranked
+            if str(getattr(d, "model", "") or "").strip() == preferred_model
+        ]
+        if preferred_ranked:
+            return preferred_ranked[-1]
+    return ranked[-1]
 
 
 class DelegateToAgentTool(BaseTool):
-    """Delegate a task to a named sub-agent.
-
-    The main LLM can use this tool to hand off work to specialized agents
-    that may use different models or have different tool access.
-    """
+    """Delegate a task to a named sub-agent."""
 
     name = "delegate_to_agent"
     description = (
-        "Delegate a task to a named sub-agent. You MUST use this tool to "
-        "actually run a sub-agent — do NOT pretend to delegate by just writing "
-        "text. Sub-agents run on their own LLM model (local or cloud) and "
-        "process the task independently. Use list_agents first to see available "
-        "agents. Always return the agent's actual result to the user."
+        "Delegate a task to a sub-agent. You MUST use this tool to actually run "
+        "a sub-agent. Do not pretend to delegate in plain text. Use list_agents "
+        "to see available agents. If delegation complexity routing is enabled, "
+        "set use_complexity=true to auto-select the best sub-agent tier."
     )
     parameters = {
         "type": "object",
@@ -33,63 +125,230 @@ class DelegateToAgentTool(BaseTool):
             "agent_name": {
                 "type": "string",
                 "description": (
-                    "Name of the agent to delegate to (e.g., 'fast', 'coder')"
+                    "Sub-agent name (for example: 'fast', 'coder'). Optional "
+                    "when use_complexity=true and auto-select is enabled."
                 ),
             },
             "task": {
                 "type": "string",
-                "description": "The task description to send to the agent",
+                "description": "Task description to send to the sub-agent",
+            },
+            "use_complexity": {
+                "type": "boolean",
+                "description": (
+                    "Use complexity scoring to route delegation by sub-agent tier. "
+                    "Requires delegation_complexity.enabled=true."
+                ),
+            },
+            "allow_auto_select": {
+                "type": "boolean",
+                "description": (
+                    "Allow auto-selecting another sub-agent if agent_name is missing "
+                    "or below required tier."
+                ),
             },
         },
-        "required": ["agent_name", "task"],
+        "required": ["task"],
     }
-    risk_level = RiskLevel.LOW  # Delegation is just routing; sub-agent tools have their own risk levels
+    risk_level = RiskLevel.LOW
 
     async def execute(
         self, params: dict[str, Any], context: ToolContext
     ) -> ToolResult:
-        """Delegate a task to the named agent."""
-        agent_name = params.get("agent_name", "")
-        task = params.get("task", "")
+        """Delegate a task to a sub-agent with optional complexity routing."""
+        agent_name = str(params.get("agent_name", "") or "").strip()
+        task = str(params.get("task", "") or "").strip()
 
-        if not agent_name:
-            return ToolResult.fail("agent_name is required")
         if not task:
             return ToolResult.fail("task is required")
 
-        # Access agent manager from context
         agent_manager = getattr(context, "agent_manager", None)
         if agent_manager is None:
             return ToolResult.fail("Agent system is not available")
 
-        try:
-            # Pass parent session so the sub-agent's approval callback
-            # can find the correct channel (Discord/Telegram/etc.)
-            parent_session = getattr(context, "session", None)
+        definitions = list(agent_manager.list_definitions() or [])
+        if not definitions:
+            return ToolResult.fail("No sub-agents are registered")
 
-            # Phase 1: Calculate depth for recursive delegation
-            # If this tool is being called from within an AgentRunner,
-            # the session metadata will contain the current depth.
+        cfg = getattr(context.config, "delegation_complexity", None)
+        complexity_enabled = bool(getattr(cfg, "enabled", False))
+        default_use_complexity = bool(
+            getattr(cfg, "default_use_complexity", False)
+        )
+        allow_auto_select_default = bool(getattr(cfg, "allow_auto_select", True))
+        enforce_min_tier = bool(getattr(cfg, "enforce_min_tier", True))
+        tier_boundaries = _normalize_boundaries(
+            getattr(cfg, "tier_boundaries", _DEFAULT_TIER_BOUNDARIES)
+        )
+        tier_models_raw = getattr(cfg, "tier_models", {}) or {}
+        if not isinstance(tier_models_raw, dict):
+            tier_models_raw = {}
+        tier_models = {
+            key: str(tier_models_raw.get(key, "") or "").strip()
+            for key in ("trivial", "simple", "moderate", "complex")
+        }
+
+        use_complexity = (
+            default_use_complexity
+            if params.get("use_complexity") is None
+            else bool(params.get("use_complexity"))
+        )
+        if use_complexity and not complexity_enabled:
+            return ToolResult.fail(
+                "delegation complexity routing is disabled in settings"
+            )
+
+        allow_auto_select = (
+            allow_auto_select_default
+            if params.get("allow_auto_select") is None
+            else bool(params.get("allow_auto_select"))
+        )
+
+        selected_agent_name = agent_name
+        selected_defn = (
+            next((d for d in definitions if d.name == agent_name), None)
+            if agent_name
+            else None
+        )
+
+        score: float | None = None
+        required_tier: str | None = None
+        route_note = ""
+
+        try:
+            parent_session = getattr(context, "session", None)
             current_depth = 0
             if parent_session and hasattr(parent_session, "metadata"):
                 current_depth = parent_session.metadata.get("depth", 0)
 
+            if use_complexity:
+                if selected_defn is None and selected_agent_name:
+                    return ToolResult.fail(
+                        f"Agent '{selected_agent_name}' not found. Use list_agents first."
+                    )
+
+                session_for_estimation = (
+                    parent_session
+                    if parent_session is not None
+                    else Session(adapter="tool", user_id="delegate_to_agent")
+                )
+
+                estimator = None
+                engine = getattr(agent_manager, "_engine", None)
+                if engine is not None:
+                    estimator = getattr(engine, "complexity_estimator", None)
+
+                if estimator is None:
+                    if context.model_router is None:
+                        return ToolResult.fail(
+                            "Model router unavailable for complexity estimation"
+                        )
+                    task_cfg = getattr(context.config, "task_complexity", None)
+                    if task_cfg is None:
+                        task_cfg = TaskComplexityConfig()
+                    else:
+                        task_cfg = copy.deepcopy(task_cfg)
+                    estimator = ComplexityEstimator(
+                        config=task_cfg,
+                        model_router=context.model_router,
+                    )
+
+                complexity = await estimator.estimate(task, session_for_estimation)
+                score = float(complexity.score)
+                required_tier = _score_to_tier(score, tier_boundaries)
+                preferred_model = tier_models.get(required_tier, "")
+                if required_tier == "expert" and not preferred_model:
+                    preferred_model = tier_models.get("complex", "")
+
+                if selected_defn is not None:
+                    selected_tier = _normalize_tier(
+                        getattr(selected_defn, "complexity_tier", "moderate")
+                    )
+                    if (
+                        enforce_min_tier
+                        and _TIER_LEVELS[selected_tier] < _TIER_LEVELS[required_tier]
+                    ):
+                        if not allow_auto_select:
+                            return ToolResult.fail(
+                                f"Agent '{selected_defn.name}' tier '{selected_tier}' is below "
+                                f"required tier '{required_tier}'."
+                            )
+                        picked = _pick_best_agent(
+                            definitions,
+                            required_tier,
+                            enforce_min_tier=enforce_min_tier,
+                            preferred_model=preferred_model,
+                        )
+                        if picked is None:
+                            return ToolResult.fail(
+                                f"No sub-agent satisfies required tier '{required_tier}'."
+                            )
+                        selected_defn = picked
+                        selected_agent_name = picked.name
+                        route_note = f"auto_fallback_from={agent_name}"
+                else:
+                    if not allow_auto_select:
+                        return ToolResult.fail(
+                            "agent_name is required when auto-select is disabled"
+                        )
+                    picked = _pick_best_agent(
+                        definitions,
+                        required_tier,
+                        enforce_min_tier=enforce_min_tier,
+                        preferred_model=preferred_model,
+                    )
+                    if picked is None:
+                        return ToolResult.fail(
+                            f"No sub-agent satisfies required tier '{required_tier}'."
+                        )
+                    selected_defn = picked
+                    selected_agent_name = picked.name
+                    route_note = "auto_selected"
+
+            if not selected_agent_name:
+                return ToolResult.fail("agent_name is required")
+            if selected_defn is None:
+                selected_defn = next(
+                    (d for d in definitions if d.name == selected_agent_name),
+                    None,
+                )
+                if selected_defn is None:
+                    return ToolResult.fail(
+                        f"Agent '{selected_agent_name}' not found. Use list_agents first."
+                    )
+
             result = await agent_manager.delegate(
-                agent_name,
+                selected_agent_name,
                 task,
                 parent_session=parent_session,
                 depth=current_depth + 1,
             )
 
-            # Handle structured output (dict) from agents with output_schema
+            route_prefix = ""
+            if use_complexity and score is not None and required_tier is not None:
+                selected_tier = _normalize_tier(
+                    getattr(selected_defn, "complexity_tier", "moderate")
+                )
+                route_prefix = (
+                    "[Delegation route] "
+                    f"score={score:.3f} required_tier={required_tier} "
+                    f"selected={selected_agent_name} selected_tier={selected_tier}"
+                )
+                if route_note:
+                    route_prefix += f" {route_note}"
+                route_prefix += "\n"
+
             if isinstance(result, dict):
                 formatted = json.dumps(result, ensure_ascii=False, indent=2)
                 return ToolResult.ok(
-                    f"[Agent '{agent_name}' structured result]\n{formatted}"
+                    f"{route_prefix}[Agent '{selected_agent_name}' structured result]\n{formatted}"
                 )
-            return ToolResult.ok(f"[Agent '{agent_name}' result]\n{result}")
+            return ToolResult.ok(
+                f"{route_prefix}[Agent '{selected_agent_name}' result]\n{result}"
+            )
         except Exception as e:
-            return ToolResult.fail(f"Agent '{agent_name}' failed: {e}")
+            failed_agent = selected_agent_name or agent_name or "unknown"
+            return ToolResult.fail(f"Agent '{failed_agent}' failed: {e}")
 
 
 class ListAgentsTool(BaseTool):
@@ -141,6 +400,7 @@ class ListAgentsTool(BaseTool):
 
             lines.append(
                 f"- {defn.name}: model={defn.model}, "
+                f"tier={_normalize_tier(getattr(defn, 'complexity_tier', 'moderate'))}, "
                 f"rounds={defn.max_tool_rounds}{tools_info}{extras_str}"
             )
 

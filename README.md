@@ -93,20 +93,24 @@ poetry run kuro --web
 
 Browser-based chat with dark theme, split-screen panels (1–6), agent management, real-time dashboard, approval modals, settings panel, and audit log viewer.
 
-#### Optional: OpenAI OAuth in Web UI
+#### Optional: OpenAI OAuth Subscription in Web UI
 
-If you want a browser sign-in flow (instead of only `OPENAI_API_KEY`), set these env vars:
+If you want ChatGPT Plus/Pro subscription traffic in Web UI (instead of API-key billing), use the built-in Codex OAuth sign-in flow.
+
+No local `client_secret` is required. The app uses OpenAI's public Codex OAuth client id by default.
+
+Optional env overrides:
 
 ```bash
-OPENAI_OAUTH_CLIENT_ID=...
-OPENAI_OAUTH_CLIENT_SECRET=...
-# Optional overrides:
-# OPENAI_OAUTH_SCOPE="openid profile email offline_access"
-# OPENAI_OAUTH_REDIRECT_URI="http://127.0.0.1:7860/api/oauth/openai/callback"
+# OPENAI_CODEX_OAUTH_CLIENT_ID="app_EMoamEEZ73f0CkXaXp7hrann"
+# OPENAI_CODEX_OAUTH_SCOPE="openid profile email offline_access"
+# OPENAI_CODEX_OAUTH_REDIRECT_URI="http://127.0.0.1:7860/api/oauth/openai/callback"
+# OPENAI_CODEX_OAUTH_MODELS="gpt-5.4,gpt-5.4-pro,gpt-5.3-codex,gpt-5.3-chat-latest,gpt-5.2-pro,gpt-5.2-codex,gpt-5.2-chat-latest,gpt-5.2,gpt-5-pro,gpt-5.1-codex-max,gpt-5.1-codex,gpt-5.1-codex-mini,gpt-5.1-chat-latest,gpt-5.1,gpt-5-codex,gpt-5-chat-latest,gpt-5,codex-mini-latest"
+# OPENAI_CODEX_INSTRUCTIONS="You are Codex, a software engineering assistant running in a local user workspace."
 ```
 
-Then open Web UI Settings and use **Sign in with OpenAI OAuth**.  
-OpenAI models are shown as separate entries: `OpenAI (API)` vs `OpenAI (OAuth)`.
+Then open Web UI Settings and use **Sign in with OpenAI (Subscription)**.  
+OpenAI models are shown as separate entries: `OpenAI (API)` vs `OpenAI (OAuth Subscription)`.
 
 ### Telegram Bot Mode
 

@@ -184,6 +184,9 @@ class Engine:
         """
         context = ToolContext(
             session_id="scheduler",
+            config=self.config,
+            model_router=self.model,
+            active_model=self.model.default_model,
             working_directory=None,
             allowed_directories=[
                 str(d) for d in self.sandbox.allowed_directories
@@ -299,7 +302,7 @@ class Engine:
                 tools_info = f" | tools: {', '.join(defn.allowed_tools)}"
             lines.append(
                 f"- name: \"{defn.name}\" | model: {defn.model} | "
-                f"max_rounds: {defn.max_tool_rounds}{tools_info}"
+                f"tier: {defn.complexity_tier} | max_rounds: {defn.max_tool_rounds}{tools_info}"
             )
 
         # Dynamic creation hint
@@ -610,15 +613,33 @@ class Engine:
                 user_text, session, model, images=images
             )
 
-    def _emit(self, event_type: str, agent_id: str = "main", **kwargs: Any) -> None:
+    def _resolve_event_agent_id(self, session: Session | None = None) -> str:
+        """Resolve source agent id for dashboard events."""
+        if session is not None:
+            meta = getattr(session, "metadata", None)
+            if isinstance(meta, dict):
+                raw = meta.get("_dashboard_agent_id")
+                if isinstance(raw, str) and raw.strip():
+                    return raw.strip()
+        inst_id = getattr(self, "agent_instance_id", None)
+        if isinstance(inst_id, str) and inst_id.strip():
+            return inst_id.strip()
+        return "main"
+
+    def _emit(self, event_type: str, agent_id: str | None = None, **kwargs: Any) -> None:
         """Emit an event to the event bus (best-effort, never raises)."""
         bus = getattr(self, "event_bus", None)
         if bus:
             try:
                 from src.core.agent_events import AgentEvent
+                resolved_agent = (
+                    agent_id.strip()
+                    if isinstance(agent_id, str) and agent_id.strip()
+                    else self._resolve_event_agent_id(None)
+                )
                 bus.emit(AgentEvent(
                     event_type=event_type,
-                    source_agent=agent_id,
+                    source_agent=resolved_agent,
                     **kwargs,
                 ))
             except Exception:
@@ -634,6 +655,7 @@ class Engine:
         """Internal message processing (called with session lock held)."""
         # Sanitize user input
         user_text = self.sanitizer.sanitize_user_input(user_text)
+        event_agent_id = self._resolve_event_agent_id(session)
 
         # --- Task Complexity Routing ---
         trigger = self.config.task_complexity.trigger_mode
@@ -662,9 +684,16 @@ class Engine:
                         user_text, complexity, session
                     )
 
-                # Otherwise, override model selection for this call
-                if complexity.suggested_model:
+                # Otherwise, override model selection for this call only when
+                # caller did not explicitly pin a model.
+                if complexity.suggested_model and model is None:
                     model = complexity.suggested_model
+                elif complexity.suggested_model and model is not None:
+                    logger.info(
+                        "complexity_model_suggestion_ignored",
+                        requested_model=model,
+                        suggested_model=complexity.suggested_model,
+                    )
             except Exception as e:
                 logger.debug("complexity_estimation_skipped", error=str(e))
 
@@ -685,7 +714,11 @@ class Engine:
         session.add_message(user_msg)
 
         # Emit message_received event for dashboard
-        self._emit("message_received", content=user_text[:120])
+        self._emit(
+            "message_received",
+            agent_id=event_agent_id,
+            content=user_text[:120],
+        )
 
         # Log conversation if in full mode
         await self.action_log.log_conversation(session.id, "user", user_text)
@@ -739,6 +772,15 @@ class Engine:
             pass  # Diagnostic guidance injection is best-effort
 
         # Agent loop: call LLM -> handle tool calls -> repeat
+        effective_model = model or self.model.default_model
+        session.metadata["_active_model"] = effective_model
+        logger.info(
+            "engine_model_selected",
+            adapter=session.adapter,
+            session_id=session.id,
+            requested_model=model,
+            effective_model=effective_model,
+        )
         max_rounds = getattr(self.config, "max_tool_rounds", _DEFAULT_MAX_TOOL_ROUNDS)
         blocked_tools_by_policy: set[str] = set()
         risk_map = {
@@ -747,6 +789,9 @@ class Engine:
             "high": RiskLevel.HIGH,
             "critical": RiskLevel.CRITICAL,
         }
+        full_access_mode = bool(
+            getattr(self.config.security, "full_access_mode", False)
+        )
         max_risk_name = str(
             getattr(self.config.security, "max_risk_level", "critical")
         ).strip().lower()
@@ -756,14 +801,18 @@ class Engine:
             messages = [m.to_litellm() for m in request_context]
             tool_defs: list[dict[str, Any]] = []
             for t in self.tools.registry.get_all():
-                if t.risk_level > max_risk_level:
+                if (not full_access_mode) and (t.risk_level > max_risk_level):
                     continue
                 if t.name in blocked_tools_by_policy:
                     continue
                 tool_defs.append(t.to_openai_tool())
             tools = tool_defs or None
 
-            self._emit("stream_start", content=f"LLM call round {round_num + 1}")
+            self._emit(
+                "stream_start",
+                agent_id=event_agent_id,
+                content=f"LLM call round {round_num + 1}",
+            )
             try:
                 response = await self.model.complete(
                     messages=messages,
@@ -831,6 +880,7 @@ class Engine:
                 for tc in response.tool_calls:
                     self._emit(
                         "tool_call",
+                        agent_id=event_agent_id,
                         content=f"Tool: {tc.name}",
                         metadata={"tool_name": tc.name},
                     )
@@ -840,12 +890,14 @@ class Engine:
                     if result.success:
                         self._emit(
                             "tool_result",
+                            agent_id=event_agent_id,
                             content=f"{tc.name}: ok",
                             metadata={"tool_name": tc.name},
                         )
                     else:
                         self._emit(
                             "error",
+                            agent_id=event_agent_id,
                             content=f"{tc.name}: {(result.error or 'error')[:120]}",
                             metadata={"tool_name": tc.name},
                         )
@@ -976,8 +1028,16 @@ class Engine:
                 session.add_message(assistant_msg)
 
                 # Emit stream_end + response events for dashboard
-                self._emit("stream_end", content="LLM finished")
-                self._emit("response", content=content[:120])
+                self._emit(
+                    "stream_end",
+                    agent_id=event_agent_id,
+                    content="LLM finished",
+                )
+                self._emit(
+                    "response",
+                    agent_id=event_agent_id,
+                    content=content[:120],
+                )
 
                 await self.action_log.log_conversation(
                     session.id, "assistant", content
@@ -1008,8 +1068,16 @@ class Engine:
             content = "I've reached the maximum number of tool call rounds. Please try a simpler request."
 
         session.add_message(Message(role=Role.ASSISTANT, content=content))
-        self._emit("stream_end", content="LLM finished (rounds exhausted)")
-        self._emit("response", content=content[:120])
+        self._emit(
+            "stream_end",
+            agent_id=event_agent_id,
+            content="LLM finished (rounds exhausted)",
+        )
+        self._emit(
+            "response",
+            agent_id=event_agent_id,
+            content=content[:120],
+        )
         return content
 
     async def _handle_complex_decomposition(
@@ -1129,6 +1197,7 @@ class Engine:
         For messages that require tool calls, falls back to process_message.
         """
         user_text = self.sanitizer.sanitize_user_input(user_text)
+        event_agent_id = self._resolve_event_agent_id(session)
 
         # Keep stream path aligned with process_message complexity behavior.
         trigger = self.config.task_complexity.trigger_mode
@@ -1146,24 +1215,75 @@ class Engine:
                         )
                     except (AttributeError, TypeError):
                         pass
-                if complexity.suggested_model:
+                if complexity.suggested_model and model is None:
                     model = complexity.suggested_model
+                elif complexity.suggested_model and model is not None:
+                    logger.info(
+                        "complexity_model_suggestion_ignored",
+                        requested_model=model,
+                        suggested_model=complexity.suggested_model,
+                    )
             except Exception as e:
                 logger.debug("complexity_estimation_skipped", error=str(e))
+
+        logger.info(
+            "engine_stream_model_selected",
+            adapter=session.adapter,
+            session_id=session.id,
+            requested_model=model,
+            effective_model=model or self.model.default_model,
+        )
 
         user_msg = Message(role=Role.USER, content=user_text)
         session.add_message(user_msg)
 
         await self.action_log.log_conversation(session.id, "user", user_text)
 
-        if not session.messages or session.messages[0].role != Role.SYSTEM:
-            session.messages.insert(0, self._get_system_message())
-            if self.config.core_prompt:
-                session.messages.insert(
-                    0, Message(role=Role.SYSTEM, content=self.config.core_prompt)
-                )
+        # Build the same rich context as process_message so streaming path keeps
+        # personality, MEMORY.md, RAG memories and active skills consistent.
+        active_skills = self.skills.get_active_skills() if self.skills else []
+        try:
+            context_messages = await self.memory.build_context(
+                session,
+                self.config.system_prompt,
+                core_prompt=self.config.core_prompt,
+                active_skills=active_skills,
+            )
+        except Exception as e:
+            logger.warning("memory_context_failed_stream", error=str(e))
+            if not session.messages or session.messages[0].role != Role.SYSTEM:
+                session.messages.insert(0, self._get_system_message())
+            context_messages = session.messages
 
-        normalized = self._normalize_system_messages(session.messages)
+        agent_ctx = self._get_agent_context_message()
+        if agent_ctx:
+            insert_idx = 0
+            for i, m in enumerate(context_messages):
+                if m.role != Role.SYSTEM:
+                    insert_idx = i
+                    break
+            else:
+                insert_idx = len(context_messages)
+            context_messages.insert(insert_idx, agent_ctx)
+
+        try:
+            from src.tools.analytics.diagnostic_tools import get_diagnostic_guidance_message
+            diag_guidance = get_diagnostic_guidance_message(self.config)
+            if diag_guidance:
+                insert_idx = 0
+                for i, m in enumerate(context_messages):
+                    if m.role != Role.SYSTEM:
+                        insert_idx = i
+                        break
+                else:
+                    insert_idx = len(context_messages)
+                context_messages.insert(insert_idx, Message(
+                    role=Role.SYSTEM, content=diag_guidance,
+                ))
+        except Exception:
+            pass
+
+        normalized = self._normalize_system_messages(context_messages)
         messages = [m.to_litellm() for m in normalized]
         tools = self.tools.registry.get_openai_tools() or None
 
@@ -1194,6 +1314,19 @@ class Engine:
             result = await self.process_message(user_text, session, model)
             yield result
         else:
+            # Streaming no-tool path previously skipped dashboard events,
+            # causing /dashboard stats to remain at zero for Web UI chats.
+            self._emit(
+                "message_received",
+                agent_id=event_agent_id,
+                content=user_text[:120],
+            )
+            self._emit(
+                "stream_start",
+                agent_id=event_agent_id,
+                content="LLM streaming response",
+            )
+
             # No tool calls - return the response
             content = response.content or ""
             assistant_msg = Message(role=Role.ASSISTANT, content=content)
@@ -1208,6 +1341,17 @@ class Engine:
             for i in range(0, len(content), chunk_size):
                 yield content[i : i + chunk_size]
 
+            self._emit(
+                "stream_end",
+                agent_id=event_agent_id,
+                content="LLM finished",
+            )
+            self._emit(
+                "response",
+                agent_id=event_agent_id,
+                content=content[:120],
+            )
+
     async def _handle_tool_call(
         self,
         tool_call: ToolCall,
@@ -1217,9 +1361,14 @@ class Engine:
         tool = self.tools.registry.get(tool_call.name)
         if tool is None:
             return ToolResult.fail(f"Unknown tool: {tool_call.name}")
+        full_access_mode = bool(
+            getattr(self.config.security, "full_access_mode", False)
+        )
 
         # === Security Layer 0: Tool availability check ===
-        if tool_call.name in self.config.security.disabled_tools:
+        if (not full_access_mode) and (
+            tool_call.name in self.config.security.disabled_tools
+        ):
             await self.audit.log_tool_execution(
                 session_id=session.id,
                 source=session.adapter,
@@ -1234,7 +1383,7 @@ class Engine:
             )
 
         # === Security Layer 1: Sandbox pre-check ===
-        if tool_call.name == "shell_execute":
+        if (not full_access_mode) and tool_call.name == "shell_execute":
             command = tool_call.arguments.get("command", "")
             if not self.sandbox.is_command_allowed(command):
                 await self.audit.log_tool_execution(
@@ -1248,7 +1397,9 @@ class Engine:
                 )
                 return ToolResult.denied("Command blocked by sandbox policy")
 
-        if tool_call.name in ("file_read", "file_write", "file_search"):
+        if (not full_access_mode) and (
+            tool_call.name in ("file_read", "file_write", "file_search")
+        ):
             path = tool_call.arguments.get("path", tool_call.arguments.get("directory", ""))
             if path:
                 allowed, reason = self.sandbox.validate_file_operation(
@@ -1340,6 +1491,13 @@ class Engine:
         # === Execute with timing ===
         context = ToolContext(
             session_id=session.id,
+            config=self.config,
+            model_router=self.model,
+            active_model=str(
+                session.metadata.get("_active_model")
+                or session.metadata.get("model_override")
+                or self.model.default_model
+            ),
             allowed_directories=[str(p) for p in self.config.sandbox.allowed_directories],
             max_execution_time=self.config.sandbox.max_execution_time,
             max_output_size=self.config.sandbox.max_output_size,

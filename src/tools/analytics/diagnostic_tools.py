@@ -34,8 +34,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import structlog
+
 from src.config import get_kuro_home
 from src.tools.base import BaseTool, RiskLevel, ToolContext, ToolResult
+
+logger = structlog.get_logger()
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +70,219 @@ def _is_tool_enabled(tool_name: str, context: ToolContext | None = None) -> bool
         return True
     except Exception:
         return True  # If anything fails, default to allowing
+
+
+def _resolve_active_model(context: ToolContext | None) -> str | None:
+    """Resolve the currently active model for this request."""
+    if context is None:
+        return None
+
+    raw = getattr(context, "active_model", None)
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+
+    session = getattr(context, "session", None)
+    metadata = getattr(session, "metadata", None) if session else None
+    if isinstance(metadata, dict):
+        for key in ("_active_model", "model_override"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    return None
+
+
+def _parse_model_selection_value(raw: str | None) -> tuple[str, str]:
+    """Parse model value supporting oauth:/api: prefixes."""
+    value = str(raw or "").strip()
+    if not value:
+        return "main", "api"
+    if value.startswith("oauth:"):
+        model = value[len("oauth:"):].strip()
+        return (model or "main"), "oauth"
+    if value.startswith("api:"):
+        model = value[len("api:"):].strip()
+        return (model or "main"), "api"
+    return value, "api"
+
+
+def _resolve_repair_model_and_mode(context: ToolContext | None) -> tuple[str | None, str]:
+    """Resolve effective self-repair model + auth mode from diagnostics config."""
+    config = getattr(context, "config", None) if context else None
+    requested_raw = "main"
+
+    try:
+        diag = getattr(config, "diagnostics", None)
+        if diag:
+            raw = getattr(diag, "repair_model", None)
+            if isinstance(raw, str) and raw.strip():
+                requested_raw = raw.strip()
+    except Exception:
+        requested_raw = "main"
+
+    requested, auth_mode = _parse_model_selection_value(requested_raw)
+
+    if requested == "main":
+        active = _resolve_active_model(context)
+        if active:
+            resolved = active
+        else:
+            default_model = getattr(getattr(config, "models", None), "default", None)
+            resolved = default_model.strip() if isinstance(default_model, str) and default_model.strip() else None
+    else:
+        resolved = requested
+
+    # Backward compatible inference when no explicit oauth:/api: prefix is set.
+    if not requested_raw.startswith(("oauth:", "api:")):
+        # If OAuth context is available and repair model is OpenAI, prefer OAuth.
+        if isinstance(resolved, str) and resolved.startswith("openai/"):
+            oauth_ctx = _resolve_openai_oauth_ctx(context)
+            if isinstance(oauth_ctx, dict) and oauth_ctx.get("access_token"):
+                auth_mode = "oauth"
+
+        session = getattr(context, "session", None) if context else None
+        metadata = getattr(session, "metadata", None) if session else None
+        if isinstance(metadata, dict):
+            session_mode = str(metadata.get("model_auth_mode", "")).strip().lower()
+            if session_mode in {"oauth", "api"} and isinstance(resolved, str) and resolved.startswith("openai/"):
+                # Keep OAuth preference when token is available; otherwise follow session mode.
+                if auth_mode != "oauth":
+                    auth_mode = session_mode
+
+    if auth_mode not in {"oauth", "api"}:
+        auth_mode = "api"
+
+    return resolved, auth_mode
+
+
+def _resolve_repair_model(context: ToolContext | None) -> str | None:
+    """Resolve effective self-repair model from diagnostics config."""
+    model, _ = _resolve_repair_model_and_mode(context)
+    return model
+
+
+def _resolve_openai_oauth_ctx(context: ToolContext | None) -> dict[str, Any] | None:
+    """Read OpenAI OAuth provider context from session metadata if present."""
+    if context is None:
+        return None
+    session = getattr(context, "session", None)
+    metadata = getattr(session, "metadata", None) if session else None
+    if not isinstance(metadata, dict):
+        return None
+    raw = metadata.get("_openai_oauth_provider_ctx")
+    if isinstance(raw, dict) and raw.get("access_token"):
+        return dict(raw)
+    return None
+
+
+def _resolve_model_router(context: ToolContext | None) -> Any | None:
+    """Resolve model router from tool context (main engine or agent manager)."""
+    if context is None:
+        return None
+
+    router = getattr(context, "model_router", None)
+    if router is not None:
+        return router
+
+    manager = getattr(context, "agent_manager", None)
+    if manager is not None:
+        router = getattr(manager, "model", None)
+        if router is not None:
+            return router
+
+    return None
+
+
+async def _generate_repair_recommendations(
+    *,
+    context: ToolContext,
+    repair_model: str,
+    repair_auth_mode: str,
+    scope: str,
+    auto_fix: bool,
+    issues: list[dict[str, str]],
+    report_text: str,
+) -> tuple[str | None, str | None]:
+    """Use the configured repair model to synthesize a repair plan."""
+    router = _resolve_model_router(context)
+    if router is None:
+        return None, "Repair model router unavailable in tool context."
+
+    issues_json = json.dumps(issues, ensure_ascii=False, indent=2)
+    user_prompt = (
+        "Generate a practical repair plan for this diagnostics report.\n"
+        f"Scope: {scope}\n"
+        f"Auto-fix requested: {auto_fix}\n\n"
+        f"Detected issues (JSON):\n{issues_json}\n\n"
+        "Diagnostic report:\n"
+        f"{report_text}\n\n"
+        "Return:\n"
+        "1) root cause summary,\n"
+        "2) prioritized fix steps,\n"
+        "3) verification checks.\n"
+        "Keep it concise and actionable."
+    )
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are Kuro's self-repair planner. Analyze diagnostics and return "
+                "clear, implementation-ready remediation steps."
+            ),
+        },
+        {"role": "user", "content": user_prompt},
+    ]
+
+    model_lower = repair_model.strip().lower()
+    # OpenAI GPT-5 API currently accepts only temperature=1.
+    request_temperature = 1.0 if "gpt-5" in model_lower else 0.2
+
+    logger.info(
+        "diagnostics_repair_llm_request",
+        session_id=context.session_id,
+        repair_model=repair_model,
+        repair_auth_mode=repair_auth_mode,
+        scope=scope,
+        issue_count=len(issues),
+        temperature=request_temperature,
+    )
+    response = None
+    if (
+        repair_auth_mode == "oauth"
+        and repair_model.startswith("openai/")
+        and hasattr(router, "provider_auth_override")
+    ):
+        oauth_ctx = _resolve_openai_oauth_ctx(context)
+        if oauth_ctx:
+            with router.provider_auth_override("openai", oauth_ctx):
+                response = await router.complete(
+                    messages=messages,
+                    model=repair_model,
+                    tools=None,
+                    temperature=request_temperature,
+                    max_tokens=1200,
+                )
+
+    if response is None:
+        response = await router.complete(
+            messages=messages,
+            model=repair_model,
+            tools=None,
+            temperature=request_temperature,
+            max_tokens=1200,
+        )
+    plan_text = (response.content or "").strip()
+    actual_model = response.model or repair_model
+    logger.info(
+        "diagnostics_repair_llm_response",
+        session_id=context.session_id,
+        repair_model=repair_model,
+        actual_model=actual_model,
+        output_chars=len(plan_text),
+    )
+    if not plan_text:
+        return None, f"Repair model '{actual_model}' returned empty output."
+    return plan_text, None
 
 
 # ---------------------------------------------------------------------------
@@ -795,12 +1012,40 @@ class DiagnoseAndRepairTool(BaseTool):
                     lines.append(f"  \u2705 {fix}")
 
             # Repair model info
-            config = getattr(context, "config", None)
-            if config and hasattr(config, "diagnostics"):
-                repair_model = config.diagnostics.repair_model
-                if repair_model == "main":
-                    repair_model = config.models.default
-                lines.append(f"\n  Repair model: {repair_model}")
+            repair_model, repair_auth_mode = _resolve_repair_model_and_mode(context)
+            if repair_model:
+                repair_label = (
+                    f"{repair_model} ({repair_auth_mode})"
+                    if repair_model.startswith("openai/")
+                    else repair_model
+                )
+                lines.append(f"\n  Repair model: {repair_label}")
+
+                # Generate actual repair recommendations using configured model.
+                report_text = "\n".join(lines)
+                try:
+                    llm_plan, llm_error = await _generate_repair_recommendations(
+                        context=context,
+                        repair_model=repair_model,
+                        repair_auth_mode=repair_auth_mode,
+                        scope=scope,
+                        auto_fix=auto_fix,
+                        issues=issues,
+                        report_text=report_text,
+                    )
+                except Exception as e:
+                    llm_plan, llm_error = None, str(e)
+
+                lines.append(f"\n{'=' * 40}")
+                lines.append("LLM REPAIR RECOMMENDATIONS")
+                lines.append("=" * 40)
+                lines.append(f"  Model used: {repair_label}")
+                if llm_plan:
+                    lines.append(llm_plan)
+                elif llm_error:
+                    lines.append(f"  \u26a0 Repair model call failed: {llm_error}")
+                else:
+                    lines.append("  \u26a0 Repair model call returned no result.")
 
             return ToolResult.ok("\n".join(lines))
 

@@ -15,6 +15,15 @@
     <div id="dashboard" class="page-content" style="padding:1rem;">
         <div id="loading" class="empty-state" data-i18n="dashboard.loading">Loading dashboard...</div>
 
+        <div id="agent-filter-wrap" class="section" style="display:none; padding:0.75rem 1rem;">
+            <div style="display:flex; gap:0.5rem; align-items:center;">
+                <label for="agent-filter" data-i18n="dashboard.agentFilter" style="font-weight:600;">Agent</label>
+                <select id="agent-filter" style="min-width:220px;">
+                    <option value="all" data-i18n="dashboard.allAgents">All agents</option>
+                </select>
+            </div>
+        </div>
+
         <!-- Stats overview -->
         <div id="stats-grid" class="stats-grid" style="display:none;">
             <div class="stat-card">

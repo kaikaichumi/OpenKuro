@@ -253,6 +253,7 @@ def build_engine(
         main_memory_manager=memory_manager,
         skills_manager=skills_manager,
         action_logger=action_logger,
+        event_bus=engine.event_bus,
     )
     engine.instance_manager = instance_manager
     # Note: initialize_all() is async, called from async entry points

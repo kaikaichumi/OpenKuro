@@ -13,6 +13,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from src.openai_catalog import OPENAI_OFFICIAL_MODELS
+
 
 # === Default paths ===
 
@@ -70,13 +72,7 @@ class ModelsConfig(BaseModel):
         ),
         "openai": ProviderConfig(
             api_key_env="OPENAI_API_KEY",
-            known_models=[
-                "openai/gpt-5.3-codex",
-                "openai/gpt-5.2",
-                "openai/gpt-5",
-                "openai/gpt-oss-120b",
-                "openai/gpt-oss-20b",
-            ],
+            known_models=list(OPENAI_OFFICIAL_MODELS),
         ),
         "ollama": ProviderConfig(
             base_url="http://localhost:11434",
@@ -100,6 +96,9 @@ class ModelsConfig(BaseModel):
 class SecurityConfig(BaseModel):
     """Security layer configuration."""
 
+    # Danger mode: bypass approval + sandbox restrictions.
+    # Intended only for isolated environments.
+    full_access_mode: bool = False
     auto_approve_levels: list[str] = Field(default_factory=lambda: ["low"])
     # Hard cap: tool risk above this level is denied without prompting.
     max_risk_level: str = "critical"
@@ -278,6 +277,7 @@ class AgentDefinitionConfig(BaseModel):
     max_tool_rounds: int = 5  # Sub-agents get fewer rounds by default
     temperature: float | None = None  # None = inherit from main config
     max_tokens: int | None = None  # None = inherit from main config
+    complexity_tier: str = "moderate"  # Capability tier: trivial|simple|moderate|complex|expert
     # Phase 1 enhancements
     max_depth: int = 3  # Max recursive sub-agent depth (0 = no sub-agents)
     inherit_context: bool = False  # Inject parent conversation summary into sub-agent
@@ -672,6 +672,39 @@ class TaskComplexityConfig(BaseModel):
     track_accuracy: bool = True  # Log predicted vs actual complexity for learning
 
 
+class DelegationComplexityConfig(BaseModel):
+    """Complexity-based routing for main-agent task delegation to sub-agents."""
+
+    enabled: bool = False
+    # If true, delegate_to_agent defaults to complexity routing unless caller overrides.
+    default_use_complexity: bool = False
+    # Allow selecting a sub-agent automatically when agent_name is not provided
+    # or when the named agent's tier is insufficient.
+    allow_auto_select: bool = True
+    # If true, reject/fallback when named sub-agent tier is below required tier.
+    # If false, named agent can still run even when under-tier.
+    enforce_min_tier: bool = True
+
+    # Independent tier boundaries for delegation routing.
+    # Uses same scoring engine as task_complexity, but thresholds are configurable separately.
+    tier_boundaries: dict[str, float] = Field(default_factory=lambda: {
+        "trivial": 0.15,
+        "simple": 0.35,
+        "moderate": 0.60,
+        "complex": 0.85,
+        # "expert" = above 0.85
+    })
+    # Preferred model per delegation tier. These are optional hints used when
+    # auto-selecting a sub-agent; the system will prefer sub-agents on the
+    # configured model when available.
+    tier_models: dict[str, str] = Field(default_factory=lambda: {
+        "trivial": "",
+        "simple": "",
+        "moderate": "",
+        "complex": "",
+    })
+
+
 class KuroConfig(BaseModel):
     """Root configuration for Kuro assistant."""
 
@@ -692,6 +725,7 @@ class KuroConfig(BaseModel):
     code_feedback: CodeFeedbackConfig = Field(default_factory=CodeFeedbackConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)
     task_complexity: TaskComplexityConfig = Field(default_factory=TaskComplexityConfig)
+    delegation_complexity: DelegationComplexityConfig = Field(default_factory=DelegationComplexityConfig)
     diagnostics: DiagnosticsConfig = Field(default_factory=DiagnosticsConfig)
     tracing: TracingConfig = Field(default_factory=TracingConfig)
 

@@ -164,7 +164,7 @@ class ChatPanel {
     updateStatus(data) {
         if (data.model && this.modelBadge) {
             const short = data.model.split("/").pop();
-            const mode = data.model_auth_mode === "oauth" ? " OAuth" : "";
+            const mode = data.model_auth_mode === "oauth" ? " (OAuth)" : "";
             this.modelBadge.textContent = short + mode;
             this.modelBadge.title = data.model;
         }
@@ -338,6 +338,9 @@ function ensurePanels(count) {
             const panel = new ChatPanel(agentId, el);
             panel.populateAgentSelect();
             panels.set(agentId, panel);
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                panel.setStatus("connected");
+            }
             // Request session from server
             if (ws && ws.readyState === WebSocket.OPEN && isRoutableAgentId(agentId)) {
                 send({ type: "restore", session_id: panel.sessionId, agent_id: agentId });
@@ -468,7 +471,10 @@ function routeMessage(data) {
 
     switch (data.type) {
         case "status":
-            if (panel) panel.updateStatus(data);
+            if (panel) {
+                panel.setStatus("connected");
+                panel.updateStatus(data);
+            }
             updateGlobalStatus(data);
             break;
         case "history":
@@ -616,7 +622,7 @@ function loadOpenAIOAuthStatus() {
         .then(data => {
             if (!oauthStatusLabel) return;
             if (!data.configured) {
-                oauthStatusLabel.textContent = "OpenAI OAuth: Not configured";
+                oauthStatusLabel.textContent = "OpenAI OAuth Subscription: Unavailable";
                 if (btnOauthLogin) {
                     btnOauthLogin.classList.remove("hidden");
                     btnOauthLogin.disabled = false;
@@ -629,7 +635,7 @@ function loadOpenAIOAuthStatus() {
             }
             if (data.logged_in) {
                 const email = data.email ? " (" + data.email + ")" : "";
-                oauthStatusLabel.textContent = "OpenAI OAuth: Connected" + email;
+                oauthStatusLabel.textContent = "OpenAI OAuth Subscription: Connected" + email;
                 if (btnOauthLogin) {
                     btnOauthLogin.classList.add("hidden");
                     btnOauthLogin.disabled = false;
@@ -639,7 +645,7 @@ function loadOpenAIOAuthStatus() {
                     btnOauthLogout.disabled = false;
                 }
             } else {
-                oauthStatusLabel.textContent = "OpenAI OAuth: Not signed in";
+                oauthStatusLabel.textContent = "OpenAI OAuth Subscription: Not signed in";
                 if (btnOauthLogin) {
                     btnOauthLogin.classList.remove("hidden");
                     btnOauthLogin.disabled = false;
@@ -652,7 +658,7 @@ function loadOpenAIOAuthStatus() {
         })
         .catch(() => {
             if (oauthStatusLabel) {
-                oauthStatusLabel.textContent = "OpenAI OAuth: Status unavailable";
+                oauthStatusLabel.textContent = "OpenAI OAuth Subscription: Status unavailable";
             }
         });
 }
@@ -746,7 +752,7 @@ async function fetchAgentList() {
         if (!res.ok) return;
         const data = await res.json();
         agentList = (data.instances || [])
-            .filter(a => a.enabled)
+            .filter(a => a.enabled && a.running !== false)
             .map(a => ({ id: a.id, name: a.name }));
         // Refresh selects in all panels
         panels.forEach(p => p.populateAgentSelect());
@@ -830,7 +836,7 @@ function bindGlobalEvents() {
             const r = await fetch("/api/oauth/openai/status");
             const s = await r.json();
             if (!s.configured) {
-                alert("OpenAI OAuth 尚未設定。請先在 .env 加上 OPENAI_OAUTH_CLIENT_ID（必要），再重啟服務。");
+                alert("OpenAI OAuth subscription sign-in is not available right now.");
                 return;
             }
         } catch (e) {

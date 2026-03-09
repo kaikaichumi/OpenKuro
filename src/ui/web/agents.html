@@ -221,8 +221,9 @@
     <!-- Sub-Agent Modal -->
     <div class="modal-overlay" id="subagent-modal" style="display:none">
         <div class="modal" style="max-width:500px">
-            <h3 data-i18n="agents.addSubAgent">Add Sub-Agent</h3>
+            <h3 id="subagent-title" data-i18n="agents.addSubAgent">Add Sub-Agent</h3>
             <input type="hidden" id="subagent-instance-id">
+            <input type="hidden" id="subagent-original-name">
 
             <div class="form-group">
                 <label data-i18n="agents.subAgentName">Name</label>
@@ -242,6 +243,17 @@
             <div class="form-group">
                 <label data-i18n="agents.maxToolRounds">Max Tool Rounds</label>
                 <input type="number" id="subagent-max-rounds" value="5" min="1" max="50">
+            </div>
+
+            <div class="form-group">
+                <label data-i18n="agents.complexityTier">Complexity Tier</label>
+                <select id="subagent-complexity-tier">
+                    <option value="trivial">trivial</option>
+                    <option value="simple">simple</option>
+                    <option value="moderate" selected>moderate</option>
+                    <option value="complex">complex</option>
+                    <option value="expert">expert</option>
+                </select>
             </div>
 
             <div class="modal-actions">
