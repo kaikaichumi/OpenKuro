@@ -198,7 +198,7 @@
         "diagMatchingModel": "僅匹配模型",
         "diagMatchingModelDesc": "僅為使用與主代理相同模型的代理提供診斷工具",
         "delegationComplexity": "委派複雜度",
-        "delegationComplexityDesc": "使用複雜度評分來輔助主代理委派子代理",
+        "delegationComplexityDesc": "使用複雜度評分來輔助主代理委派子代理（評分機制沿用上方「任務複雜度」設定）",
         "delegationDefaultUse": "預設啟用複雜度路由",
         "delegationDefaultUseDesc": "啟用後，delegate_to_agent 預設會使用複雜度判斷",
         "delegationAutoSelect": "允許自動選擇",

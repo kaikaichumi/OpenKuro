@@ -106,7 +106,13 @@ Optional env overrides:
 ```bash
 # OPENAI_CODEX_OAUTH_CLIENT_ID="app_EMoamEEZ73f0CkXaXp7hrann"
 # OPENAI_CODEX_OAUTH_SCOPE="openid profile email offline_access"
-# OPENAI_CODEX_OAUTH_REDIRECT_URI="http://127.0.0.1:7860/api/oauth/openai/callback"
+# OPENAI_CODEX_OAUTH_REDIRECT_URI="http://localhost:7860/auth/callback"
+# OPENAI_CODEX_OAUTH_REDIRECT_PATH="/auth/callback"
+# OPENAI_CODEX_OAUTH_FORCE_LOCALHOST="1"
+# OPENAI_CODEX_OAUTH_LOCAL_BRIDGE="1"
+# OPENAI_CODEX_OAUTH_BRIDGE_HOST="127.0.0.1"
+# OPENAI_CODEX_OAUTH_BRIDGE_PORT="1455"
+# OPENAI_CODEX_OAUTH_BRIDGE_PATH="/auth/callback"
 # OPENAI_CODEX_OAUTH_MODELS="gpt-5.4,gpt-5.4-pro,gpt-5.3-codex,gpt-5.3-chat-latest,gpt-5.2-pro,gpt-5.2-codex,gpt-5.2-chat-latest,gpt-5.2,gpt-5-pro,gpt-5.1-codex-max,gpt-5.1-codex,gpt-5.1-codex-mini,gpt-5.1-chat-latest,gpt-5.1,gpt-5-codex,gpt-5-chat-latest,gpt-5,codex-mini-latest"
 # OPENAI_CODEX_INSTRUCTIONS="You are Codex, a software engineering assistant running in a local user workspace."
 ```

@@ -27,6 +27,17 @@ _TIER_LEVELS: dict[str, int] = {
 }
 
 
+def _normalize_model_selector(value: Any) -> str:
+    model = str(value or "").strip()
+    if not model:
+        return ""
+    if model.startswith("oauth:"):
+        model = model[len("oauth:"):].strip()
+    elif model.startswith("api:"):
+        model = model[len("api:"):].strip()
+    return model
+
+
 def _normalize_tier(value: Any) -> str:
     tier = str(value or "moderate").strip().lower()
     return tier if tier in _TIER_LEVELS else "moderate"
@@ -86,9 +97,10 @@ def _pick_best_agent(
         if _TIER_LEVELS[_normalize_tier(getattr(d, "complexity_tier", "moderate"))] >= required_level
     ]
     if preferred_model:
+        preferred_model_norm = _normalize_model_selector(preferred_model)
         preferred_sufficient = [
             d for d in sufficient
-            if str(getattr(d, "model", "") or "").strip() == preferred_model
+            if _normalize_model_selector(getattr(d, "model", "")) == preferred_model_norm
         ]
         if preferred_sufficient:
             return preferred_sufficient[0]
@@ -100,9 +112,10 @@ def _pick_best_agent(
         return None
     # Fallback to the highest available tier.
     if preferred_model:
+        preferred_model_norm = _normalize_model_selector(preferred_model)
         preferred_ranked = [
             d for d in ranked
-            if str(getattr(d, "model", "") or "").strip() == preferred_model
+            if _normalize_model_selector(getattr(d, "model", "")) == preferred_model_norm
         ]
         if preferred_ranked:
             return preferred_ranked[-1]

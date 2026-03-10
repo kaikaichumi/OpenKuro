@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -20,6 +21,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import aiohttp
+from aiohttp import web as aiohttp_web
 import structlog
 from fastapi import Request
 from starlette.responses import Response
@@ -28,6 +30,7 @@ logger = structlog.get_logger()
 
 # Matches Codex CLI's public OAuth client id (see openai/codex source).
 _CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+_CODEX_SCOPE_DEFAULT = "openid profile email offline_access"
 
 
 @dataclass
@@ -35,6 +38,7 @@ class _PendingAuth:
     session_id: str
     code_verifier: str
     redirect_uri: str
+    return_uri: str
     created_at: float
 
 
@@ -96,13 +100,19 @@ class OpenAIOAuthManager:
         self.client_id = os.environ.get("OPENAI_CODEX_OAUTH_CLIENT_ID", _CODEX_CLIENT_ID).strip()
         self.scope = os.environ.get(
             "OPENAI_CODEX_OAUTH_SCOPE",
-            "openid profile email offline_access",
+            _CODEX_SCOPE_DEFAULT,
         ).strip()
         self.redirect_uri_env = os.environ.get("OPENAI_CODEX_OAUTH_REDIRECT_URI", "").strip()
         self.redirect_path = os.environ.get(
             "OPENAI_CODEX_OAUTH_REDIRECT_PATH",
-            "/api/oauth/openai/callback",
+            "/auth/callback",
         ).strip()
+        self.force_localhost_redirect = (
+            os.environ.get("OPENAI_CODEX_OAUTH_FORCE_LOCALHOST", "1")
+            .strip()
+            .lower()
+            not in {"0", "false", "no", "off"}
+        )
         self.auth_url = os.environ.get(
             "OPENAI_CODEX_OAUTH_AUTH_URL",
             "https://auth.openai.com/oauth/authorize",
@@ -120,10 +130,29 @@ class OpenAIOAuthManager:
             "kuro_openai_oauth_session",
         ).strip()
         self.cookie_secure = os.environ.get("OPENAI_OAUTH_COOKIE_SECURE", "").strip() == "1"
+        self.bridge_enabled = (
+            os.environ.get("OPENAI_CODEX_OAUTH_LOCAL_BRIDGE", "1")
+            .strip()
+            .lower()
+            not in {"0", "false", "no", "off"}
+        )
+        self.bridge_host = os.environ.get("OPENAI_CODEX_OAUTH_BRIDGE_HOST", "127.0.0.1").strip() or "127.0.0.1"
+        bridge_port_raw = os.environ.get("OPENAI_CODEX_OAUTH_BRIDGE_PORT", "1455").strip()
+        try:
+            self.bridge_port = int(bridge_port_raw)
+        except Exception:
+            self.bridge_port = 1455
+        self.bridge_path = os.environ.get("OPENAI_CODEX_OAUTH_BRIDGE_PATH", "/auth/callback").strip() or "/auth/callback"
+        if not self.bridge_path.startswith("/"):
+            self.bridge_path = f"/{self.bridge_path}"
 
         self._pending: dict[str, _PendingAuth] = {}
         self._sessions: dict[str, _OAuthSession] = {}
         self._lock = asyncio.Lock()
+        self._bridge_runner: aiohttp_web.AppRunner | None = None
+        self._bridge_site: aiohttp_web.BaseSite | None = None
+        self._bridge_started: bool = False
+        self._bridge_failed: bool = False
 
     @property
     def configured(self) -> bool:
@@ -156,10 +185,96 @@ class OpenAIOAuthManager:
     def _redirect_uri(self, request: Request) -> str:
         if self.redirect_uri_env:
             return self.redirect_uri_env
-        base = str(request.base_url).rstrip("/")
-        if not self.redirect_path.startswith("/"):
-            return f"{base}/{self.redirect_path}"
-        return f"{base}{self.redirect_path}"
+
+        path = self.redirect_path if self.redirect_path.startswith("/") else f"/{self.redirect_path}"
+        url = request.url
+        scheme = (url.scheme or "http").strip().lower()
+        host = (url.hostname or "").strip().lower()
+        port = url.port
+
+        if not host:
+            host = "localhost"
+        if host in {"127.0.0.1", "::1"}:
+            host = "localhost"
+        elif self.force_localhost_redirect:
+            # Public Codex OAuth client is localhost-oriented; force this by default.
+            host = "localhost"
+
+        # Codex login server uses plain http localhost callback.
+        if host == "localhost":
+            scheme = "http"
+
+        if port is None:
+            port = 443 if scheme == "https" else 80
+        default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+        netloc = host if default_port else f"{host}:{port}"
+        return f"{scheme}://{netloc}{path}"
+
+    def _bridge_redirect_uri(self) -> str:
+        host = "localhost"
+        port = self.bridge_port
+        netloc = host if port == 80 else f"{host}:{port}"
+        return f"http://{netloc}{self.bridge_path}"
+
+    async def _bridge_callback(self, request: aiohttp_web.Request) -> aiohttp_web.StreamResponse:
+        state = str(request.query.get("state", "")).strip()
+        target = ""
+        if state:
+            pending = self._pending.get(state)
+            if pending and pending.return_uri:
+                target = pending.return_uri
+        if target:
+            qs = request.query_string
+            sep = "&" if "?" in target else "?"
+            location = f"{target}{sep}{qs}" if qs else target
+            raise aiohttp_web.HTTPFound(location=location)
+        return aiohttp_web.Response(
+            text="OAuth callback received. Return to the app and retry sign-in.",
+            content_type="text/plain",
+        )
+
+    async def ensure_local_bridge(self) -> bool:
+        if not self.bridge_enabled:
+            return False
+        if self._bridge_started:
+            return True
+        if self._bridge_failed:
+            return False
+        async with self._lock:
+            if self._bridge_started:
+                return True
+            if self._bridge_failed:
+                return False
+            app = aiohttp_web.Application()
+            app.router.add_get(self.bridge_path, self._bridge_callback)
+            runner = aiohttp_web.AppRunner(app, access_log=None)
+            await runner.setup()
+            site = aiohttp_web.TCPSite(runner, host=self.bridge_host, port=self.bridge_port)
+            try:
+                await site.start()
+            except Exception as e:
+                self._bridge_failed = True
+                with contextlib.suppress(Exception):
+                    await runner.cleanup()
+                logger.warning(
+                    "openai_oauth_bridge_start_failed",
+                    host=self.bridge_host,
+                    port=self.bridge_port,
+                    path=self.bridge_path,
+                    error=str(e),
+                )
+                return False
+
+            self._bridge_runner = runner
+            self._bridge_site = site
+            self._bridge_started = True
+            logger.info(
+                "openai_oauth_bridge_started",
+                host=self.bridge_host,
+                port=self.bridge_port,
+                path=self.bridge_path,
+            )
+            return True
 
     @staticmethod
     def _pkce_pair() -> tuple[str, str]:
@@ -191,12 +306,14 @@ class OpenAIOAuthManager:
         self._prune()
         verifier, challenge = self._pkce_pair()
         state = secrets.token_urlsafe(24)
-        redirect_uri = self._redirect_uri(request)
+        return_uri = self._redirect_uri(request)
+        redirect_uri = self._bridge_redirect_uri() if self._bridge_started else return_uri
 
         self._pending[state] = _PendingAuth(
             session_id=session_id,
             code_verifier=verifier,
             redirect_uri=redirect_uri,
+            return_uri=return_uri,
             created_at=time.time(),
         )
 
@@ -213,6 +330,13 @@ class OpenAIOAuthManager:
             "codex_cli_simplified_flow": "true",
             "originator": self.originator or "codex_cli_rs",
         }
+        logger.info(
+            "openai_oauth_authorize_url_built",
+            redirect_uri=redirect_uri,
+            return_uri=return_uri,
+            scope=self.scope,
+            bridge=self._bridge_started,
+        )
         return f"{self.auth_url}?{urlencode(params)}"
 
     async def _token_request(self, payload: dict[str, str]) -> dict[str, Any]:
@@ -324,19 +448,27 @@ class OpenAIOAuthManager:
         except Exception:
             return None
 
-    def _session(self, session_id: str | None) -> _OAuthSession | None:
+    def _session(
+        self,
+        session_id: str | None,
+        *,
+        allow_file_fallback: bool = True,
+    ) -> _OAuthSession | None:
         self._prune()
         if session_id:
             sess = self._sessions.get(session_id)
             if sess:
                 return sess
-        return self._load_from_codex_auth_file()
+        if allow_file_fallback:
+            return self._load_from_codex_auth_file()
+        return None
 
     def get_status(self, session_id: str | None) -> dict[str, Any]:
         if not self.configured:
             return {"configured": False, "logged_in": False}
 
-        sess = self._session(session_id)
+        # Web UI status must represent THIS browser session only.
+        sess = self._session(session_id, allow_file_fallback=False)
         if not sess:
             return {"configured": True, "logged_in": False}
 
@@ -375,12 +507,10 @@ class OpenAIOAuthManager:
             return None
 
         async with self._lock:
-            sess = self._session(session_id)
+            # Web UI auth context should not silently fall back to ~/.codex/auth.json.
+            sess = self._session(session_id, allow_file_fallback=False)
             if not sess:
                 return None
-            # If token came from file fallback and no session id, return as-is.
-            if not session_id:
-                return sess.access_token
 
             now = time.time()
             if sess.expires_at and now >= (sess.expires_at - 30):

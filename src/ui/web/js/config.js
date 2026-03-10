@@ -298,10 +298,12 @@ function populateForm(cfg, modelOptions) {
     document.getElementById("dc-default-use").checked = dc.default_use_complexity === true;
     document.getElementById("dc-auto-select").checked = dc.allow_auto_select !== false;
     document.getElementById("dc-enforce-tier").checked = dc.enforce_min_tier !== false;
-    populateModelSelect("dc-model-trivial", knownModels, dcm.trivial || "", oauthModels);
-    populateModelSelect("dc-model-simple", knownModels, dcm.simple || "", oauthModels);
-    populateModelSelect("dc-model-moderate", knownModels, dcm.moderate || "", oauthModels);
-    populateModelSelect("dc-model-complex", knownModels, dcm.complex || "", oauthModels);
+    // Delegation tier model selectors should support explicit OAuth/API variants,
+    // same as diagnostics repair model.
+    populateRepairModelSelect("dc-model-trivial", knownModels, dcm.trivial || "", oauthModels);
+    populateRepairModelSelect("dc-model-simple", knownModels, dcm.simple || "", oauthModels);
+    populateRepairModelSelect("dc-model-moderate", knownModels, dcm.moderate || "", oauthModels);
+    populateRepairModelSelect("dc-model-complex", knownModels, dcm.complex || "", oauthModels);
     document.getElementById("dc-tier-trivial").value = dct.trivial ?? 0.15;
     document.getElementById("dc-tier-simple").value = dct.simple ?? 0.35;
     document.getElementById("dc-tier-moderate").value = dct.moderate ?? 0.60;

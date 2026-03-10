@@ -20,7 +20,7 @@ from typing import Any
 import structlog
 import uvicorn
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.config import KuroConfig
@@ -437,6 +437,7 @@ class WebServer:
                 return RedirectResponse(url="/?oauth=openai_not_configured", status_code=302)
             sid = self._oauth.get_or_create_session_id(request)
             try:
+                await self._oauth.ensure_local_bridge()
                 login_url = self._oauth.build_login_url(request, sid)
             except Exception:
                 logger.exception("oauth_openai_login_build_failed")
@@ -446,6 +447,7 @@ class WebServer:
             return resp
 
         @app.get("/api/oauth/openai/callback")
+        @app.get("/auth/callback")
         async def oauth_openai_callback(
             request: Request,
             code: str | None = Query(None),
@@ -477,16 +479,25 @@ class WebServer:
                     state=state,
                     code=code,
                 )
-                return RedirectResponse(url="/?oauth=openai_connected", status_code=302)
+                resp = RedirectResponse(url="/?oauth=openai_connected", status_code=302)
+                self._oauth.attach_cookie(resp, sid)
+                return resp
             except Exception as e:
                 logger.warning("oauth_openai_exchange_failed", error=str(e))
-                return RedirectResponse(url="/?oauth=openai_exchange_failed", status_code=302)
+                resp = RedirectResponse(url="/?oauth=openai_exchange_failed", status_code=302)
+                self._oauth.attach_cookie(resp, sid)
+                return resp
 
         @app.post("/api/oauth/openai/logout")
         async def oauth_openai_logout(request: Request):
             sid = self._oauth.get_session_id_from_cookies(request.cookies)
             await self._oauth.logout(sid)
-            return {"status": "ok"}
+            resp = JSONResponse({"status": "ok"})
+            resp.delete_cookie(
+                key=self._oauth.cookie_name,
+                path="/",
+            )
+            return resp
 
         @app.get("/api/audit")
         async def get_audit(

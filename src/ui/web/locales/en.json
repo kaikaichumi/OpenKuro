@@ -173,7 +173,7 @@
         "parallelSubtasks": "Parallel Execution",
         "parallelSubtasksDesc": "Run independent sub-tasks in parallel",
         "delegationComplexity": "Delegation Complexity",
-        "delegationComplexityDesc": "Use complexity scoring for main agent delegation to sub-agents",
+        "delegationComplexityDesc": "Use complexity scoring for main agent delegation to sub-agents (shares the Task Complexity settings above)",
         "delegationDefaultUse": "Default Use Complexity",
         "delegationDefaultUseDesc": "When enabled, delegate_to_agent uses complexity routing by default",
         "delegationAutoSelect": "Allow Auto Select",
