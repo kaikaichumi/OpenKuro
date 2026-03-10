@@ -5,8 +5,9 @@
 A privacy-first personal AI assistant with multi-agent architecture, multi-model support, computer control, messaging integration, and a browser-based GUI.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+<img width="1000" height="300" alt="Screenshot 2026-03-10 145048" src="https://github.com/user-attachments/assets/d1dc88a4-0462-43d2-8358-7164ccac6696" />
 
-<img width="1000" height="300" alt="kuro" src="https://github.com/user-attachments/assets/e697086a-e0ed-47ec-824f-7479fd7012ae" />
+
 ---
 
 ## Features
