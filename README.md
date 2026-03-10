@@ -6,7 +6,7 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-<img width="1405" height="300" alt="kuro" src="https://github.com/user-attachments/assets/e697086a-e0ed-47ec-824f-7479fd7012ae" />
+<img width="1000" height="300" alt="kuro" src="https://github.com/user-attachments/assets/e697086a-e0ed-47ec-824f-7479fd7012ae" />
 ---
 
 ## Features
