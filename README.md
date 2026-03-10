@@ -56,7 +56,7 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 
 ```bash
 # Clone the repository
-git clone https://github.com/kaikaichumi/OpenKuro.git && cd assistant
+git clone https://github.com/kaikaichumi/OpenKuro.git && cd OpenKuro
 
 # Install dependencies
 poetry install
