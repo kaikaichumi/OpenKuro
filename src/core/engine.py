@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator
@@ -51,6 +53,20 @@ _VAGUE_RESPONSES = {
 
 # Maximum image size for vision (resize if larger to save tokens)
 _MAX_SCREENSHOT_DIMENSION = 1280
+
+# Shell command risk heuristics used by execution guard
+_SHELL_DESTRUCTIVE_RE = re.compile(
+    r"\b(remove-item|del\s|erase\s|rm\s|rmdir\s|move-item|mv\s|ren\s|rename-item)\b",
+    re.I,
+)
+_SHELL_DOWNLOAD_RE = re.compile(
+    r"\b(curl|wget|invoke-webrequest|start-bitstransfer|bitsadmin|aria2c)\b",
+    re.I,
+)
+_SHELL_BULK_HINT_RE = re.compile(
+    r"(\*|--recursive|\s-r\b|-recurse|\s/s\b|get-childitem|find\s|forfiles|xcopy|robocopy)",
+    re.I,
+)
 
 
 def _encode_image_base64(image_path: str) -> str | None:
@@ -501,11 +517,12 @@ class Engine:
                 if compressed is messages:
                     # Override: temporarily lower the budget to force compression
                     orig_budget = self.memory.compressor.config.token_budget
+                    orig_threshold = self.memory.compressor.config.trigger_threshold
                     self.memory.compressor.config.token_budget = limit_tokens or 4096
                     self.memory.compressor.config.trigger_threshold = 0.0
                     compressed = await self.memory.compressor.compress_if_needed(messages)
                     self.memory.compressor.config.token_budget = orig_budget
-                    self.memory.compressor.config.trigger_threshold = 0.8
+                    self.memory.compressor.config.trigger_threshold = orig_threshold
 
                 est = sum(
                     len(m.content) if isinstance(m.content, str) else 0
@@ -645,6 +662,230 @@ class Engine:
             except Exception:
                 pass
 
+    @staticmethod
+    def _new_execution_guard_state() -> dict[str, Any]:
+        """Initialize per-task execution guard counters."""
+        return {
+            "tool_calls": 0,
+            "shell_calls": 0,
+            "destructive_shell_ops": 0,
+            "download_ops": 0,
+            "signature_counts": {},
+            "bulk_confirmed": set(),
+            "high_risk_plan_cache": {},
+        }
+
+    @staticmethod
+    def _normalize_tool_args(arguments: dict[str, Any]) -> str:
+        """Normalize tool arguments into a deterministic JSON string."""
+        try:
+            return json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        except Exception:
+            return str(arguments)
+
+    def _tool_signature(self, tool_call: ToolCall) -> str:
+        """Build a stable signature for duplicate-call detection."""
+        return f"{tool_call.name}:{self._normalize_tool_args(tool_call.arguments)}"
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        """Best-effort int conversion for untrusted values."""
+        try:
+            if isinstance(value, bool):
+                return int(value)
+            if value is None:
+                return default
+            return int(str(value).strip())
+        except Exception:
+            return default
+
+    @staticmethod
+    def _extract_json_object(raw_text: str) -> dict[str, Any] | None:
+        """Extract and parse the first JSON object from model output."""
+        text = (raw_text or "").strip()
+        if not text:
+            return None
+
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
+            text = re.sub(r"\s*```$", "", text)
+
+        candidates = [text]
+        match = re.search(r"\{.*\}", text, re.S)
+        if match:
+            candidates.append(match.group(0))
+
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                continue
+
+        return None
+
+    @staticmethod
+    def _inspect_shell_command(command: str) -> dict[str, Any]:
+        """Heuristic shell command inspection for bulk/destructive risk."""
+        raw = str(command or "")
+        lower = raw.lower()
+
+        is_destructive = bool(_SHELL_DESTRUCTIVE_RE.search(lower))
+        is_download = bool(_SHELL_DOWNLOAD_RE.search(lower))
+        has_bulk_hint = bool(_SHELL_BULK_HINT_RE.search(raw))
+        is_chained = any(op in raw for op in ("|", ";", "&&", "||"))
+
+        score = 0
+        if is_destructive:
+            score += 2
+        if is_download:
+            score += 2
+        if has_bulk_hint:
+            score += 1
+        if is_chained:
+            score += 1
+
+        est_items = 1
+        if "*" in raw:
+            est_items += 12
+        if has_bulk_hint:
+            est_items += 20
+        if is_chained:
+            est_items += 8
+        if is_destructive:
+            est_items += 10
+
+        return {
+            "is_destructive": is_destructive,
+            "is_download": is_download,
+            "has_bulk_hint": has_bulk_hint,
+            "is_chained": is_chained,
+            "bulk_score": score,
+            "estimated_items": est_items,
+        }
+
+    async def _build_high_risk_plan(
+        self,
+        tool_call: ToolCall,
+        session: Session,
+        requested_model: str | None,
+        user_text: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Ask the model for a compact JSON execution plan for high-risk tools."""
+        guard_cfg = getattr(self.config, "execution_guard", None)
+        if not guard_cfg:
+            return None
+
+        latest_user = (user_text or "").strip()
+        if not latest_user:
+            for msg in reversed(session.messages):
+                if msg.role == Role.USER and isinstance(msg.content, str) and msg.content.strip():
+                    latest_user = msg.content.strip()
+                    break
+
+        latest_user = latest_user[:1600]
+        model_name = (
+            str(getattr(guard_cfg, "plan_model", "") or "").strip()
+            or requested_model
+            or str(session.metadata.get("_active_model") or self.model.default_model)
+        )
+
+        tool_payload = {
+            "tool_name": tool_call.name,
+            "arguments": tool_call.arguments,
+        }
+        tool_json = json.dumps(tool_payload, ensure_ascii=False, default=str)[:2400]
+
+        planning_prompt = (
+            "Return JSON only (no markdown).\n"
+            "Schema: {"
+            "\"objective\":string,"
+            "\"estimated_tool_calls\":int,"
+            "\"estimated_shell_calls\":int,"
+            "\"estimated_download_ops\":int,"
+            "\"estimated_destructive_shell_ops\":int,"
+            "\"estimated_files_touched\":int,"
+            "\"risk_level\":\"low|medium|high\","
+            "\"rationale\":string"
+            "}.\n"
+            "Use conservative (higher) estimates when uncertain."
+        )
+
+        plan_input = (
+            f"User request:\n{latest_user}\n\n"
+            f"Planned tool call:\n{tool_json}"
+        )
+
+        try:
+            response = await self.model.complete(
+                messages=[
+                    {"role": "system", "content": planning_prompt},
+                    {"role": "user", "content": plan_input},
+                ],
+                model=model_name,
+                tools=None,
+                temperature=0.1,
+                max_tokens=max(64, self._safe_int(getattr(guard_cfg, "plan_max_tokens", 280), 280)),
+            )
+        except Exception as e:
+            logger.debug("execution_guard_plan_failed", error=str(e), tool=tool_call.name)
+            return None
+
+        plan = self._extract_json_object(response.content or "")
+        if not plan:
+            logger.debug("execution_guard_plan_parse_failed", tool=tool_call.name)
+            return None
+
+        plan.setdefault("objective", "")
+        plan.setdefault("estimated_tool_calls", 1)
+        plan.setdefault("estimated_shell_calls", 1 if tool_call.name == "shell_execute" else 0)
+        plan.setdefault("estimated_download_ops", 0)
+        plan.setdefault("estimated_destructive_shell_ops", 0)
+        plan.setdefault("estimated_files_touched", 1)
+        plan.setdefault("risk_level", "medium")
+        plan.setdefault("rationale", "")
+        return plan
+
+    def _validate_high_risk_plan(
+        self,
+        plan: dict[str, Any],
+        tool_call: ToolCall,
+    ) -> list[str]:
+        """Validate high-risk plan estimates against execution-guard limits."""
+        guard_cfg = getattr(self.config, "execution_guard", None)
+        if not guard_cfg:
+            return []
+
+        issues: list[str] = []
+        max_tools = max(0, self._safe_int(getattr(guard_cfg, "max_tool_calls_per_task", 0), 0))
+        max_shell = max(0, self._safe_int(getattr(guard_cfg, "max_shell_calls_per_task", 0), 0))
+        max_download = max(0, self._safe_int(getattr(guard_cfg, "max_download_ops_per_task", 0), 0))
+        max_destructive = max(
+            0,
+            self._safe_int(getattr(guard_cfg, "max_destructive_shell_ops_per_task", 0), 0),
+        )
+
+        est_tools = max(0, self._safe_int(plan.get("estimated_tool_calls"), 0))
+        est_shell = max(0, self._safe_int(plan.get("estimated_shell_calls"), 0))
+        est_download = max(0, self._safe_int(plan.get("estimated_download_ops"), 0))
+        est_destructive = max(0, self._safe_int(plan.get("estimated_destructive_shell_ops"), 0))
+
+        if max_tools and est_tools > max_tools:
+            issues.append(f"estimated_tool_calls={est_tools} exceeds limit={max_tools}")
+
+        if tool_call.name == "shell_execute":
+            if max_shell and est_shell > max_shell:
+                issues.append(f"estimated_shell_calls={est_shell} exceeds limit={max_shell}")
+            if max_download and est_download > max_download:
+                issues.append(f"estimated_download_ops={est_download} exceeds limit={max_download}")
+            if max_destructive and est_destructive > max_destructive:
+                issues.append(
+                    f"estimated_destructive_shell_ops={est_destructive} exceeds limit={max_destructive}"
+                )
+
+        return issues
+
     async def _process_message_locked(
         self,
         user_text: str,
@@ -783,6 +1024,7 @@ class Engine:
         )
         max_rounds = getattr(self.config, "max_tool_rounds", _DEFAULT_MAX_TOOL_ROUNDS)
         blocked_tools_by_policy: set[str] = set()
+        guard_state = self._new_execution_guard_state()
         risk_map = {
             "low": RiskLevel.LOW,
             "medium": RiskLevel.MEDIUM,
@@ -884,7 +1126,13 @@ class Engine:
                         content=f"Tool: {tc.name}",
                         metadata={"tool_name": tc.name},
                     )
-                    result = await self._handle_tool_call(tc, session)
+                    result = await self._handle_tool_call(
+                        tc,
+                        session,
+                        guard_state=guard_state,
+                        model=model,
+                        user_text=user_text,
+                    )
 
                     # Emit tool_result or error event
                     if result.success:
@@ -902,7 +1150,7 @@ class Engine:
                             metadata={"tool_name": tc.name},
                         )
 
-                    if result.data.get("policy_denied"):
+                    if result.data.get("policy_denied") or result.data.get("guard_denied"):
                         blocked_tools_by_policy.add(tc.name)
 
                     # Track generated images in session metadata so adapters
@@ -1356,19 +1604,30 @@ class Engine:
         self,
         tool_call: ToolCall,
         session: Session,
+        *,
+        guard_state: dict[str, Any] | None = None,
+        model: str | None = None,
+        user_text: str | None = None,
     ) -> ToolResult:
         """Handle a single tool call with security checks, approval, and logging."""
         tool = self.tools.registry.get(tool_call.name)
         if tool is None:
             return ToolResult.fail(f"Unknown tool: {tool_call.name}")
-        full_access_mode = bool(
-            getattr(self.config.security, "full_access_mode", False)
-        )
 
-        # === Security Layer 0: Tool availability check ===
-        if (not full_access_mode) and (
-            tool_call.name in self.config.security.disabled_tools
-        ):
+        full_access_mode = bool(getattr(self.config.security, "full_access_mode", False))
+        guard_cfg = getattr(self.config, "execution_guard", None)
+        guard_enabled = bool(guard_cfg and getattr(guard_cfg, "enabled", False) and not full_access_mode)
+        if guard_enabled and guard_state is None:
+            guard_state = self._new_execution_guard_state()
+
+        async def _deny(
+            reason: str,
+            *,
+            policy_denied: bool = False,
+            guard_denied: bool = False,
+            result_summary: str | None = None,
+            extra_data: dict[str, Any] | None = None,
+        ) -> ToolResult:
             await self.audit.log_tool_execution(
                 session_id=session.id,
                 source=session.adapter,
@@ -1376,30 +1635,175 @@ class Engine:
                 parameters=tool_call.arguments,
                 approved=False,
                 risk_level=tool.risk_level.value,
+                result_summary=result_summary or reason,
+            )
+            await self.action_log.log_tool_call(
+                session_id=session.id,
+                tool_name=tool_call.name,
+                params=tool_call.arguments,
+                status="denied",
+                error=reason,
+            )
+            data: dict[str, Any] = {}
+            if policy_denied:
+                data["policy_denied"] = True
+            if guard_denied:
+                data["guard_denied"] = True
+            if extra_data:
+                data.update(extra_data)
+            return ToolResult(success=False, error=f"Denied: {reason}", data=data)
+
+        # === Security Layer 0: Tool availability check ===
+        if (not full_access_mode) and (tool_call.name in self.config.security.disabled_tools):
+            return await _deny(
+                f"Tool '{tool_call.name}' is disabled by configuration",
                 result_summary="Disabled by configuration",
             )
-            return ToolResult.denied(
-                f"Tool '{tool_call.name}' is disabled by configuration"
-            )
+
+        # === Execution Guard Layer: duplicate loops + risky shell budgets ===
+        tool_signature = ""
+        if guard_enabled and guard_state is not None:
+            tool_signature = self._tool_signature(tool_call)
+            signature_counts = guard_state.setdefault("signature_counts", {})
+            repeat_count = self._safe_int(signature_counts.get(tool_signature), 0) + 1
+            signature_counts[tool_signature] = repeat_count
+
+            max_repeat = max(0, self._safe_int(getattr(guard_cfg, "max_repeat_tool_call", 0), 0))
+            if max_repeat and repeat_count > max_repeat:
+                return await _deny(
+                    (
+                        "Execution guard blocked repeated tool call "
+                        f"({tool_call.name}, repeat={repeat_count}, limit={max_repeat})"
+                    ),
+                    guard_denied=True,
+                    result_summary="Execution guard: repeated tool call",
+                    extra_data={"repeat_count": repeat_count, "repeat_limit": max_repeat},
+                )
+
+            guard_state["tool_calls"] = self._safe_int(guard_state.get("tool_calls"), 0) + 1
+            max_tool_calls = max(0, self._safe_int(getattr(guard_cfg, "max_tool_calls_per_task", 0), 0))
+            if max_tool_calls and guard_state["tool_calls"] > max_tool_calls:
+                return await _deny(
+                    (
+                        "Execution guard blocked tool-call budget overflow "
+                        f"(count={guard_state['tool_calls']}, limit={max_tool_calls})"
+                    ),
+                    guard_denied=True,
+                    result_summary="Execution guard: tool-call budget exceeded",
+                    extra_data={"tool_calls": guard_state["tool_calls"], "tool_call_limit": max_tool_calls},
+                )
+
+            if tool_call.name == "shell_execute":
+                guard_state["shell_calls"] = self._safe_int(guard_state.get("shell_calls"), 0) + 1
+                max_shell_calls = max(0, self._safe_int(getattr(guard_cfg, "max_shell_calls_per_task", 0), 0))
+                if max_shell_calls and guard_state["shell_calls"] > max_shell_calls:
+                    return await _deny(
+                        (
+                            "Execution guard blocked shell-call budget overflow "
+                            f"(count={guard_state['shell_calls']}, limit={max_shell_calls})"
+                        ),
+                        guard_denied=True,
+                        result_summary="Execution guard: shell-call budget exceeded",
+                        extra_data={"shell_calls": guard_state["shell_calls"], "shell_call_limit": max_shell_calls},
+                    )
+
+                command = str(tool_call.arguments.get("command", "") or "")
+                shell_meta = self._inspect_shell_command(command)
+
+                if shell_meta["is_destructive"]:
+                    guard_state["destructive_shell_ops"] = (
+                        self._safe_int(guard_state.get("destructive_shell_ops"), 0) + 1
+                    )
+                    max_destructive = max(
+                        0,
+                        self._safe_int(getattr(guard_cfg, "max_destructive_shell_ops_per_task", 0), 0),
+                    )
+                    if max_destructive and guard_state["destructive_shell_ops"] > max_destructive:
+                        return await _deny(
+                            (
+                                "Execution guard blocked destructive shell-operation budget overflow "
+                                f"(count={guard_state['destructive_shell_ops']}, limit={max_destructive})"
+                            ),
+                            guard_denied=True,
+                            result_summary="Execution guard: destructive shell-op budget exceeded",
+                            extra_data={
+                                "destructive_shell_ops": guard_state["destructive_shell_ops"],
+                                "destructive_shell_op_limit": max_destructive,
+                            },
+                        )
+
+                if shell_meta["is_download"]:
+                    guard_state["download_ops"] = self._safe_int(guard_state.get("download_ops"), 0) + 1
+                    max_download = max(0, self._safe_int(getattr(guard_cfg, "max_download_ops_per_task", 0), 0))
+                    if max_download and guard_state["download_ops"] > max_download:
+                        return await _deny(
+                            (
+                                "Execution guard blocked download-operation budget overflow "
+                                f"(count={guard_state['download_ops']}, limit={max_download})"
+                            ),
+                            guard_denied=True,
+                            result_summary="Execution guard: download-op budget exceeded",
+                            extra_data={"download_ops": guard_state["download_ops"], "download_op_limit": max_download},
+                        )
+
+                threshold = max(1, self._safe_int(getattr(guard_cfg, "bulk_shell_score_threshold", 4), 4))
+                if bool(getattr(guard_cfg, "require_confirm_for_bulk_shell", True)) and shell_meta["bulk_score"] >= threshold:
+                    confirmed = guard_state.setdefault("bulk_confirmed", set())
+                    if tool_signature not in confirmed:
+                        approved_bulk = await self.approval_cb.request_approval(
+                            "shell_execute (bulk safety check)",
+                            {
+                                "command": command,
+                                "bulk_score": shell_meta["bulk_score"],
+                                "estimated_items": shell_meta["estimated_items"],
+                                "reason": "Bulk shell operation detected by execution guard",
+                            },
+                            tool.risk_level,
+                            session,
+                        )
+                        if not approved_bulk:
+                            return await _deny(
+                                "Execution guard denied bulk shell operation",
+                                guard_denied=True,
+                                result_summary="Execution guard: bulk shell confirmation denied",
+                                extra_data={
+                                    "bulk_score": shell_meta["bulk_score"],
+                                    "estimated_items": shell_meta["estimated_items"],
+                                },
+                            )
+                        confirmed.add(tool_signature)
+
+            if (
+                bool(getattr(guard_cfg, "require_plan_for_high_risk", True))
+                and tool.risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL)
+            ):
+                plan_cache = guard_state.setdefault("high_risk_plan_cache", {})
+                plan = plan_cache.get(tool_signature)
+                if plan is None:
+                    plan = await self._build_high_risk_plan(tool_call, session, model, user_text=user_text)
+                    if plan is not None:
+                        plan_cache[tool_signature] = plan
+
+                if isinstance(plan, dict):
+                    violations = self._validate_high_risk_plan(plan, tool_call)
+                    if violations:
+                        return await _deny(
+                            "Execution guard plan rejected: " + "; ".join(violations),
+                            guard_denied=True,
+                            result_summary="Execution guard: high-risk plan rejected",
+                            extra_data={"plan_violations": violations, "plan": plan},
+                        )
 
         # === Security Layer 1: Sandbox pre-check ===
         if (not full_access_mode) and tool_call.name == "shell_execute":
             command = tool_call.arguments.get("command", "")
             if not self.sandbox.is_command_allowed(command):
-                await self.audit.log_tool_execution(
-                    session_id=session.id,
-                    source=session.adapter,
-                    tool_name=tool_call.name,
-                    parameters=tool_call.arguments,
-                    approved=False,
-                    risk_level=tool.risk_level.value,
+                return await _deny(
+                    "Command blocked by sandbox policy",
                     result_summary="Blocked by sandbox",
                 )
-                return ToolResult.denied("Command blocked by sandbox policy")
 
-        if (not full_access_mode) and (
-            tool_call.name in ("file_read", "file_write", "file_search")
-        ):
+        if (not full_access_mode) and (tool_call.name in ("file_read", "file_write", "file_search")):
             path = tool_call.arguments.get("path", tool_call.arguments.get("directory", ""))
             if path:
                 allowed, reason = self.sandbox.validate_file_operation(
@@ -1407,21 +1811,10 @@ class Engine:
                     operation="write" if tool_call.name == "file_write" else "read",
                 )
                 if not allowed:
-                    await self.audit.log_tool_execution(
-                        session_id=session.id,
-                        source=session.adapter,
-                        tool_name=tool_call.name,
-                        parameters=tool_call.arguments,
-                        approved=False,
-                        risk_level=tool.risk_level.value,
-                        result_summary=f"Blocked: {reason}",
-                    )
-                    return ToolResult.denied(reason)
+                    return await _deny(reason, result_summary=f"Blocked: {reason}")
 
         # === Security Layer 2: Approval check ===
-        decision = self.approval_policy.check(
-            tool_call.name, tool.risk_level, session.id
-        )
+        decision = self.approval_policy.check(tool_call.name, tool.risk_level, session.id)
 
         if not decision.approved:
             if decision.method == "policy_denied":
@@ -1431,29 +1824,12 @@ class Engine:
                     risk=tool.risk_level.value,
                     reason=decision.reason,
                 )
-                await self.audit.log_tool_execution(
-                    session_id=session.id,
-                    source=session.adapter,
-                    tool_name=tool_call.name,
-                    parameters=tool_call.arguments,
-                    approved=False,
-                    risk_level=tool.risk_level.value,
+                return await _deny(
+                    decision.reason,
+                    policy_denied=True,
                     result_summary=decision.reason,
                 )
-                await self.action_log.log_tool_call(
-                    session_id=session.id,
-                    tool_name=tool_call.name,
-                    params=tool_call.arguments,
-                    status="denied",
-                    error=decision.reason,
-                )
-                return ToolResult(
-                    success=False,
-                    error=f"Denied: {decision.reason}",
-                    data={"policy_denied": True},
-                )
 
-            # Need human approval
             logger.info(
                 "tool_approval_requested",
                 tool=tool_call.name,
@@ -1472,21 +1848,7 @@ class Engine:
                     tool=tool_call.name,
                     risk=tool.risk_level.value,
                 )
-                await self.audit.log_tool_execution(
-                    session_id=session.id,
-                    source=session.adapter,
-                    tool_name=tool_call.name,
-                    parameters=tool_call.arguments,
-                    approved=False,
-                    risk_level=tool.risk_level.value,
-                )
-                await self.action_log.log_tool_call(
-                    session_id=session.id,
-                    tool_name=tool_call.name,
-                    params=tool_call.arguments,
-                    status="denied",
-                )
-                return ToolResult.denied("User denied the action")
+                return await _deny("User denied the action")
 
         # === Execute with timing ===
         context = ToolContext(

@@ -245,3 +245,27 @@ diagnostics:
 #   tags: ["kuro"]
 #   trace_tools: true
 #   trace_memory: false
+
+# Context Compression
+context_compression:
+  enabled: true
+  trigger_threshold: 0.6
+  keep_recent_turns: 10
+  summarize_model: "gemini/gemini-2.0-flash"
+  extract_facts: true
+  max_summary_tokens: 600
+  token_budget: 100000
+
+# Execution Guard Rails (Phase B)
+execution_guard:
+  enabled: true
+  max_tool_calls_per_task: 0            # 0 = no hard limit
+  max_shell_calls_per_task: 0           # 0 = no hard limit
+  max_destructive_shell_ops_per_task: 3
+  max_download_ops_per_task: 3
+  max_repeat_tool_call: 1               # Same tool+args allowed once per task
+  require_confirm_for_bulk_shell: true
+  bulk_shell_score_threshold: 4
+  require_plan_for_high_risk: true
+  plan_model: ""                         # Empty = use current active model
+  plan_max_tokens: 280

@@ -21,6 +21,7 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 - **Multi-model support** - Anthropic Claude, OpenAI GPT, Google Gemini, Ollama local models via LiteLLM
 - **Workflow Engine** - Composable multi-step automation with YAML definitions, agent chaining, and template variables
 - **Context Overflow Auto-Compression** - Automatically compresses context when hitting token limits; truncates old tool results and drops stale messages
+- **Execution Guard Rails (Phase B)** - Prevents runaway/repeated tool loops and risky bulk shell actions with per-task budgets and confirmations
 - **Self-Update** - Update Kuro with a single command (`/update`), no reinstall or reconfiguration needed
 - **Customizable Personality** - Define Kuro's character via `~/.kuro/personality.md`
 - **Security Dashboard** - Real-time security visualization, posture scoring, integrity verification
@@ -818,6 +819,28 @@ sandbox:
   max_execution_time: 30
   max_output_size: 100000
 
+context_compression:
+  enabled: true
+  trigger_threshold: 0.6
+  keep_recent_turns: 10
+  summarize_model: "gemini/gemini-2.0-flash"
+  extract_facts: true
+  max_summary_tokens: 600
+  token_budget: 100000
+
+execution_guard:
+  enabled: true
+  max_tool_calls_per_task: 0              # 0 = no hard limit
+  max_shell_calls_per_task: 0             # 0 = no hard limit
+  max_destructive_shell_ops_per_task: 3
+  max_download_ops_per_task: 3
+  max_repeat_tool_call: 1
+  require_confirm_for_bulk_shell: true
+  bulk_shell_score_threshold: 4
+  require_plan_for_high_risk: true
+  plan_model: ""                           # Empty = use active model
+  plan_max_tokens: 280
+
 agents:
   enabled: true
   max_concurrent_agents: 5
@@ -923,6 +946,18 @@ When a conversation approaches the model's token limit, Kuro automatically:
 2. Truncates large tool outputs
 3. Drops stale context while preserving key information
 4. Retries with the same model (avoids unnecessary fallback)
+
+Default trigger is `context_compression.trigger_threshold: 0.6` (60% of token budget).
+
+### Execution Guard (Phase B)
+
+Execution Guard adds safety fuses to avoid expensive loops and accidental bulk shell behavior:
+
+- Duplicate tool-call fuse (`max_repeat_tool_call`)
+- Per-task tool/shell budgets (`max_tool_calls_per_task`, `max_shell_calls_per_task`)
+- Destructive/download shell-op budgets
+- Extra confirmation for bulk-like shell commands
+- High-risk pre-plan check before execution
 
 ### MEMORY.md
 

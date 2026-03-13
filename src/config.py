@@ -460,12 +460,33 @@ class ContextCompressionConfig(BaseModel):
     """Context compression settings — auto-summarize old messages when context fills up."""
 
     enabled: bool = True
-    trigger_threshold: float = 0.8  # Trigger compression at 80% of token budget
+    trigger_threshold: float = 0.6  # Trigger compression at 60% of token budget
     keep_recent_turns: int = 10  # Keep the last N user+assistant turns verbatim
     summarize_model: str = "gemini/gemini-2.0-flash"  # Cheap fast model for summarization
     extract_facts: bool = True  # Auto-extract key facts into long-term memory
     max_summary_tokens: int = 600  # Max tokens for compressed summary
     token_budget: int = 100000  # Total token budget for context window
+
+
+class ExecutionGuardConfig(BaseModel):
+    """Guard rails to prevent runaway tool loops and risky bulk operations.
+
+    Notes:
+    - A value of 0 means "no hard limit" for that counter.
+    - Duplicate tool calls are counted by (tool_name + normalized args) per task.
+    """
+
+    enabled: bool = True
+    max_tool_calls_per_task: int = 0
+    max_shell_calls_per_task: int = 0
+    max_destructive_shell_ops_per_task: int = 3
+    max_download_ops_per_task: int = 3
+    max_repeat_tool_call: int = 1
+    require_confirm_for_bulk_shell: bool = True
+    bulk_shell_score_threshold: int = 4
+    require_plan_for_high_risk: bool = True
+    plan_model: str = ""  # Empty = use current active model
+    plan_max_tokens: int = 280
 
 
 class MemoryLifecycleConfig(BaseModel):
@@ -711,6 +732,7 @@ class KuroConfig(BaseModel):
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+    execution_guard: ExecutionGuardConfig = Field(default_factory=ExecutionGuardConfig)
     action_log: ActionLogConfig = Field(default_factory=ActionLogConfig)
     adapters: AdaptersConfig = Field(default_factory=AdaptersConfig)
     web_ui: WebUIConfig = Field(default_factory=WebUIConfig)
