@@ -28,7 +28,7 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 - **Usage Analytics** - Tool usage statistics, cost estimation, smart optimization suggestions
 - **Experience Learning** - Learns from past interactions; extracts error patterns, tool usage optimizations, and model performance insights
 - **Self-Diagnostics & Auto-Repair** - Built-in diagnostic tools for LLM self-debugging: error analysis, session health, performance profiling, and automated repair recommendations; configurable repair model (main or custom); `/diagnose` system command across all adapters
-- **46 built-in tools** - Files, shell, screenshots, clipboard, desktop control, calendar, browser automation, memory, time, scheduling, agent delegation, agent instance management, team orchestration, remote delegation, workflows, version check, self-update, self-diagnostics
+- **47 built-in tools** - Files, shell, screenshots, clipboard, desktop control, calendar, browser automation, batch crawling, memory, time, scheduling, agent delegation, agent instance management, team orchestration, remote delegation, workflows, version check, self-update, self-diagnostics
 - **10+ Built-in Skills** - Translator, code reviewer, git helper, debug assistant, data analyst, and more
 - **Skills + Plugins** - On-demand SKILL.md instructions, external Python tool plugins, one-click install
 - **Messaging integration** - Telegram, Discord, Slack (Socket Mode), LINE (webhook), Email (IMAP IDLE + SMTP)
@@ -1156,6 +1156,7 @@ PUT  /api/personality   # Update personality (JSON body: {"content": "..."})
 | `web_click` | MEDIUM | Click page element |
 | `web_type` | MEDIUM | Type in input field |
 | `web_screenshot` | LOW | Screenshot current page |
+| `web_crawl_batch` | MEDIUM | Async batch crawl with depth/domain limits, dedupe, per-domain rate limit, checkpoint/resume, proxy pool, and optional dynamic fallback |
 | `web_close` | LOW | Close browser |
 | **Memory** |||
 | `memory_search` | LOW | Search long-term memory |
