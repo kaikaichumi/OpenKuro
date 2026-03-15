@@ -153,7 +153,7 @@ class TelegramConfig(BaseModel):
 
     def get_bot_token(self) -> str | None:
         """Resolve bot token from environment variable."""
-        return os.environ.get(self.bot_token_env)
+        return os.environ.get(self.bot_token_env) or os.environ.get("TELEGRAM_BOT_TOKEN")
 
 
 class DiscordConfig(BaseModel):
@@ -169,7 +169,7 @@ class DiscordConfig(BaseModel):
 
     def get_bot_token(self) -> str | None:
         """Resolve bot token from environment variable."""
-        return os.environ.get(self.bot_token_env)
+        return os.environ.get(self.bot_token_env) or os.environ.get("DISCORD_BOT_TOKEN")
 
 
 class SlackConfig(BaseModel):
@@ -184,10 +184,10 @@ class SlackConfig(BaseModel):
     approval_timeout: int = 60
 
     def get_bot_token(self) -> str | None:
-        return os.environ.get(self.bot_token_env)
+        return os.environ.get(self.bot_token_env) or os.environ.get("SLACK_BOT_TOKEN")
 
     def get_app_token(self) -> str | None:
-        return os.environ.get(self.app_token_env)
+        return os.environ.get(self.app_token_env) or os.environ.get("SLACK_APP_TOKEN")
 
 
 class LineConfig(BaseModel):
@@ -202,10 +202,10 @@ class LineConfig(BaseModel):
     approval_timeout: int = 60
 
     def get_channel_secret(self) -> str | None:
-        return os.environ.get(self.channel_secret_env)
+        return os.environ.get(self.channel_secret_env) or os.environ.get("LINE_CHANNEL_SECRET")
 
     def get_access_token(self) -> str | None:
-        return os.environ.get(self.channel_access_token_env)
+        return os.environ.get(self.channel_access_token_env) or os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 
 
 class EmailConfig(BaseModel):
@@ -224,10 +224,10 @@ class EmailConfig(BaseModel):
     approval_timeout: int = 300  # Email is slower, 5 minutes
 
     def get_email(self) -> str | None:
-        return os.environ.get(self.email_env)
+        return os.environ.get(self.email_env) or os.environ.get("EMAIL_ADDRESS")
 
     def get_password(self) -> str | None:
-        return os.environ.get(self.password_env)
+        return os.environ.get(self.password_env) or os.environ.get("EMAIL_PASSWORD")
 
 
 class AdaptersConfig(BaseModel):
