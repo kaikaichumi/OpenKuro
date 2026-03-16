@@ -122,6 +122,10 @@ class WebApprovalCallback(ApprovalCallback):
         for aid in to_remove:
             self._pending.pop(aid, None)
 
+    def has_websocket(self, session_id: str) -> bool:
+        """Return True when the session currently has an attached websocket."""
+        return session_id in self._websockets
+
     async def request_approval(
         self,
         tool_name: str,
@@ -173,6 +177,44 @@ class WebApprovalCallback(ApprovalCallback):
             return False
         fut.set_result(action)
         return True
+
+
+class RoutedApprovalCallback(ApprovalCallback):
+    """Route approvals to Web UI sessions or fallback adapter callback.
+
+    This keeps adapter approvals (Discord/Telegram/Slack/LINE/Email) working
+    when the WebServer is also running in adapter mode.
+    """
+
+    def __init__(
+        self,
+        web_callback: WebApprovalCallback,
+        fallback_callback: ApprovalCallback | None,
+    ) -> None:
+        self._web = web_callback
+        self._fallback = fallback_callback
+
+    async def request_approval(
+        self,
+        tool_name: str,
+        params: dict[str, Any],
+        risk_level: RiskLevel,
+        session: Session,
+    ) -> bool:
+        adapter_name = str(getattr(session, "adapter", "") or "").lower()
+        if adapter_name == "web" or self._web.has_websocket(session.id):
+            return await self._web.request_approval(
+                tool_name, params, risk_level, session
+            )
+
+        if self._fallback is not None:
+            return await self._fallback.request_approval(
+                tool_name, params, risk_level, session
+            )
+
+        return await self._web.request_approval(
+            tool_name, params, risk_level, session
+        )
 
 
 class WebToolCallback(ToolExecutionCallback):
@@ -308,7 +350,11 @@ class WebServer:
             timeout=60,
             approval_policy=engine.approval_policy,
         )
-        self.engine.approval_cb = self.approval_cb
+        previous_approval_cb = self.engine.approval_cb
+        self.engine.approval_cb = RoutedApprovalCallback(
+            web_callback=self.approval_cb,
+            fallback_callback=previous_approval_cb,
+        )
         self._tool_cb = WebToolCallback()
         self.engine.tool_callback = self._tool_cb
         self._connections: dict[str, ConnectionState] = {}
