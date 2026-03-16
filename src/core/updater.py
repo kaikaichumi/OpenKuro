@@ -110,15 +110,18 @@ class Updater:
             return None
 
         try:
-            # Fetch remote info without downloading objects
-            rc, _ = await self._run_git("fetch", "--dry-run", "origin")
+            target_branch = self.update_branch
+
+            # Always perform a real fetch so origin/<branch> ref is refreshed.
+            # Using only --dry-run can leave stale refs and cause false "up to date".
+            rc, _ = await self._run_git(
+                "fetch", "--prune", "origin", target_branch
+            )
             if rc != 0:
-                # Try actual fetch (dry-run may not be supported)
-                rc, _ = await self._run_git("fetch", "origin")
+                # Fallback for remotes that reject branch-scoped fetch.
+                rc, _ = await self._run_git("fetch", "--prune", "origin")
                 if rc != 0:
                     return None
-
-            target_branch = self.update_branch
 
             # Compare local target branch to origin target branch.
             rc_local, local_hash = await self._run_git("rev-parse", target_branch)
