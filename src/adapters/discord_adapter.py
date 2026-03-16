@@ -486,6 +486,8 @@ class DiscordAdapter(BaseAdapter):
 
         session_key = self._session_key(message.channel.id, message.author.id)
         session = self.get_or_create_session(session_key)
+        # Keep approval routing fresh for command-driven flows (e.g. !delegate).
+        self._approval_cb.register_channel(session.id, message.channel.id)
 
         if cmd == "help":
             prefix = self.config.adapters.discord.command_prefix
@@ -680,9 +682,6 @@ class DiscordAdapter(BaseAdapter):
                 )
                 return
 
-            # Register channel for approval callbacks
-            self._approval_cb.register_channel(session.id, message.channel.id)
-
             # Send typing indicator and run agent
             async with message.channel.typing():
                 await message.channel.send(
@@ -690,7 +689,11 @@ class DiscordAdapter(BaseAdapter):
                     f"(model: `{defn.model}`)..."
                 )
                 try:
-                    result = await agent_manager.delegate(agent_name, task)
+                    result = await agent_manager.delegate(
+                        agent_name,
+                        task,
+                        parent_session=session,
+                    )
 
                     # Send result (split if needed)
                     max_len = self.config.adapters.discord.max_message_length
