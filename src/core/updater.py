@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,6 +49,25 @@ class Updater:
 
     def __init__(self, repo_dir: Path | None = None) -> None:
         self._repo_dir = repo_dir or Path(__file__).parent.parent.parent
+        self._update_branch = self._normalize_branch_name(
+            os.environ.get("KURO_UPDATE_BRANCH", "main")
+        )
+
+    @staticmethod
+    def _normalize_branch_name(value: str | None) -> str:
+        branch = (value or "").strip()
+        if not branch:
+            return "main"
+        if branch.startswith("refs/heads/"):
+            branch = branch[len("refs/heads/"):]
+        if branch.startswith("origin/"):
+            branch = branch[len("origin/"):]
+        return branch or "main"
+
+    @property
+    def update_branch(self) -> str:
+        """Target branch used by self-update flow (default: main)."""
+        return self._update_branch
 
     def get_current_version(self) -> str:
         """Get the current version string."""
@@ -98,13 +118,12 @@ class Updater:
                 if rc != 0:
                     return None
 
-            # Get current branch
-            branch = await self.get_branch()
+            target_branch = self.update_branch
 
-            # Get local and remote hashes
-            rc_local, local_hash = await self._run_git("rev-parse", "HEAD")
+            # Compare local target branch to origin target branch.
+            rc_local, local_hash = await self._run_git("rev-parse", target_branch)
             rc_remote, remote_hash = await self._run_git(
-                "rev-parse", f"origin/{branch}"
+                "rev-parse", f"origin/{target_branch}"
             )
 
             if rc_local != 0 or rc_remote != 0:
@@ -124,13 +143,13 @@ class Updater:
 
             # Count commits behind
             rc, count_output = await self._run_git(
-                "rev-list", "--count", f"HEAD..origin/{branch}"
+                "rev-list", "--count", f"{target_branch}..origin/{target_branch}"
             )
             commits_behind = int(count_output) if rc == 0 else 0
 
             # Get recent commit messages from remote
             rc, log_output = await self._run_git(
-                "log", "--oneline", f"HEAD..origin/{branch}", "-10"
+                "log", "--oneline", f"{target_branch}..origin/{target_branch}", "-10"
             )
             summary = log_output if rc == 0 else ""
 
@@ -165,8 +184,24 @@ class Updater:
             )
 
         old_version = self.get_current_version()
+        target_branch = self.update_branch
+        current_branch = await self.get_branch()
+
+        # Ensure update happens on target branch (default: main).
+        if current_branch != target_branch:
+            rc, checkout_output = await self._run_git("checkout", target_branch)
+            if rc != 0:
+                return UpdateResult(
+                    success=False,
+                    old_version=old_version,
+                    new_version=old_version,
+                    message=(
+                        f"Failed to switch from '{current_branch}' to "
+                        f"'{target_branch}':\n{checkout_output}"
+                    ),
+                    needs_restart=False,
+                )
         old_hash = await self.get_current_hash() or "unknown"
-        branch = await self.get_branch()
 
         # Check for local modifications
         rc, status = await self._run_git("status", "--porcelain")
@@ -179,7 +214,9 @@ class Updater:
 
         try:
             # Pull latest
-            rc, pull_output = await self._run_git("pull", "origin", branch)
+            rc, pull_output = await self._run_git(
+                "pull", "--ff-only", "origin", target_branch
+            )
             if rc != 0:
                 return UpdateResult(
                     success=False,
