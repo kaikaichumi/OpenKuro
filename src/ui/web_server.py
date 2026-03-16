@@ -32,6 +32,13 @@ from src.openai_catalog import (
     normalize_openai_model,
 )
 from src.ui.openai_oauth import OpenAIOAuthManager
+from src.ui.page_schema import (
+    UIPageSchemaRegistry,
+    build_agents_page_schema,
+    build_dashboard_page_schema,
+    build_security_page_schema,
+)
+from src.ui.settings_schema import SettingsSchemaRegistry, build_core_settings_schema
 from src.tools.base import RiskLevel, ToolResult
 
 logger = structlog.get_logger()
@@ -266,6 +273,31 @@ class WebServer:
         self.engine = engine
         self.config = config
         self._oauth = OpenAIOAuthManager()
+        self._settings_schema = SettingsSchemaRegistry()
+        self._settings_schema.register(
+            "core",
+            build_core_settings_schema,
+            order=0,
+        )
+        self._page_schema = UIPageSchemaRegistry()
+        self._page_schema.register(
+            "agents",
+            "core_agents",
+            build_agents_page_schema,
+            order=0,
+        )
+        self._page_schema.register(
+            "dashboard",
+            "core_dashboard",
+            build_dashboard_page_schema,
+            order=0,
+        )
+        self._page_schema.register(
+            "security",
+            "core_security",
+            build_security_page_schema,
+            order=0,
+        )
         self.approval_cb = WebApprovalCallback(
             timeout=60,
             approval_policy=engine.approval_policy,
@@ -274,6 +306,16 @@ class WebServer:
         self._tool_cb = WebToolCallback()
         self.engine.tool_callback = self._tool_cb
         self._connections: dict[str, ConnectionState] = {}
+        cache_ttl_raw = os.environ.get("KURO_MODELS_CACHE_TTL_SECONDS", "10")
+        try:
+            cache_ttl = float(cache_ttl_raw)
+        except ValueError:
+            cache_ttl = 10.0
+        self._models_cache_groups: dict[str, list[str]] = {}
+        self._models_cache_flat: list[str] = []
+        self._models_cache_expires_at: float = 0.0
+        self._models_cache_ttl: float = max(0.0, cache_ttl)
+        self._models_cache_lock = asyncio.Lock()
 
         # Session cache: keeps sessions alive after WebSocket disconnects
         # so they can be restored on reconnect (e.g., after page navigation).
@@ -282,6 +324,67 @@ class WebServer:
         self._SESSION_CACHE_TTL = 1800  # 30 minutes
 
         self.app = self._create_app()
+
+    def _invalidate_models_cache(self) -> None:
+        self._models_cache_groups = {}
+        self._models_cache_flat = []
+        self._models_cache_expires_at = 0.0
+
+    @staticmethod
+    def _flatten_model_groups(
+        groups: dict[str, list[str]],
+        default_model: str,
+    ) -> list[str]:
+        flat: list[str] = []
+        seen: set[str] = set()
+
+        def _add(model: str | None) -> None:
+            value = str(model or "").strip()
+            if not value or value in seen:
+                return
+            seen.add(value)
+            flat.append(value)
+
+        _add(default_model)
+        for provider_models in groups.values():
+            for model in provider_models:
+                _add(model)
+        return flat
+
+    async def _get_models_snapshot(self) -> tuple[dict[str, list[str]], list[str]]:
+        now = time.monotonic()
+        if self._models_cache_groups and now < self._models_cache_expires_at:
+            return (
+                {k: list(v) for k, v in self._models_cache_groups.items()},
+                list(self._models_cache_flat),
+            )
+
+        async with self._models_cache_lock:
+            now = time.monotonic()
+            if self._models_cache_groups and now < self._models_cache_expires_at:
+                return (
+                    {k: list(v) for k, v in self._models_cache_groups.items()},
+                    list(self._models_cache_flat),
+                )
+
+            started = time.perf_counter()
+            groups = await self.engine.model.list_models_grouped()
+            flat = self._flatten_model_groups(groups, self.engine.model.default_model)
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            logger.info(
+                "models_snapshot_refreshed",
+                model_groups=len(groups),
+                model_count=len(flat),
+                duration_ms=elapsed_ms,
+            )
+
+            self._models_cache_groups = {k: list(v) for k, v in groups.items()}
+            self._models_cache_flat = list(flat)
+            self._models_cache_expires_at = now + max(0.0, self._models_cache_ttl)
+            return (
+                {k: list(v) for k, v in self._models_cache_groups.items()},
+                list(self._models_cache_flat),
+            )
 
     @staticmethod
     def _parse_model_selection(raw: str) -> tuple[str | None, str]:
@@ -351,6 +454,8 @@ class WebServer:
                     group_label = provider.capitalize()
                     if provider == "openai-compatible":
                         group_label = "OpenAI-Compatible (Local)"
+                    elif provider == "llama":
+                        group_label = "Llama (OpenAI-Compatible)"
                     catalog.append({
                         "value": model,
                         "model": model,
@@ -410,8 +515,7 @@ class WebServer:
 
         @app.get("/api/models")
         async def get_models(request: Request):
-            groups = await self.engine.model.list_models_grouped()
-            flat = await self.engine.model.list_models()
+            groups, flat = await self._get_models_snapshot()
             oauth_sid = self._oauth.get_session_id_from_cookies(request.cookies)
             oauth_status = self._oauth.get_status(oauth_sid)
             catalog = self._build_model_catalog(
@@ -582,18 +686,7 @@ class WebServer:
         @app.get("/api/config")
         async def get_config():
             """Get current configuration (excluding secrets)."""
-            data = self.config.model_dump(exclude={"core_prompt"})
-            # Mask API keys for security
-            for provider_name, provider_data in data.get("models", {}).get("providers", {}).items():
-                if provider_data.get("api_key"):
-                    provider_data["api_key"] = "***"
-            for adapter_name in ("telegram", "discord", "slack", "line", "email"):
-                adapter_data = data.get("adapters", {}).get(adapter_name, {})
-                for key in list(adapter_data.keys()):
-                    if "token" in key.lower() or "secret" in key.lower() or "password" in key.lower():
-                        if adapter_data[key] and not key.endswith("_env"):
-                            adapter_data[key] = "***"
-            return {"config": data}
+            return {"config": self._public_config_data()}
 
         @app.put("/api/config")
         async def update_config(request: Request):
@@ -602,36 +695,69 @@ class WebServer:
             Accepts a partial config dict — only the provided fields are updated.
             Changes are saved to config.yaml and applied to the running engine.
             """
-            from src.config import save_config
-
             data = await request.json()
             updates = data.get("config", data)
 
-            # Build a new config by merging current + updates
-            current_data = self.config.model_dump(exclude={"core_prompt"})
-            self._deep_merge(current_data, updates)
+            new_config, build_error = self._build_updated_config(updates)
+            if new_config is None:
+                return {"status": "error", "message": f"Invalid config: {build_error}"}
 
-            try:
-                from src.config import KuroConfig
-                new_config = KuroConfig(**current_data)
-                new_config.core_prompt = self.config.core_prompt  # Preserve encrypted prompt
-            except Exception as e:
-                return {"status": "error", "message": f"Invalid config: {e}"}
-
-            # Save to disk
-            try:
-                save_config(new_config)
-            except Exception as e:
-                return {"status": "error", "message": f"Save failed: {e}"}
-
-            # Hot-reload: apply changes to the running engine
-            applied = self._apply_config_changes(new_config)
+            applied, apply_error = self._save_and_apply_config(new_config)
+            if applied is None:
+                return {"status": "error", "message": f"Save failed: {apply_error}"}
 
             return {
                 "status": "ok",
                 "message": "Configuration updated and applied",
                 "applied": applied,
             }
+
+        @app.get("/api/settings/schema")
+        async def get_settings_schema():
+            """Get schema metadata for settings UI rendering."""
+            schema = self._settings_schema.build_schema()
+            return {"schema": schema}
+
+        @app.get("/api/settings/values")
+        async def get_settings_values():
+            """Get current settings values (public-safe)."""
+            return {"values": self._public_config_data()}
+
+        @app.put("/api/settings/values")
+        async def update_settings_values(request: Request):
+            """Update settings values via schema-driven API."""
+            data = await request.json()
+            updates = data.get("values", data.get("config", data))
+
+            new_config, build_error = self._build_updated_config(updates)
+            if new_config is None:
+                return {"status": "error", "message": f"Invalid settings: {build_error}"}
+
+            applied, apply_error = self._save_and_apply_config(new_config)
+            if applied is None:
+                return {"status": "error", "message": f"Save failed: {apply_error}"}
+
+            return {
+                "status": "ok",
+                "message": "Settings updated and applied",
+                "applied": applied,
+            }
+
+        @app.get("/api/ui/schema")
+        async def get_ui_schema_pages():
+            """List available UI page schemas."""
+            return {"pages": self._page_schema.list_pages()}
+
+        @app.get("/api/ui/schema/{page_id}")
+        async def get_ui_schema(page_id: str):
+            """Get schema metadata for non-settings pages."""
+            schema = self._page_schema.build_page_schema(page_id)
+            if schema is None:
+                return JSONResponse(
+                    {"status": "error", "message": f"unknown page: {page_id}"},
+                    status_code=404,
+                )
+            return {"schema": schema}
 
         @app.get("/api/config/lessons")
         async def get_lessons():
@@ -1428,6 +1554,76 @@ class WebServer:
                 WebServer._deep_merge(base[key], value)
             else:
                 base[key] = value
+
+    @staticmethod
+    def _looks_like_secret_key(key: str) -> bool:
+        lower = key.lower()
+        return (
+            "token" in lower
+            or "secret" in lower
+            or "password" in lower
+            or "api_key" in lower
+        )
+
+    @classmethod
+    def _restore_masked_secrets(cls, updates: Any, current: Any) -> Any:
+        """Replace masked secret placeholders with current values before merge."""
+        if isinstance(updates, dict):
+            restored: dict[str, Any] = {}
+            current_dict = current if isinstance(current, dict) else {}
+            for key, value in updates.items():
+                current_value = current_dict.get(key)
+                if isinstance(value, dict):
+                    restored[key] = cls._restore_masked_secrets(value, current_value)
+                    continue
+                if (
+                    isinstance(value, str)
+                    and value == "***"
+                    and cls._looks_like_secret_key(str(key))
+                ):
+                    restored[key] = current_value
+                else:
+                    restored[key] = value
+            return restored
+        return updates
+
+    def _public_config_data(self) -> dict[str, Any]:
+        """Return current config as public-safe dict (secrets masked)."""
+        data = self.config.model_dump(exclude={"core_prompt"})
+        for _, provider_data in data.get("models", {}).get("providers", {}).items():
+            if provider_data.get("api_key"):
+                provider_data["api_key"] = "***"
+        for adapter_name in ("telegram", "discord", "slack", "line", "email"):
+            adapter_data = data.get("adapters", {}).get(adapter_name, {})
+            for key in list(adapter_data.keys()):
+                if "token" in key.lower() or "secret" in key.lower() or "password" in key.lower():
+                    if adapter_data[key] and not key.endswith("_env"):
+                        adapter_data[key] = "***"
+        return data
+
+    def _build_updated_config(self, updates: dict[str, Any]) -> tuple[KuroConfig | None, str | None]:
+        """Merge updates into current config and validate into a new KuroConfig."""
+        current_data = self.config.model_dump(exclude={"core_prompt"})
+        safe_updates = self._restore_masked_secrets(updates, current_data)
+        self._deep_merge(current_data, safe_updates)
+        try:
+            new_config = KuroConfig(**current_data)
+            new_config.core_prompt = self.config.core_prompt
+            return new_config, None
+        except Exception as e:
+            return None, str(e)
+
+    def _save_and_apply_config(self, new_config: KuroConfig) -> tuple[list[str] | None, str | None]:
+        """Persist config to disk and hot-apply to runtime."""
+        from src.config import save_config
+
+        try:
+            save_config(new_config)
+        except Exception as e:
+            return None, str(e)
+        applied = self._apply_config_changes(new_config)
+        self._invalidate_models_cache()
+        return applied, None
 
     def _find_agent_instance_config(
         self, instance_id: str

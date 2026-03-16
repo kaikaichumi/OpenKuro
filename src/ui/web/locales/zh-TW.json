@@ -173,6 +173,10 @@
         "parallelSubtasks": "平行執行",
         "parallelSubtasksDesc": "平行執行獨立的子任務",
         "modelAuto": "自動 / 預設",
+        "searchPlaceholder": "搜尋設定...",
+        "searchHint": "快捷鍵：Ctrl+K",
+        "reloaded": "設定已重新載入",
+        "noResults": "找不到符合的設定",
         "mlClassifier": "本地 ML 分類器",
         "mlEnabled": "ML 模型",
         "mlEnabledDesc": "使用本地 DistilBERT ONNX 模型進行複雜度分析",
@@ -222,7 +226,56 @@
         "delegationThresholdModerate": "Moderate 閥值",
         "delegationThresholdModerateDesc": "低於此分數為 moderate",
         "delegationThresholdComplex": "Complex 閥值",
-        "delegationThresholdComplexDesc": "低於此分數為 complex（以上為 expert）"
+        "delegationThresholdComplexDesc": "低於此分數為 complex（以上為 expert）",
+        "executionGuard": "執行防護",
+        "egEnabled": "啟用執行防護",
+        "egEnabledDesc": "防止重複工具迴圈與高風險的大量操作。",
+        "egMaxRepeat": "同一工具重複上限",
+        "egMaxRepeatDesc": "每個任務中，相同工具+相同參數最多允許次數。0 表示不限制。",
+        "egMaxToolCalls": "每任務工具呼叫上限",
+        "egMaxToolCallsDesc": "每個任務工具呼叫硬上限。0 表示不限制。",
+        "egMaxShellCalls": "每任務 Shell 呼叫上限",
+        "egMaxShellCallsDesc": "每個任務 shell_execute 呼叫硬上限。0 表示不限制。",
+        "egMaxDownloadOps": "下載操作上限",
+        "egMaxDownloadOpsDesc": "每個任務中下載類 Shell 操作硬上限。0 表示不限制。",
+        "egMaxDestructiveOps": "破壞性 Shell 操作上限",
+        "egMaxDestructiveOpsDesc": "每個任務中刪除/移動/重新命名等 Shell 操作硬上限。0 表示不限制。",
+        "egConfirmBulk": "大量 Shell 操作需再次確認",
+        "egConfirmBulkDesc": "當命令被判定為大量或高風險時，要求第二次確認。",
+        "egBulkThreshold": "大量操作風險門檻",
+        "egBulkThresholdDesc": "數值越高，越少命令會被視為大量/高風險。",
+        "egPlanCheck": "高風險工具先做計畫檢查",
+        "egPlanCheckDesc": "執行 HIGH/CRITICAL 工具前，先要求模型產生安全計畫。",
+        "egPlanModel": "計畫檢查模型",
+        "egPlanModelDesc": "用於高風險計畫檢查的模型。留空 = 使用目前模型。",
+        "egPlanMaxTokens": "計畫最大 Tokens",
+        "egPlanMaxTokensDesc": "高風險計畫生成時的 Token 上限。"
+    },
+    "panel": {
+        "quickNav": "快捷導覽",
+        "overview": "總覽",
+        "management": "管理",
+        "monitoring": "監控",
+        "analysis": "分析",
+        "agents": {
+            "overview": "實例總覽",
+            "mainSubAgents": "主代理子代理",
+            "instances": "實例管理"
+        },
+        "dashboard": {
+            "filter": "代理篩選",
+            "stats": "統計",
+            "agentStates": "代理狀態",
+            "timeline": "事件時間線"
+        },
+        "security": {
+            "score": "安全評分",
+            "stats": "概覽統計",
+            "risk": "風險分佈",
+            "tools": "常用工具",
+            "hourly": "每小時活動",
+            "history": "核准與拒絕"
+        }
     },
     "security": {
         "title": "安全儀表板",
@@ -307,6 +360,7 @@
         "editInstance": "編輯代理實例",
         "instanceId": "實例 ID",
         "instanceName": "顯示名稱",
+        "enabled": "啟用",
         "model": "模型",
         "temperature": "溫度",
         "personalityMode": "人格模式",
@@ -326,6 +380,7 @@
         "subAgentName": "名稱",
         "maxToolRounds": "最大工具輪數",
         "securitySettings": "安全設定",
+        "featureOverrides": "功能覆寫",
         "autoApproveLevels": "自動核准等級",
         "allowedDirs": "允許存取目錄",
         "blockedCommands": "封鎖指令",
@@ -333,7 +388,15 @@
         "deniedTools": "禁用的工具",
         "usageTip": "使用方式：前往「對話」頁面，切換分割畫面，然後從面板下拉選單選擇此代理即可開始對話。",
         "complexityTier": "複雜度等級",
-        "editSubAgent": "編輯子代理"
+        "editSubAgent": "編輯子代理",
+        "validationRequired": "{field} 為必填。",
+        "validationInvalidNumber": "{field} 必須是有效數字。",
+        "validationMin": "{field} 必須大於等於 {min}。",
+        "validationMax": "{field} 必須小於等於 {max}。",
+        "validationInvalidChoice": "{field} 選項無效。",
+        "validationInvalidFormat": "{field} 格式不正確。",
+        "validationMinItems": "{field} 至少需要 {min} 個項目。",
+        "validationMaxItems": "{field} 最多允許 {max} 個項目。"
     },
     "dashboard": {
         "loading": "載入儀表板中...",
@@ -360,6 +423,7 @@
         "default": "預設",
         "free": "免費",
         "edit": "編輯",
+        "delete": "刪除",
         "save": "儲存",
         "cancel": "取消"
     }

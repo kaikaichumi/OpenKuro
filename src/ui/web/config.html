@@ -8,14 +8,28 @@
     <link rel="stylesheet" href="/static/css/base.css">
     <link rel="stylesheet" href="/static/css/layout.css">
     <link rel="stylesheet" href="/static/css/components.css">
+    <link rel="stylesheet" href="/static/css/settings.css">
 </head>
 <body class="page-scroll">
     <nav id="main-nav"></nav>
 
     <div class="config-container" id="app">
-        <h1 style="margin-bottom: 1rem; font-size: 1.3rem;" data-i18n="config.title">Settings</h1>
+        <h1 style="margin-bottom: 0.75rem; font-size: 1.3rem;" data-i18n="config.title">Settings</h1>
 
-        <!-- Memory Stats -->
+        <div class="settings-toolbar">
+            <input
+                id="settings-search"
+                class="search"
+                type="text"
+                data-i18n-placeholder="config.searchPlaceholder"
+                placeholder="Search settings..."
+            >
+            <button id="refresh-btn" class="btn btn-secondary" data-i18n="common.refresh">Refresh</button>
+            <button id="save-btn" class="btn btn-primary" disabled data-i18n="config.save">Save & Apply</button>
+            <span id="save-status" style="color: var(--text-muted); font-size: 0.85rem;"></span>
+            <span class="hint" data-i18n="config.searchHint">Shortcut: Ctrl+K</span>
+        </div>
+
         <div class="section" id="stats-section">
             <h2 data-i18n="config.memoryStatus">Memory & Learning Status</h2>
             <div class="stats-grid stats-grid-sm" id="stats-grid">
@@ -32,373 +46,22 @@
                 <button class="btn btn-sm btn-warning" data-maintenance="organize_memory_md" data-i18n="config.organizeMemory">Organize MEMORY.md</button>
                 <button class="btn btn-sm btn-warning" data-maintenance="daily_learning" data-i18n="config.runLearning">Run Learning Analysis</button>
             </div>
-        </div>
-
-        <!-- Security / Full Access -->
-        <div class="section">
-            <h2><span data-i18n="config.securityControl">Security Control</span> <span class="badge off" id="badge-full-access">OFF</span></h2>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.fullAccessMode">Full Access Mode</span><small data-i18n="config.fullAccessModeDesc">Bypass approval and sandbox checks. Use only in isolated environments.</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="sec-full-access"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><small style="color: var(--danger);" data-i18n="config.fullAccessWarning">Warning: This allows high-risk commands/filesystem operations without approval prompts.</small></div>
-                <div class="field-input"></div>
-            </div>
-        </div>
-
-        <!-- Context Compression -->
-        <div class="section">
-            <h2><span data-i18n="config.contextCompression">Context Compression</span> <span class="badge" id="badge-compression">ON</span></h2>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.enabled">Enabled</span><small data-i18n="config.ccDesc">Auto-summarize when context fills up</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="cc-enabled"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.tokenBudget">Token Budget</span><small data-i18n="config.tokenBudgetDesc">Total token budget for context window</small></div>
-                <div class="field-input"><input type="number" id="cc-budget" min="10000" max="1000000" step="10000"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.triggerThreshold">Trigger Threshold</span><small data-i18n="config.triggerThresholdDesc">Compress at this % of budget (0.0-1.0)</small></div>
-                <div class="field-input"><input type="number" id="cc-threshold" min="0.5" max="0.95" step="0.05"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.keepRecent">Keep Recent Turns</span><small data-i18n="config.keepRecentDesc">How many recent turns to keep verbatim</small></div>
-                <div class="field-input"><input type="number" id="cc-recent" min="3" max="50"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.summarizeModel">Summarize Model</span><small data-i18n="config.summarizeModelDesc">Cheap/fast model for summarization</small></div>
-                <div class="field-input"><input type="text" id="cc-model"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.extractFacts">Extract Facts</span><small data-i18n="config.extractFactsDesc">Auto-save key facts to long-term memory</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="cc-extract"><span class="slider"></span></label></div>
-            </div>
-        </div>
-
-        <!-- Memory Lifecycle -->
-        <div class="section">
-            <h2><span data-i18n="config.memoryLifecycle">Memory Lifecycle</span> <span class="badge" id="badge-lifecycle">ON</span></h2>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.enabled">Enabled</span><small data-i18n="config.mlDesc">Decay, consolidation, and pruning</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="ml-enabled"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.decayRate">Decay Rate (lambda)</span><small data-i18n="config.decayRateDesc">Higher = faster decay (0.001-0.1)</small></div>
-                <div class="field-input"><input type="number" id="ml-decay" min="0.001" max="0.1" step="0.001"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.pruneThreshold">Prune Threshold</span><small data-i18n="config.pruneThresholdDesc">Remove memories below this importance (0-1)</small></div>
-                <div class="field-input"><input type="number" id="ml-prune" min="0.01" max="0.5" step="0.01"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.consolidationDistance">Consolidation Distance</span><small data-i18n="config.consolidationDistanceDesc">Merge memories with cosine distance below this</small></div>
-                <div class="field-input"><input type="number" id="ml-consolidation" min="0.05" max="0.5" step="0.01"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.dailyTime">Daily Maintenance Time</span><small data-i18n="config.dailyTimeDesc">HH:MM format</small></div>
-                <div class="field-input"><input type="text" id="ml-daily-time" placeholder="03:00"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.mdMaxLines">MEMORY.md Max Lines</span><small data-i18n="config.mdMaxLinesDesc">Auto-organize when exceeding</small></div>
-                <div class="field-input"><input type="number" id="ml-md-max" min="50" max="1000"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.pinUserMemories">Pin User Memories</span><small data-i18n="config.pinUserMemoriesDesc">User-stored memories skip decay</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="ml-pin"><span class="slider"></span></label></div>
-            </div>
-        </div>
-
-        <!-- Learning -->
-        <div class="section">
-            <h2><span data-i18n="config.experienceLearning">Experience Learning</span> <span class="badge" id="badge-learning">ON</span></h2>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.enabled">Enabled</span><small data-i18n="config.leDesc">Learn from action logs</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="le-enabled"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.maxLessons">Max Lessons</span><small data-i18n="config.maxLessonsDesc">Maximum number of stored lessons</small></div>
-                <div class="field-input"><input type="number" id="le-max" min="5" max="100"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.injectTopK">Inject Top K</span><small data-i18n="config.injectTopKDesc">Inject this many lessons into context</small></div>
-                <div class="field-input"><input type="number" id="le-topk" min="1" max="20"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.errorThreshold">Error Threshold</span><small data-i18n="config.errorThresholdDesc">Similar errors before creating a lesson</small></div>
-                <div class="field-input"><input type="number" id="le-err" min="1" max="10"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.analysisTime">Analysis Time</span><small data-i18n="config.analysisTimeDesc">HH:MM for daily analysis</small></div>
-                <div class="field-input"><input type="text" id="le-time" placeholder="04:00"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.trackModelPerf">Track Model Performance</span><small data-i18n="config.trackModelPerfDesc">Discover which models work best</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="le-track"><span class="slider"></span></label></div>
-            </div>
-
-            <!-- Current lessons -->
             <div id="lessons-container" style="margin-top: 0.75rem;">
                 <h3 style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.3rem;" data-i18n="config.lessonsLearned">Lessons Learned</h3>
                 <div class="lessons-list" id="lessons-list"><em style="color: var(--text-muted); font-size: 0.8rem;" data-i18n="common.loading">Loading...</em></div>
             </div>
         </div>
 
-        <!-- Code Feedback -->
-        <div class="section">
-            <h2><span data-i18n="config.codeFeedback">Code Feedback Loop</span> <span class="badge" id="badge-code">OFF</span></h2>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.enabled">Enabled</span><small data-i18n="config.cfDesc">Auto-check code after file_write</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="cf-enabled"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.lintOnWrite">Lint on Write</span><small data-i18n="config.lintOnWriteDesc">Run linter (ruff/eslint) automatically</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="cf-lint"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.typeCheck">Type Check on Write</span><small data-i18n="config.typeCheckDesc">Run type checker (pyright/tsc) automatically</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="cf-type"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.testOnWrite">Test on Write</span><small data-i18n="config.testOnWriteDesc">Run related tests automatically</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="cf-test"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.maxAutoFix">Max Auto-Fix Rounds</span><small data-i18n="config.maxAutoFixDesc">Maximum retries for auto-fixing</small></div>
-                <div class="field-input"><input type="number" id="cf-rounds" min="1" max="10"></div>
-            </div>
-        </div>
-
-        <!-- Vision / Image Analysis -->
-        <div class="section">
-            <h2><span data-i18n="config.visionAnalysis">Vision / Image Analysis</span> <span class="badge" id="badge-vision">ON</span></h2>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.analysisMode">Analysis Mode</span><small data-i18n="config.analysisModeDesc">When to run OCR/CV image analysis for text-only models</small></div>
-                <div class="field-input">
-                    <select id="vi-mode">
-                        <option value="auto" data-i18n="config.viModeAuto">Auto (when model can't handle images)</option>
-                        <option value="always" data-i18n="config.viModeAlways">Always (attach analysis to all images)</option>
-                        <option value="disabled" data-i18n="config.viModeDisabled">Disabled (skip images for text-only)</option>
-                    </select>
-                </div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.fallbackFormat">Fallback Format</span><small data-i18n="config.fallbackFormatDesc">Output format for image analysis</small></div>
-                <div class="field-input">
-                    <select id="vi-format">
-                        <option value="text" data-i18n="config.viFormatText">Structured Text</option>
-                        <option value="svg" data-i18n="config.viFormatSvg">Simplified SVG</option>
-                    </select>
-                </div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.detailLevel">Detail Level</span><small data-i18n="config.detailLevelDesc">How much detail to include in analysis</small></div>
-                <div class="field-input">
-                    <select id="vi-detail">
-                        <option value="brief" data-i18n="config.viDetailBrief">Brief</option>
-                        <option value="standard" data-i18n="config.viDetailStandard">Standard</option>
-                        <option value="detailed" data-i18n="config.viDetailDetailed">Detailed</option>
-                    </select>
-                </div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.gridSize">Grid Size</span><small data-i18n="config.gridSizeDesc">Spatial grid size for coordinate mapping (2-8)</small></div>
-                <div class="field-input"><input type="number" id="vi-grid" min="2" max="8"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.maxElements">Max Elements</span><small data-i18n="config.maxElementsDesc">Maximum UI elements to include in analysis</small></div>
-                <div class="field-input"><input type="number" id="vi-max-elements" min="10" max="200"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.visionModels">Vision Models Override</span><small data-i18n="config.visionModelsDesc">Comma-separated list of models to force as vision-capable</small></div>
-                <div class="field-input"><input type="text" id="vi-vision-models" placeholder="e.g. ollama/llava:latest"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.textOnlyModels">Text-Only Models Override</span><small data-i18n="config.textOnlyModelsDesc">Comma-separated list of models to force as text-only</small></div>
-                <div class="field-input"><input type="text" id="vi-text-only-models" placeholder="e.g. ollama/qwen3-coder"></div>
-            </div>
-        </div>
-
-        <!-- Diagnostics & Self-Repair -->
-        <div class="section">
-            <h2><span data-i18n="config.diagnostics">Self-Diagnostics & Repair</span> <span class="badge" id="badge-diagnostics">ON</span></h2>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.enabled">Enabled</span><small data-i18n="config.diagDesc">LLM self-diagnostic tools for error analysis, performance profiling, and auto-repair</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="diag-enabled"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.diagRepairModel">Repair Model</span><small data-i18n="config.diagRepairModelDesc">Model for self-repair: "main" = use main model, or specify custom model</small></div>
-                <div class="field-input"><select id="diag-repair-model" class="model-select"></select></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.diagAutoDiagnose">Auto-Diagnose on Error</span><small data-i18n="config.diagAutoDiagnoseDesc">Automatically trigger diagnostics when tool errors occur</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="diag-auto"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.diagErrorThreshold">Error Threshold</span><small data-i18n="config.diagErrorThresholdDesc">Consecutive errors before auto-triggering repair</small></div>
-                <div class="field-input"><input type="number" id="diag-error-threshold" min="1" max="20"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.diagIncludeAgents">Include in Agents</span><small data-i18n="config.diagIncludeAgentsDesc">Give sub-agents and agent instances access to diagnostic tools</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="diag-agents"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.diagMatchingModel">Only Matching Model</span><small data-i18n="config.diagMatchingModelDesc">Only include diagnostics for agents with the same model as main</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="diag-matching"><span class="slider"></span></label></div>
-            </div>
-        </div>
-
-        <!-- Task Complexity -->
-        <div class="section">
-            <h2><span data-i18n="config.taskComplexity">Task Complexity</span> <span class="badge" id="badge-complexity">ON</span></h2>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.enabled">Enabled</span><small data-i18n="config.tcDesc">Estimate task complexity and route to appropriate models</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="tc-enabled"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.triggerMode">Trigger Mode</span><small data-i18n="config.triggerModeDesc">When to run complexity analysis</small></div>
-                <div class="field-input">
-                    <select id="tc-trigger">
-                        <option value="auto" data-i18n="config.triggerAuto">Auto (every message)</option>
-                        <option value="manual" data-i18n="config.triggerManual">Manual (on demand)</option>
-                        <option value="auto_silent" data-i18n="config.triggerSilent">Auto Silent (background)</option>
-                    </select>
-                </div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.llmRefinement">LLM Refinement</span><small data-i18n="config.llmRefinementDesc">Use cheap model to refine ambiguous scores</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="tc-llm-refine"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.refinementModel">Refinement Model</span><small data-i18n="config.refinementModelDesc">Cheap model for score refinement (empty = auto)</small></div>
-                <div class="field-input"><select id="tc-refine-model" class="model-select"></select></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.fastModel">Fast Model</span><small data-i18n="config.fastModelDesc">Model for trivial/simple tasks (empty = auto-detect)</small></div>
-                <div class="field-input"><select id="tc-fast-model" class="model-select"></select></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.standardModel">Standard Model</span><small data-i18n="config.standardModelDesc">Model for moderate tasks (empty = default)</small></div>
-                <div class="field-input"><select id="tc-standard-model" class="model-select"></select></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.frontierModel">Frontier Model</span><small data-i18n="config.frontierModelDesc">Model for complex/expert tasks (empty = auto-detect)</small></div>
-                <div class="field-input"><select id="tc-frontier-model" class="model-select"></select></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.decomposition">Task Decomposition</span><small data-i18n="config.decompositionDesc">Split overly complex tasks into sub-tasks</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="tc-decompose"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.decomposeThreshold">Decompose Threshold</span><small data-i18n="config.decomposeThresholdDesc">Score above which tasks are decomposed (0-1)</small></div>
-                <div class="field-input"><input type="number" id="tc-decompose-threshold" min="0.5" max="1.0" step="0.05"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.maxSubtasks">Max Sub-tasks</span><small data-i18n="config.maxSubtasksDesc">Maximum number of sub-tasks per decomposition</small></div>
-                <div class="field-input"><input type="number" id="tc-max-subtasks" min="2" max="10"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.parallelSubtasks">Parallel Execution</span><small data-i18n="config.parallelSubtasksDesc">Run independent sub-tasks in parallel</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="tc-parallel"><span class="slider"></span></label></div>
-            </div>
-
-            <!-- ML Model Sub-section -->
-            <h3 style="font-size: 0.9rem; color: var(--text-muted); margin-top: 1rem; margin-bottom: 0.5rem; border-top: 1px solid var(--border-color); padding-top: 0.75rem;">
-                <span data-i18n="config.mlClassifier">Local ML Classifier</span>
-                <span class="badge" id="badge-ml" style="margin-left: 0.5rem;">OFF</span>
-            </h3>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.mlEnabled">ML Model</span><small data-i18n="config.mlEnabledDesc">Use local DistilBERT ONNX model for complexity analysis</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="tc-ml-enabled"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.mlMode">Estimation Mode</span><small data-i18n="config.mlModeDesc">How to combine ML with heuristic scoring</small></div>
-                <div class="field-input">
-                    <select id="tc-ml-mode">
-                        <option value="hybrid" data-i18n="config.mlModeHybrid">Hybrid (ML + Heuristic)</option>
-                        <option value="ml_only" data-i18n="config.mlModeOnly">ML Only</option>
-                        <option value="ml_refine" data-i18n="config.mlModeRefine">ML Refine (ambiguous zone)</option>
-                    </select>
-                </div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.mlModelPath">Model Path</span><small data-i18n="config.mlModelPathDesc">ONNX model file (empty = auto-detect)</small></div>
-                <div class="field-input"><input type="text" id="tc-ml-model-path" placeholder="models/complexity_model_int8.onnx"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.mlTokenizerPath">Tokenizer Path</span><small data-i18n="config.mlTokenizerPathDesc">Tokenizer directory (empty = auto-detect)</small></div>
-                <div class="field-input"><input type="text" id="tc-ml-tokenizer-path" placeholder="models/complexity_tokenizer/"></div>
-            </div>
-        </div>
-
-        <!-- Delegation Complexity -->
-        <div class="section">
-            <h2><span data-i18n="config.delegationComplexity">Delegation Complexity</span> <span class="badge" id="badge-delegation-complexity">OFF</span></h2>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.enabled">Enabled</span><small data-i18n="config.delegationComplexityDesc">Use complexity scoring for main agent task delegation to sub-agents (shares the Task Complexity settings above)</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="dc-enabled"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.delegationDefaultUse">Default Use Complexity</span><small data-i18n="config.delegationDefaultUseDesc">When enabled, delegation uses complexity routing by default</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="dc-default-use"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.delegationAutoSelect">Allow Auto Select</span><small data-i18n="config.delegationAutoSelectDesc">Auto-pick a suitable sub-agent when target is missing or under-tier</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="dc-auto-select"><span class="slider"></span></label></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.delegationEnforceTier">Enforce Minimum Tier</span><small data-i18n="config.delegationEnforceTierDesc">Reject/fallback when selected sub-agent tier is below required tier</small></div>
-                <div class="field-input"><label class="toggle"><input type="checkbox" id="dc-enforce-tier"><span class="slider"></span></label></div>
-            </div>
-            <h3 style="font-size: 0.9rem; color: var(--text-muted); margin-top: 1rem; margin-bottom: 0.5rem; border-top: 1px solid var(--border-color); padding-top: 0.75rem;">
-                <span data-i18n="config.delegationTierModels">Tier Preferred Models</span>
-            </h3>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.delegationModelTrivial">Trivial Model</span><small data-i18n="config.delegationModelTrivialDesc">Preferred model when required tier is trivial</small></div>
-                <div class="field-input"><select id="dc-model-trivial" class="model-select"></select></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.delegationModelSimple">Simple Model</span><small data-i18n="config.delegationModelSimpleDesc">Preferred model when required tier is simple</small></div>
-                <div class="field-input"><select id="dc-model-simple" class="model-select"></select></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.delegationModelModerate">Moderate Model</span><small data-i18n="config.delegationModelModerateDesc">Preferred model when required tier is moderate</small></div>
-                <div class="field-input"><select id="dc-model-moderate" class="model-select"></select></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.delegationModelComplex">Complex+ Model</span><small data-i18n="config.delegationModelComplexDesc">Preferred model when required tier is complex or expert</small></div>
-                <div class="field-input"><select id="dc-model-complex" class="model-select"></select></div>
-            </div>
-            <h3 style="font-size: 0.9rem; color: var(--text-muted); margin-top: 1rem; margin-bottom: 0.5rem; border-top: 1px solid var(--border-color); padding-top: 0.75rem;">
-                <span data-i18n="config.delegationTierThresholds">Tier Thresholds</span>
-            </h3>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.delegationThresholdTrivial">Trivial</span><small data-i18n="config.delegationThresholdTrivialDesc">Score below this is trivial</small></div>
-                <div class="field-input"><input type="number" id="dc-tier-trivial" min="0" max="1.0" step="0.01"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.delegationThresholdSimple">Simple</span><small data-i18n="config.delegationThresholdSimpleDesc">Score below this is simple</small></div>
-                <div class="field-input"><input type="number" id="dc-tier-simple" min="0" max="1.0" step="0.01"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.delegationThresholdModerate">Moderate</span><small data-i18n="config.delegationThresholdModerateDesc">Score below this is moderate</small></div>
-                <div class="field-input"><input type="number" id="dc-tier-moderate" min="0" max="1.0" step="0.01"></div>
-            </div>
-            <div class="field">
-                <div class="field-label"><span data-i18n="config.delegationThresholdComplex">Complex</span><small data-i18n="config.delegationThresholdComplexDesc">Score below this is complex (above = expert)</small></div>
-                <div class="field-input"><input type="number" id="dc-tier-complex" min="0" max="1.0" step="0.01"></div>
-            </div>
-        </div>
-
-        <!-- Save Button -->
-        <div class="actions" style="position: sticky; bottom: 0; background: var(--bg-primary); padding: 1rem 0;">
-            <span id="save-status" style="color: var(--text-muted); font-size: 0.85rem; margin-right: auto;"></span>
-            <button class="btn btn-primary" id="save-btn" disabled data-i18n="config.save">Save & Apply</button>
+        <div class="settings-shell">
+            <aside id="settings-nav" class="settings-nav"></aside>
+            <main class="settings-main">
+                <div id="settings-meta" class="settings-meta"></div>
+                <div id="settings-sections"></div>
+            </main>
         </div>
     </div>
 
     <div class="toast" id="toast"></div>
-
-    <script type="module" src="/static/js/config.js"></script>
+    <script type="module" src="/static/js/settings.js"></script>
 </body>
 </html>

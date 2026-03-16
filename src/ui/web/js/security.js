@@ -5,6 +5,7 @@
 import { initLayout } from "./layout.js";
 import { t, onLocaleChange } from "./i18n.js";
 import { escapeHtml } from "./utils.js";
+import { initPanelNav, refreshPanelNav } from "./panel_nav.js";
 import KuroPlugins from "./plugins.js";
 
 let lastData = null;
@@ -33,6 +34,7 @@ function renderDashboard(data) {
     const offset = circumference * (1 - s / 100);
     const color = scoreColor(s);
 
+    html += '<div id="security-score" class="section">';
     html += '<div class="score-card">';
     html += '<div class="score-ring">';
     html += '<svg width="120" height="120" viewBox="0 0 120 120">';
@@ -63,8 +65,10 @@ function renderDashboard(data) {
         html += '</div>';
     }
     html += '</div></div>';
+    html += '</div>';
 
     // --- Stats Grid ---
+    html += '<div id="security-overview" class="section">';
     html += '<div class="stats-grid">';
     html += '<div class="stat-card"><div class="stat-value blue">' + (stats.total_events || 0) +
             '</div><div class="stat-label">' + t("security.totalEvents") + '</div></div>';
@@ -75,12 +79,13 @@ function renderDashboard(data) {
     html += '<div class="stat-card"><div class="stat-value yellow">' + (stats.security_events || 0) +
             '</div><div class="stat-label">' + t("security.securityEvents") + '</div></div>';
     html += '</div>';
+    html += '</div>';
 
     // --- Two Column Charts ---
     html += '<div class="two-col">';
 
     // Risk Distribution
-    html += '<div class="chart-section"><h3>' + t("security.riskDistribution") + '</h3>';
+    html += '<div id="security-risk" class="chart-section"><h3>' + t("security.riskDistribution") + '</h3>';
     html += '<div class="risk-bars">';
     const risk = stats.risk_distribution || {};
     const maxRisk = Math.max(risk.low || 0, risk.medium || 0, risk.high || 0, risk.critical || 0, 1);
@@ -98,7 +103,7 @@ function renderDashboard(data) {
     html += '</div></div>';
 
     // Top Tools
-    html += '<div class="chart-section"><h3>' + t("security.topTools") + '</h3>';
+    html += '<div id="security-tools" class="chart-section"><h3>' + t("security.topTools") + '</h3>';
     const tools = stats.top_tools || [];
     if (tools.length > 0) {
         html += '<table class="data-table"><thead><tr><th>' + t("security.tool") + '</th><th>' + t("security.calls") + '</th></tr></thead><tbody>';
@@ -112,7 +117,7 @@ function renderDashboard(data) {
     html += '</div></div>';
 
     // --- Hourly Activity ---
-    html += '<div class="chart-section"><h3>' + t("security.hourlyActivity") + '</h3>';
+    html += '<div id="security-hourly" class="chart-section"><h3>' + t("security.hourlyActivity") + '</h3>';
     const hourly = stats.hourly_activity || [];
     const maxH = Math.max.apply(null, hourly.concat([1]));
     html += '<div class="bar-chart">';
@@ -131,7 +136,7 @@ function renderDashboard(data) {
     // --- Blocked History (7 days) ---
     const dailyCounts = blocked.daily_counts || [];
     if (dailyCounts.length > 0) {
-        html += '<div class="chart-section"><h3>' + t("security.approvedVsDenied") + '</h3>';
+        html += '<div id="security-history" class="chart-section"><h3>' + t("security.approvedVsDenied") + '</h3>';
         let maxB = 1;
         for (let b = 0; b < dailyCounts.length; b++) {
             const tot = (dailyCounts[b].approved || 0) + (dailyCounts[b].denied || 0);
@@ -156,6 +161,7 @@ function renderDashboard(data) {
     }
 
     dashboard.innerHTML = html;
+    refreshPanelNav();
 }
 
 function fetchAndRender() {
@@ -172,6 +178,7 @@ function fetchAndRender() {
 
 async function init() {
     await initLayout({ activePath: "/security" });
+    await initPanelNav("security");
 
     fetchAndRender();
 
@@ -180,6 +187,7 @@ async function init() {
 
     onLocaleChange(() => {
         if (lastData) renderDashboard(lastData);
+        refreshPanelNav();
     });
 
     KuroPlugins.initAll();

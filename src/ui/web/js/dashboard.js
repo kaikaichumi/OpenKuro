@@ -8,6 +8,7 @@
 import { initLayout } from "./layout.js";
 import { t, onLocaleChange } from "./i18n.js";
 import { escapeHtml } from "./utils.js";
+import { initPanelNav, refreshPanelNav } from "./panel_nav.js";
 
 let ws = null;
 let reconnectTimer = null;
@@ -83,6 +84,7 @@ async function fetchInitialData() {
         renderStats();
         renderAgentStates();
         renderTimeline();
+        refreshPanelNav();
     } catch (_e) {
         loadingEl.textContent = t("dashboard.loadFailed") || "Failed to load dashboard";
     }
@@ -357,6 +359,7 @@ async function init() {
     await initLayout({
         activePath: "/dashboard",
     });
+    await initPanelNav("dashboard");
     resolveDom();
 
     if (agentFilterSelect) {
@@ -376,6 +379,7 @@ async function init() {
         renderStats();
         renderAgentStates();
         renderTimeline();
+        refreshPanelNav();
     });
 }
 

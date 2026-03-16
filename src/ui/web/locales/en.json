@@ -199,6 +199,10 @@
         "delegationThresholdComplex": "Complex Threshold",
         "delegationThresholdComplexDesc": "Score below this is complex (above = expert)",
         "modelAuto": "Auto / Default",
+        "searchPlaceholder": "Search settings...",
+        "searchHint": "Shortcut: Ctrl+K",
+        "reloaded": "Settings reloaded",
+        "noResults": "No matching settings.",
         "mlClassifier": "Local ML Classifier",
         "mlEnabled": "ML Model",
         "mlEnabledDesc": "Use local DistilBERT ONNX model for complexity analysis",
@@ -222,7 +226,56 @@
         "diagIncludeAgents": "Include in Agents",
         "diagIncludeAgentsDesc": "Give sub-agents and agent instances access to diagnostic tools",
         "diagMatchingModel": "Only Matching Model",
-        "diagMatchingModelDesc": "Only include diagnostics for agents using the same model as main"
+        "diagMatchingModelDesc": "Only include diagnostics for agents using the same model as main",
+        "executionGuard": "Execution Guard",
+        "egEnabled": "Enable Execution Guard",
+        "egEnabledDesc": "Prevent repeated tool loops and risky bulk operations.",
+        "egMaxRepeat": "Max Repeated Tool Call",
+        "egMaxRepeatDesc": "Same tool + same args allowed this many times per task. 0 = no limit.",
+        "egMaxToolCalls": "Max Tool Calls Per Task",
+        "egMaxToolCallsDesc": "Hard cap per task. 0 = no limit.",
+        "egMaxShellCalls": "Max Shell Calls Per Task",
+        "egMaxShellCallsDesc": "Hard cap for shell_execute per task. 0 = no limit.",
+        "egMaxDownloadOps": "Max Download Ops",
+        "egMaxDownloadOpsDesc": "Hard cap for download-like shell operations per task. 0 = no limit.",
+        "egMaxDestructiveOps": "Max Destructive Shell Ops",
+        "egMaxDestructiveOpsDesc": "Hard cap for delete/move/rename shell operations per task. 0 = no limit.",
+        "egConfirmBulk": "Confirm Bulk Shell Ops",
+        "egConfirmBulkDesc": "Require a second confirmation when a shell command looks bulk or risky.",
+        "egBulkThreshold": "Bulk Risk Threshold",
+        "egBulkThresholdDesc": "Higher value = fewer commands treated as bulk/risky.",
+        "egPlanCheck": "Plan Check For High-Risk Tools",
+        "egPlanCheckDesc": "Ask model for a safety plan before running HIGH/CRITICAL tools.",
+        "egPlanModel": "Plan Model",
+        "egPlanModelDesc": "Model used for high-risk plan checking. Empty = current model.",
+        "egPlanMaxTokens": "Plan Max Tokens",
+        "egPlanMaxTokensDesc": "Token limit for high-risk plan generation."
+    },
+    "panel": {
+        "quickNav": "Quick Navigation",
+        "overview": "Overview",
+        "management": "Management",
+        "monitoring": "Monitoring",
+        "analysis": "Analysis",
+        "agents": {
+            "overview": "Instance Overview",
+            "mainSubAgents": "Main Sub-Agents",
+            "instances": "Instance Management"
+        },
+        "dashboard": {
+            "filter": "Agent Filter",
+            "stats": "Stats",
+            "agentStates": "Agent States",
+            "timeline": "Timeline"
+        },
+        "security": {
+            "score": "Security Score",
+            "stats": "Overview Stats",
+            "risk": "Risk Distribution",
+            "tools": "Top Tools",
+            "hourly": "Hourly Activity",
+            "history": "Approved vs Denied"
+        }
     },
     "security": {
         "title": "Security Dashboard",
@@ -307,6 +360,7 @@
         "editInstance": "Edit Agent Instance",
         "instanceId": "Instance ID",
         "instanceName": "Display Name",
+        "enabled": "Enabled",
         "model": "Model",
         "temperature": "Temperature",
         "personalityMode": "Personality Mode",
@@ -326,6 +380,7 @@
         "subAgentName": "Name",
         "maxToolRounds": "Max Tool Rounds",
         "securitySettings": "Security Settings",
+        "featureOverrides": "Feature Overrides",
         "autoApproveLevels": "Auto-Approve Levels",
         "allowedDirs": "Allowed Directories",
         "blockedCommands": "Blocked Commands",
@@ -333,7 +388,15 @@
         "deniedTools": "Denied Tools",
         "usageTip": "To chat with an agent: go to Chat, use split layout, then select the agent from the panel dropdown.",
         "complexityTier": "Complexity Tier",
-        "editSubAgent": "Edit Sub-Agent"
+        "editSubAgent": "Edit Sub-Agent",
+        "validationRequired": "{field} is required.",
+        "validationInvalidNumber": "{field} must be a valid number.",
+        "validationMin": "{field} must be >= {min}.",
+        "validationMax": "{field} must be <= {max}.",
+        "validationInvalidChoice": "{field} has an invalid option.",
+        "validationInvalidFormat": "{field} has invalid format.",
+        "validationMinItems": "{field} requires at least {min} items.",
+        "validationMaxItems": "{field} allows at most {max} items."
     },
     "dashboard": {
         "loading": "Loading dashboard...",
@@ -360,6 +423,7 @@
         "default": "Default",
         "free": "Free",
         "edit": "Edit",
+        "delete": "Delete",
         "save": "Save",
         "cancel": "Cancel"
     }

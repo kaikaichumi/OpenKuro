@@ -1,0 +1,65 @@
+.subagent-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 0.55rem;
+    margin-top: 0.4rem;
+}
+
+.subagent-card {
+    background: linear-gradient(135deg, rgba(43, 102, 255, 0.08), rgba(43, 102, 255, 0.02));
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.55rem 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+}
+
+.subagent-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.subagent-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.subagent-tier {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 1px 8px;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+.subagent-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+}
+
+.subagent-meta code {
+    color: var(--accent);
+    font-size: 0.74rem;
+}
+
+.subagent-actions {
+    display: flex;
+    gap: 0.35rem;
+}
+
+.subagent-actions .btn {
+    flex: 1;
+}

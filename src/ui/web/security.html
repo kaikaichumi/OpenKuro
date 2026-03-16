@@ -8,12 +8,18 @@
     <link rel="stylesheet" href="/static/css/base.css">
     <link rel="stylesheet" href="/static/css/layout.css">
     <link rel="stylesheet" href="/static/css/components.css">
+    <link rel="stylesheet" href="/static/css/panel-shell.css">
 </head>
 <body class="page-scroll">
     <nav id="main-nav"></nav>
 
-    <div class="dashboard" id="dashboard">
-        <div class="loading" id="loading" data-i18n="security.loading">Loading security data</div>
+    <div class="panel-shell">
+        <aside id="panel-nav" class="panel-nav"></aside>
+        <main class="panel-main">
+            <div class="dashboard" id="dashboard">
+                <div class="loading" id="loading" data-i18n="security.loading">Loading security data</div>
+            </div>
+        </main>
     </div>
 
     <script type="module" src="/static/js/security.js"></script>

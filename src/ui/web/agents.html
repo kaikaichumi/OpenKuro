@@ -8,12 +8,19 @@
     <link rel="stylesheet" href="/static/css/base.css">
     <link rel="stylesheet" href="/static/css/layout.css">
     <link rel="stylesheet" href="/static/css/components.css">
+    <link rel="stylesheet" href="/static/css/panel-shell.css">
+    <link rel="stylesheet" href="/static/css/agents.css">
 </head>
 <body class="page-scroll">
     <nav id="main-nav"></nav>
 
-    <div class="dashboard" id="dashboard">
-        <div class="loading" id="loading" data-i18n="agents.loading">Loading agents data</div>
+    <div class="panel-shell">
+        <aside id="panel-nav" class="panel-nav"></aside>
+        <main class="panel-main">
+            <div class="dashboard" id="dashboard">
+                <div class="loading" id="loading" data-i18n="agents.loading">Loading agents data</div>
+            </div>
+        </main>
     </div>
 
     <!-- Create/Edit Instance Modal -->
@@ -21,180 +28,7 @@
         <div class="modal" style="max-width:600px">
             <h3 id="modal-title" data-i18n="agents.createInstance">Create Agent Instance</h3>
             <input type="hidden" id="edit-instance-id">
-
-            <div class="form-group">
-                <label data-i18n="agents.instanceId">Instance ID</label>
-                <input type="text" id="edit-id" placeholder="e.g. customer-service">
-            </div>
-
-            <div class="form-group">
-                <label data-i18n="agents.instanceName">Display Name</label>
-                <input type="text" id="edit-name" placeholder="e.g. Customer Service Bot">
-            </div>
-
-            <div class="form-group">
-                <label>
-                    <input type="checkbox" id="edit-enabled" checked>
-                    Enabled
-                </label>
-            </div>
-
-            <div class="form-group">
-                <label data-i18n="agents.model">Model</label>
-                <select id="edit-model">
-                    <option value="">(inherit from main)</option>
-                </select>
-            </div>
-
-            <div class="form-group">
-                <label data-i18n="agents.temperature">Temperature</label>
-                <input type="number" id="edit-temperature" step="0.1" min="0" max="2" placeholder="(inherit)">
-            </div>
-
-            <div class="form-group">
-                <label data-i18n="agents.personalityMode">Personality Mode</label>
-                <select id="edit-personality-mode">
-                    <option value="independent">Independent</option>
-                    <option value="shared">Shared (use main)</option>
-                </select>
-            </div>
-
-            <div class="form-group">
-                <label data-i18n="agents.memoryMode">Memory Mode</label>
-                <select id="edit-memory-mode">
-                    <option value="independent">Independent</option>
-                    <option value="shared">Shared (use main)</option>
-                    <option value="linked">Linked (share longterm)</option>
-                </select>
-            </div>
-
-            <div class="form-group" id="linked-agents-group" style="display:none">
-                <label data-i18n="agents.linkedAgents">Linked Agent IDs</label>
-                <input type="text" id="edit-linked-agents" placeholder="comma-separated IDs">
-            </div>
-
-            <div class="form-group">
-                <label data-i18n="agents.botAdapter">Bot Adapter</label>
-                <select id="edit-bot-adapter">
-                    <option value="">None</option>
-                    <option value="discord">Discord</option>
-                    <option value="telegram">Telegram</option>
-                    <option value="slack">Slack</option>
-                    <option value="line">LINE</option>
-                    <option value="email">Email</option>
-                </select>
-            </div>
-
-            <div class="form-group" id="bot-token-group" style="display:none">
-                <label data-i18n="agents.botTokenEnv">Bot Token Env Var</label>
-                <input type="text" id="edit-bot-token-env" placeholder="e.g. KURO_DISCORD_TOKEN_CS">
-            </div>
-
-            <div class="form-group">
-                <label data-i18n="agents.systemPrompt">System Prompt</label>
-                <textarea id="edit-system-prompt" rows="3" placeholder="(inherit from main)"></textarea>
-            </div>
-
-            <details class="form-section-collapsible" style="margin:0.5rem 0">
-                <summary style="cursor:pointer;color:var(--primary);font-weight:600">Feature Overrides</summary>
-                <div style="padding:0.5rem 0">
-                    <div class="form-group">
-                        <label>Context Compression</label>
-                        <select id="edit-feature-context-compression">
-                            <option value="inherit">Inherit from main</option>
-                            <option value="enabled">Enabled</option>
-                            <option value="disabled">Disabled</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Compression Summarize Model</label>
-                        <select id="edit-feature-context-model">
-                            <option value="">(inherit from main)</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Compression Trigger Threshold</label>
-                        <input type="number" id="edit-feature-context-threshold" min="0" max="1" step="0.01" placeholder="(inherit, e.g. 0.80)">
-                    </div>
-                    <div class="form-group">
-                        <label>Memory Lifecycle</label>
-                        <select id="edit-feature-memory-lifecycle">
-                            <option value="inherit">Inherit from main</option>
-                            <option value="enabled">Enabled</option>
-                            <option value="disabled">Disabled</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Learning</label>
-                        <select id="edit-feature-learning">
-                            <option value="inherit">Inherit from main</option>
-                            <option value="enabled">Enabled</option>
-                            <option value="disabled">Disabled</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Code Feedback</label>
-                        <select id="edit-feature-code-feedback">
-                            <option value="inherit">Inherit from main</option>
-                            <option value="enabled">Enabled</option>
-                            <option value="disabled">Disabled</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Task Complexity</label>
-                        <select id="edit-feature-task-complexity">
-                            <option value="inherit">Inherit from main</option>
-                            <option value="enabled">Enabled</option>
-                            <option value="disabled">Disabled</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Vision Analysis Mode</label>
-                        <select id="edit-feature-vision-mode">
-                            <option value="inherit">Inherit from main</option>
-                            <option value="auto">Auto</option>
-                            <option value="always">Always</option>
-                            <option value="disabled">Disabled</option>
-                        </select>
-                    </div>
-                </div>
-            </details>
-
-            <details class="form-section-collapsible" style="margin:0.5rem 0">
-                <summary style="cursor:pointer;color:var(--primary);font-weight:600" data-i18n="agents.securitySettings">Security Settings</summary>
-                <div style="padding:0.5rem 0">
-                    <div class="form-group">
-                        <label>Max Risk Level</label>
-                        <select id="edit-max-risk-level">
-                            <option value="inherit">(inherit from main)</option>
-                            <option value="low">low</option>
-                            <option value="medium">medium</option>
-                            <option value="high">high</option>
-                            <option value="critical">critical</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label data-i18n="agents.autoApproveLevels">Auto-Approve Levels</label>
-                        <input type="text" id="edit-auto-approve" placeholder="e.g. low,medium (inherit from main)">
-                    </div>
-                    <div class="form-group">
-                        <label data-i18n="agents.allowedDirs">Allowed Directories</label>
-                        <input type="text" id="edit-allowed-dirs" placeholder="e.g. ~/Documents,~/Data (inherit from main)">
-                    </div>
-                    <div class="form-group">
-                        <label data-i18n="agents.blockedCommands">Blocked Commands</label>
-                        <input type="text" id="edit-blocked-cmds" placeholder="e.g. rm -rf /,format (inherit from main)">
-                    </div>
-                    <div class="form-group">
-                        <label data-i18n="agents.allowedTools">Allowed Tools</label>
-                        <input type="text" id="edit-allowed-tools" placeholder="comma-separated (empty = all)">
-                    </div>
-                    <div class="form-group">
-                        <label data-i18n="agents.deniedTools">Denied Tools</label>
-                        <input type="text" id="edit-denied-tools" placeholder="comma-separated (empty = none)">
-                    </div>
-                </div>
-            </details>
+            <div id="instance-form-root"></div>
 
             <div class="modal-actions">
                 <button class="btn" id="modal-cancel" data-i18n="common.cancel">Cancel</button>
@@ -224,37 +58,7 @@
             <h3 id="subagent-title" data-i18n="agents.addSubAgent">Add Sub-Agent</h3>
             <input type="hidden" id="subagent-instance-id">
             <input type="hidden" id="subagent-original-name">
-
-            <div class="form-group">
-                <label data-i18n="agents.subAgentName">Name</label>
-                <input type="text" id="subagent-name" placeholder="e.g. researcher">
-            </div>
-
-            <div class="form-group">
-                <label data-i18n="agents.model">Model</label>
-                <input type="text" id="subagent-model" placeholder="e.g. ollama/qwen3:32b">
-            </div>
-
-            <div class="form-group">
-                <label data-i18n="agents.systemPrompt">System Prompt</label>
-                <textarea id="subagent-system-prompt" rows="3" placeholder="Agent instructions..."></textarea>
-            </div>
-
-            <div class="form-group">
-                <label data-i18n="agents.maxToolRounds">Max Tool Rounds</label>
-                <input type="number" id="subagent-max-rounds" value="5" min="1" max="50">
-            </div>
-
-            <div class="form-group">
-                <label data-i18n="agents.complexityTier">Complexity Tier</label>
-                <select id="subagent-complexity-tier">
-                    <option value="trivial">trivial</option>
-                    <option value="simple">simple</option>
-                    <option value="moderate" selected>moderate</option>
-                    <option value="complex">complex</option>
-                    <option value="expert">expert</option>
-                </select>
-            </div>
+            <div id="subagent-form-root"></div>
 
             <div class="modal-actions">
                 <button class="btn" id="subagent-cancel" data-i18n="common.cancel">Cancel</button>
