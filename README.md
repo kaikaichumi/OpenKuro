@@ -18,7 +18,7 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 - **Real-Time Dashboard** - Live agent state visualization, event timeline, and aggregated statistics via WebSocket push
 - **Task Complexity Estimation** - ML-based complexity scoring with adaptive model routing; routes simple tasks to fast/cheap models, complex tasks to frontier models
 - **Task Scheduler + Proactive Notifications** - Cron-like scheduling with auto-push results to Discord/Telegram
-- **Multi-model support** - Anthropic Claude, OpenAI GPT, Google Gemini, Ollama local models via LiteLLM
+- **Multi-model support** - Anthropic Claude, OpenAI GPT, Google Gemini, Ollama local models, and Llama OpenAI-compatible endpoints via LiteLLM
 - **Workflow Engine** - Composable multi-step automation with YAML definitions, agent chaining, and template variables
 - **Context Overflow Auto-Compression** - Automatically compresses context when hitting token limits; truncates old tool results and drops stale messages
 - **Execution Guard Rails (Phase B)** - Prevents runaway/repeated tool loops and risky bulk shell actions with per-task budgets and confirmations
@@ -224,6 +224,9 @@ models:
     ollama:
       base_url: "http://localhost:11434"  # Default Ollama URL
       api_key: "not-needed"  # Local models don't require API keys
+    llama:
+      base_url: "http://localhost:8080/v1"  # llama.cpp / vLLM OpenAI-compatible endpoint
+      api_key: "not-needed"
 ```
 
 ### 4. Switch Models
@@ -795,6 +798,13 @@ models:
         - "ollama/qwen3-coder"
         - "ollama/llama3.3:70b"
         - "ollama/deepseek-r1"
+    llama:
+      base_url: "http://localhost:8080/v1"
+      api_key: "not-needed"  # OpenAI-compatible local endpoint
+      known_models:
+        - "llama/llama-3.3-70b-instruct"
+        - "llama/llama-3.1-8b-instruct"
+        - "llama/llama-3.2-3b-instruct"
   temperature: 0.7
   max_tokens: 4096
 

@@ -87,6 +87,15 @@ class ModelsConfig(BaseModel):
                 "ollama/mistral-nemo",
             ],
         ),
+        "llama": ProviderConfig(
+            base_url="http://localhost:8080/v1",
+            api_key="not-needed",
+            known_models=[
+                "llama/llama-3.3-70b-instruct",
+                "llama/llama-3.1-8b-instruct",
+                "llama/llama-3.2-3b-instruct",
+            ],
+        ),
     })
     temperature: float = 0.7
     max_tokens: int = 4096

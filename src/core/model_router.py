@@ -258,6 +258,59 @@ class ModelRouter:
             return False
         return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 
+    @staticmethod
+    def _normalize_local_probe_base_url(url: str) -> str:
+        """Normalize localhost probe URL for faster connection failure on Windows."""
+        raw = (url or "").strip()
+        if not raw:
+            return raw
+        # localhost can incur extra IPv6/IPv4 fallback latency on some systems.
+        return re.sub(
+            r"^(https?://)localhost(?=[:/]|$)",
+            r"\g<1>127.0.0.1",
+            raw,
+            flags=re.IGNORECASE,
+        )
+
+    @staticmethod
+    def _split_model_name(model_name: str) -> tuple[str, str]:
+        """Split `provider/model_id` into `(provider, model_id)`."""
+        value = (model_name or "").strip()
+        if "/" not in value:
+            return "", value
+        provider, model_id = value.split("/", 1)
+        return provider, model_id
+
+    @staticmethod
+    def _with_provider_prefix(provider: str, model_id: str) -> str:
+        """Normalize a model id to the target provider prefix."""
+        target = (provider or "").strip()
+        raw = (model_id or "").strip()
+        if not target or not raw:
+            return ""
+
+        if raw.startswith(f"{target}/"):
+            return raw
+
+        base = raw
+        if "/" in raw:
+            first, rest = raw.split("/", 1)
+            if first == target:
+                return raw
+            if first in {"openai", "ollama", "llama", "anthropic", "gemini"}:
+                base = rest
+
+        if target == "openai":
+            return normalize_openai_model(base)
+        return f"{target}/{base}"
+
+    def _to_litellm_model(self, model_name: str) -> str:
+        """Translate user-facing provider aliases to LiteLLM-compatible model ids."""
+        provider, model_id = self._split_model_name(model_name)
+        if provider == "llama":
+            return normalize_openai_model(model_id)
+        return model_name
+
     def _should_disable_tools_for_model(
         self,
         model_name: str,
@@ -268,7 +321,7 @@ class ModelRouter:
         provider = model_name.split("/")[0] if "/" in model_name else ""
         if "llama" not in lower:
             return False
-        if provider == "ollama":
+        if provider in {"ollama", "llama"}:
             return True
         if provider == "openai" and provider_cfg and self._is_local_base_url(
             provider_cfg.base_url
@@ -753,7 +806,7 @@ class ModelRouter:
                     return parsed
 
                 kwargs: dict[str, Any] = {
-                    "model": model_name,
+                    "model": self._to_litellm_model(model_name),
                     "messages": messages,
                     "temperature": temp,
                     "max_tokens": max_tok,
@@ -888,7 +941,7 @@ class ModelRouter:
         max_tok = max_tokens if max_tokens is not None else self.config.models.max_tokens
 
         kwargs: dict[str, Any] = {
-            "model": target_model,
+            "model": self._to_litellm_model(target_model),
             "messages": messages,
             "temperature": temp,
             "max_tokens": max_tok,
@@ -1006,6 +1059,7 @@ class ModelRouter:
             )
             is_local_provider = (
                 name == "ollama"
+                or name == "llama"
                 or (name == "openai" and is_openai_compatible_local_base_url(cfg.base_url))
             )
 
@@ -1014,9 +1068,15 @@ class ModelRouter:
                 try:
                     import httpx
 
-                    base = cfg.base_url or "http://localhost:11434"
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.get(f"{base}/api/tags", timeout=5)
+                    base = (cfg.base_url or "http://localhost:11434").rstrip("/")
+                    probe_base = self._normalize_local_probe_base_url(base)
+                    timeout: httpx.Timeout | float
+                    if self._is_local_base_url(base):
+                        timeout = httpx.Timeout(connect=0.6, read=1.0, write=1.0, pool=0.6)
+                    else:
+                        timeout = 5
+                    async with httpx.AsyncClient(timeout=timeout) as client:
+                        resp = await client.get(f"{probe_base}/api/tags")
                         if resp.status_code == 200:
                             data = resp.json()
                             for m in data.get("models", []):
@@ -1030,22 +1090,34 @@ class ModelRouter:
                     import httpx
 
                     base = cfg.base_url.rstrip("/")
-                    url = f"{base}/models" if base.endswith("/v1") else f"{base}/v1/models"
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.get(url, timeout=5)
+                    probe_base = self._normalize_local_probe_base_url(base)
+                    probe_url = (
+                        f"{probe_base}/models"
+                        if probe_base.endswith("/v1")
+                        else f"{probe_base}/v1/models"
+                    )
+                    timeout: httpx.Timeout | float
+                    if self._is_local_base_url(base):
+                        timeout = httpx.Timeout(connect=0.6, read=1.0, write=1.0, pool=0.6)
+                    else:
+                        timeout = 5
+                    async with httpx.AsyncClient(timeout=timeout) as client:
+                        resp = await client.get(probe_url)
                         if resp.status_code == 200:
                             data = resp.json()
                             for m in data.get("data", []):
                                 model_id = m.get("id", "")
                                 if model_id:
-                                    discovered = normalize_openai_model(model_id)
                                     if name == "openai" and is_openai_compatible_local_base_url(
                                         cfg.base_url
                                     ):
+                                        discovered = normalize_openai_model(model_id)
                                         if discovered not in openai_compatible_models:
                                             openai_compatible_models.append(discovered)
-                                    elif discovered not in provider_models:
-                                        provider_models.append(discovered)
+                                    else:
+                                        discovered = self._with_provider_prefix(name, model_id)
+                                        if discovered and discovered not in provider_models:
+                                            provider_models.append(discovered)
                 except Exception:
                     pass
 
@@ -1072,8 +1144,9 @@ class ModelRouter:
                 if not (is_local_provider or has_api_key):
                     continue
                 for km in cfg.known_models:
-                    if km not in provider_models:
-                        provider_models.append(km)
+                    candidate = self._with_provider_prefix(name, km)
+                    if candidate and candidate not in provider_models:
+                        provider_models.append(candidate)
 
             if provider_models:
                 groups[name] = provider_models

@@ -20,6 +20,9 @@ llm:
     ollama:
       base_url: "http://localhost:11434"
       api_key: "not-needed"
+    llama:
+      base_url: "http://localhost:8080/v1"
+      api_key: "not-needed"
 
 security:
   auto_approve_levels: ["low"]
