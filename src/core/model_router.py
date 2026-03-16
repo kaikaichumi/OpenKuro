@@ -317,9 +317,12 @@ class ModelRouter:
         provider_cfg: Any | None,
     ) -> bool:
         """Heuristic guard for strict local templates that break with tool schema."""
-        lower = model_name.lower()
-        provider = model_name.split("/")[0] if "/" in model_name else ""
-        if "llama" not in lower:
+        provider, model_id = self._split_model_name(model_name)
+        model_lower = model_id.lower()
+        # Important: detect LLaMA family from the model id only.
+        # Provider names like "ollama"/"llama" should not auto-disable tools
+        # for non-LLaMA models such as Qwen or DeepSeek.
+        if "llama" not in model_lower:
             return False
         if provider in {"ollama", "llama"}:
             return True
