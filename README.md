@@ -14,6 +14,7 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 
 - **Multi-Agent Instances** - Primary Agent instances with independent memory, personality, engine, and sub-agent pools; each instance can bind to its own bot
 - **Multi-Agent System** - Sub-agents (recursive, context-aware), Agent Teams (peer-to-peer collaboration), A2A (cross-instance remote delegation)
+- **MCP Tool Bridge** - Connect external MCP servers (stdio) and expose their tools as native Kuro tools with approval/audit support
 - **Split-Screen Chat** - Multi-panel web UI (1–6 panels) with per-panel agent binding and WebSocket multiplexing
 - **Real-Time Dashboard** - Live agent state visualization, event timeline, and aggregated statistics via WebSocket push
 - **Task Complexity Estimation** - ML-based complexity scoring with adaptive model routing; routes simple tasks to fast/cheap models, complex tasks to frontier models
@@ -449,6 +450,30 @@ a2a:
   auto_discover: false
 ```
 
+### MCP Tool Bridge (External Tool Servers)
+
+Connect external MCP servers and expose their tools to Kuro's tool loop:
+
+```yaml
+mcp:
+  enabled: true
+  servers:
+    - name: "scraper"
+      enabled: true
+      transport: "stdio"
+      command: "python"
+      args: ["-m", "your_mcp_server"]
+      env:
+        YOUR_API_KEY: "${YOUR_API_KEY}"
+      startup_timeout: 15
+      request_timeout: 30
+      tool_prefix: "mcp_scraper_"
+      enabled_tools: []      # Empty = all discovered tools
+      risk_level: "high"     # low | medium | high | critical
+```
+
+Web UI path: `Settings (/config)` -> `Integrations` -> `MCP Integration`.
+
 ### Delegation Flow
 
 **Manual:** `/agent run fast Summarize the last 3 commits`
@@ -866,6 +891,21 @@ skills:
 plugins:
   enabled: true
   plugins_dir: "~/.kuro/plugins"
+
+mcp:
+  enabled: false
+  servers:
+    - name: "example-mcp"
+      enabled: true
+      transport: "stdio"
+      command: "python"
+      args: ["-m", "your_mcp_server"]
+      env: {}
+      startup_timeout: 15
+      request_timeout: 30
+      tool_prefix: "mcp_example_"
+      enabled_tools: []   # Empty = all discovered tools
+      risk_level: "high"
 
 adapters:
   telegram:

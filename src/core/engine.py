@@ -160,6 +160,8 @@ class Engine:
         self.agent_manager = agent_manager
         self.team_manager: Any = None  # Set externally after construction (Phase 2)
         self.instance_manager: Any = None  # AgentInstanceManager (Primary Agent instances)
+        self.mcp_bridge: Any = None  # MCPBridgeManager (set by build_engine)
+        self._mcp_init_lock = asyncio.Lock()
 
         # Event bus for live dashboard (set by build_engine)
         self.event_bus: Any = None
@@ -198,6 +200,7 @@ class Engine:
 
         Creates a minimal ToolContext and returns the output string.
         """
+        await self._ensure_mcp_tools_loaded()
         context = ToolContext(
             session_id="scheduler",
             config=self.config,
@@ -219,6 +222,17 @@ class Engine:
         if result.success:
             return result.output
         raise RuntimeError(result.error or "Tool execution failed")
+
+    async def _ensure_mcp_tools_loaded(self) -> None:
+        """Best-effort MCP tool bootstrap (lazy-loaded)."""
+        bridge = getattr(self, "mcp_bridge", None)
+        if bridge is None:
+            return
+        try:
+            async with self._mcp_init_lock:
+                await bridge.ensure_initialized(self.tools.registry)
+        except Exception as e:
+            logger.warning("mcp_bridge_init_failed", error=str(e))
 
     async def execute_agent(self, agent_name: str, task: str) -> str:
         """Execute a sub-agent directly (used by scheduler).
@@ -894,6 +908,8 @@ class Engine:
         images: list[str] | None = None,
     ) -> str:
         """Internal message processing (called with session lock held)."""
+        await self._ensure_mcp_tools_loaded()
+
         # Sanitize user input
         user_text = self.sanitizer.sanitize_user_input(user_text)
         event_agent_id = self._resolve_event_agent_id(session)
@@ -1444,6 +1460,8 @@ class Engine:
 
         For messages that require tool calls, falls back to process_message.
         """
+        await self._ensure_mcp_tools_loaded()
+
         user_text = self.sanitizer.sanitize_user_input(user_text)
         event_agent_id = self._resolve_event_agent_id(session)
 

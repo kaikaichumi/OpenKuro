@@ -23,7 +23,7 @@ from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.config import KuroConfig
+from src.config import KuroConfig, MCPServerConfig
 from src.core.engine import ApprovalCallback, Engine, ToolExecutionCallback, _encode_image_base64
 from src.core.types import AgentDefinition, Session
 from src.openai_catalog import (
@@ -648,8 +648,45 @@ class WebServer:
 
         @app.get("/api/plugins")
         async def get_plugins():
+            bridge = getattr(self.engine, "mcp_bridge", None)
+            if bridge is not None:
+                with contextlib.suppress(Exception):
+                    await bridge.ensure_initialized(self.engine.tools.registry)
             names = self.engine.tools.registry.get_names()
             return {"tools": sorted(names), "count": len(names)}
+
+        @app.get("/api/mcp/servers")
+        async def get_mcp_servers():
+            bridge = getattr(self.engine, "mcp_bridge", None)
+            statuses: list[dict[str, Any]] = []
+            if bridge is not None:
+                with contextlib.suppress(Exception):
+                    await bridge.ensure_initialized(self.engine.tools.registry)
+                    statuses = bridge.list_status()
+            return {
+                "enabled": bool(getattr(self.config.mcp, "enabled", False)),
+                "servers": statuses,
+            }
+
+        @app.post("/api/mcp/discover-tools")
+        async def discover_mcp_server_tools(request: Request):
+            data = await request.json()
+            raw_server = data.get("server", data)
+            try:
+                server_cfg = MCPServerConfig(**(raw_server or {}))
+                from src.core.mcp import discover_mcp_tools
+
+                tools = await discover_mcp_tools(server_cfg)
+                return {
+                    "status": "ok",
+                    "tools": tools,
+                    "count": len(tools),
+                }
+            except Exception as e:
+                return JSONResponse(
+                    {"status": "error", "message": str(e)},
+                    status_code=400,
+                )
 
         # === Personality API ===
 
@@ -1599,6 +1636,13 @@ class WebServer:
                 if "token" in key.lower() or "secret" in key.lower() or "password" in key.lower():
                     if adapter_data[key] and not key.endswith("_env"):
                         adapter_data[key] = "***"
+        for server_data in data.get("mcp", {}).get("servers", []) or []:
+            env_map = server_data.get("env")
+            if not isinstance(env_map, dict):
+                continue
+            for env_key, env_val in list(env_map.items()):
+                if env_val and self._looks_like_secret_key(str(env_key)):
+                    env_map[env_key] = "***"
         return data
 
     def _build_updated_config(self, updates: dict[str, Any]) -> tuple[KuroConfig | None, str | None]:
@@ -1964,6 +2008,16 @@ class WebServer:
         # Delegation complexity routing settings (used directly by delegation tool)
         if new_config.delegation_complexity != old.delegation_complexity:
             applied.append("delegation_complexity")
+
+        # MCP bridge settings (reconnect/reload tools)
+        if new_config.mcp != old.mcp:
+            bridge = getattr(self.engine, "mcp_bridge", None)
+            if bridge is not None:
+                bridge.update_config(new_config.mcp)
+                with contextlib.suppress(Exception):
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(bridge.refresh_now())
+            applied.append("mcp")
 
         # Update the stored config reference
         self.config = new_config

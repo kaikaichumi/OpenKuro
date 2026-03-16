@@ -164,6 +164,10 @@ def build_engine(
         if count:
             logger.info("loaded_plugin_tools", count=count)
 
+    # MCP bridge (lazy initialization in Engine on first use)
+    from src.core.mcp import MCPBridgeManager
+    mcp_bridge = MCPBridgeManager(config.mcp)
+
     # Initialize skills manager
     from src.core.skills import SkillsManager
 
@@ -184,6 +188,7 @@ def build_engine(
         memory_manager=memory_manager,
         skills_manager=skills_manager,
     )
+    engine.mcp_bridge = mcp_bridge
 
     # Attach event bus for live dashboard
     from src.core.agent_events import AgentEventBus
@@ -525,9 +530,14 @@ async def _init_instances(engine: "Engine") -> None:
 
 async def async_main(config: KuroConfig) -> None:
     """Async entry point for CLI mode."""
-    _, cli = build_app(config)
-    await _init_instances(cli.engine)
-    await cli.run()
+    engine, cli = build_app(config)
+    try:
+        await _init_instances(engine)
+        await cli.run()
+    finally:
+        bridge = getattr(engine, "mcp_bridge", None)
+        if bridge is not None:
+            await bridge.shutdown()
 
 
 async def async_web_main(config: KuroConfig) -> None:
@@ -535,13 +545,18 @@ async def async_web_main(config: KuroConfig) -> None:
     from src.ui.web_server import WebServer
 
     engine = build_engine(config)
-    await _init_instances(engine)
-    server = WebServer(engine, config)
-    host = config.web_ui.host
-    port = config.web_ui.port
-    print(f"Kuro Web GUI: http://{host}:{port}")
-    print("Press Ctrl+C to stop.")
-    await server.run()
+    try:
+        await _init_instances(engine)
+        server = WebServer(engine, config)
+        host = config.web_ui.host
+        port = config.web_ui.port
+        print(f"Kuro Web GUI: http://{host}:{port}")
+        print("Press Ctrl+C to stop.")
+        await server.run()
+    finally:
+        bridge = getattr(engine, "mcp_bridge", None)
+        if bridge is not None:
+            await bridge.shutdown()
 
 
 async def async_adapter_main(
@@ -636,6 +651,9 @@ async def async_adapter_main(
 
         web_task.cancel()
         await manager.stop_all()
+        bridge = getattr(engine, "mcp_bridge", None)
+        if bridge is not None:
+            await bridge.shutdown()
         # Give async tasks time to clean up (fixes Windows pipe warnings)
         await asyncio.sleep(0.25)
 

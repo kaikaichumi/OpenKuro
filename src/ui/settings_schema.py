@@ -96,6 +96,12 @@ def build_core_settings_schema() -> dict[str, Any]:
                 "label_i18n": "config.delegationComplexity",
                 "order": 60,
             },
+            {
+                "id": "integrations",
+                "label": "Integrations",
+                "label_i18n": "config.integrations",
+                "order": 70,
+            },
         ],
         "sections": [
             {
@@ -787,6 +793,33 @@ def build_core_settings_schema() -> dict[str, Any]:
                         "min": 0.0,
                         "max": 1.0,
                         "step": 0.01,
+                    },
+                ],
+            },
+            {
+                "id": "mcp-bridge",
+                "category": "integrations",
+                "title": "MCP Integration",
+                "title_i18n": "config.mcpTitle",
+                "description": "Connect external MCP servers and choose which tools to enable.",
+                "description_i18n": "config.mcpDesc",
+                "order": 100,
+                "fields": [
+                    {
+                        "path": "mcp.enabled",
+                        "type": "boolean",
+                        "label": "Enable MCP Bridge",
+                        "label_i18n": "config.mcpEnabled",
+                        "help": "When disabled, no MCP servers are connected and no MCP tools are exposed.",
+                        "help_i18n": "config.mcpEnabledDesc",
+                    },
+                    {
+                        "path": "mcp.servers",
+                        "type": "mcp_servers",
+                        "label": "MCP Servers",
+                        "label_i18n": "config.mcpServers",
+                        "help": "Configure server command/env and choose enabled tools per server.",
+                        "help_i18n": "config.mcpServersDesc",
                     },
                 ],
             },

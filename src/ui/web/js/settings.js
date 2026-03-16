@@ -11,6 +11,7 @@ const state = {
     schema: null,
     originalValues: {},
     draftValues: {},
+    mcpDiscovery: {},
     modelOptions: {
         plainModels: [],
         oauthModelSet: new Set(),
@@ -90,6 +91,372 @@ function parseFieldValue(field, inputEl) {
         return parseCsvValue(inputEl.value);
     }
     return inputEl.value;
+}
+
+function formatEnvMap(envMap) {
+    if (!envMap || typeof envMap !== "object") return "";
+    return Object.entries(envMap)
+        .map(([k, v]) => `${k}=${v ?? ""}`)
+        .join("\n");
+}
+
+function parseEnvMap(text) {
+    const env = {};
+    const lines = String(text || "").split(/\r?\n/);
+    for (const lineRaw of lines) {
+        const line = lineRaw.trim();
+        if (!line || line.startsWith("#")) continue;
+        const idx = line.indexOf("=");
+        if (idx <= 0) continue;
+        const key = line.slice(0, idx).trim();
+        const value = line.slice(idx + 1);
+        if (!key) continue;
+        env[key] = value;
+    }
+    return env;
+}
+
+function normalizeMcpServer(server, index) {
+    const source = server && typeof server === "object" ? server : {};
+    const name = String(source.name || "").trim() || `server_${index + 1}`;
+    const args = Array.isArray(source.args)
+        ? source.args.map((x) => String(x || "").trim()).filter(Boolean)
+        : parseCsvValue(source.args || "");
+    const env = source.env && typeof source.env === "object"
+        ? Object.fromEntries(
+            Object.entries(source.env)
+                .map(([k, v]) => [String(k || "").trim(), String(v ?? "")])
+                .filter(([k]) => Boolean(k)),
+        )
+        : {};
+    const enabledTools = Array.isArray(source.enabled_tools)
+        ? source.enabled_tools.map((x) => String(x || "").trim()).filter(Boolean)
+        : [];
+
+    return {
+        name,
+        enabled: source.enabled !== false,
+        transport: String(source.transport || "stdio").trim() || "stdio",
+        command: String(source.command || "").trim(),
+        args,
+        env,
+        startup_timeout: Number.isFinite(Number(source.startup_timeout))
+            ? Number(source.startup_timeout)
+            : 15,
+        request_timeout: Number.isFinite(Number(source.request_timeout))
+            ? Number(source.request_timeout)
+            : 30,
+        tool_prefix: String(source.tool_prefix || "").trim(),
+        enabled_tools: enabledTools,
+        risk_level: String(source.risk_level || "high").trim().toLowerCase() || "high",
+    };
+}
+
+function normalizeMcpServers(value) {
+    const list = Array.isArray(value) ? value : [];
+    return list.map((item, idx) => normalizeMcpServer(item, idx));
+}
+
+function createMcpServersInput(field, value, onChange) {
+    const root = document.createElement("div");
+    root.className = "mcp-editor";
+
+    let servers = normalizeMcpServers(value);
+
+    const keyFor = (server, idx) => `${idx}:${server.name || ""}`;
+    const getDiscovery = (server, idx) => state.mcpDiscovery[keyFor(server, idx)] || null;
+    const setDiscovery = (server, idx, payload) => {
+        state.mcpDiscovery[keyFor(server, idx)] = payload;
+    };
+
+    const commit = (nextServers) => {
+        servers = normalizeMcpServers(nextServers);
+        onChange(servers);
+        render();
+    };
+
+    const renderServerCard = (server, idx) => {
+        const card = document.createElement("div");
+        card.className = "mcp-server-card";
+
+        const header = document.createElement("div");
+        header.className = "mcp-server-header";
+
+        const title = document.createElement("strong");
+        title.textContent = server.name || `Server ${idx + 1}`;
+        header.appendChild(title);
+
+        const removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.className = "btn btn-sm btn-secondary";
+        removeBtn.textContent = t("config.mcpRemoveServer", "Remove");
+        removeBtn.addEventListener("click", () => {
+            const next = servers.slice();
+            next.splice(idx, 1);
+            commit(next);
+        });
+        header.appendChild(removeBtn);
+        card.appendChild(header);
+
+        const updateServer = (patch) => {
+            const next = servers.slice();
+            next[idx] = normalizeMcpServer({ ...next[idx], ...patch }, idx);
+            commit(next);
+        };
+
+        const row = (labelText, inputEl) => {
+            const wrap = document.createElement("div");
+            wrap.className = "mcp-server-row";
+            const label = document.createElement("label");
+            label.textContent = labelText;
+            wrap.appendChild(label);
+            wrap.appendChild(inputEl);
+            return wrap;
+        };
+
+        const enabledToggle = document.createElement("input");
+        enabledToggle.type = "checkbox";
+        enabledToggle.checked = server.enabled !== false;
+        enabledToggle.addEventListener("change", () => updateServer({ enabled: enabledToggle.checked }));
+        card.appendChild(row(t("config.enabled", "Enabled"), enabledToggle));
+
+        const nameInput = document.createElement("input");
+        nameInput.type = "text";
+        nameInput.value = server.name || "";
+        nameInput.placeholder = "server_name";
+        nameInput.addEventListener("change", () => updateServer({ name: nameInput.value }));
+        card.appendChild(row(t("config.mcpServerName", "Server Name"), nameInput));
+
+        const transportSelect = document.createElement("select");
+        const transportValues = Array.from(new Set([server.transport || "stdio", "stdio"]));
+        for (const optValue of transportValues) {
+            const opt = document.createElement("option");
+            opt.value = optValue;
+            opt.textContent = optValue;
+            transportSelect.appendChild(opt);
+        }
+        transportSelect.value = server.transport || "stdio";
+        transportSelect.addEventListener("change", () => updateServer({ transport: transportSelect.value }));
+        card.appendChild(row(t("config.mcpTransport", "Transport"), transportSelect));
+
+        const cmdInput = document.createElement("input");
+        cmdInput.type = "text";
+        cmdInput.value = server.command || "";
+        cmdInput.placeholder = "python";
+        cmdInput.addEventListener("change", () => updateServer({ command: cmdInput.value }));
+        card.appendChild(row(t("config.mcpCommand", "Command"), cmdInput));
+
+        const argsInput = document.createElement("input");
+        argsInput.type = "text";
+        argsInput.value = (server.args || []).join(", ");
+        argsInput.placeholder = "-m, my_mcp_server";
+        argsInput.addEventListener("change", () => updateServer({ args: parseCsvValue(argsInput.value) }));
+        card.appendChild(row(t("config.mcpArgs", "Args (CSV)"), argsInput));
+
+        const prefixInput = document.createElement("input");
+        prefixInput.type = "text";
+        prefixInput.value = server.tool_prefix || "";
+        prefixInput.placeholder = "mcp_myserver_";
+        prefixInput.addEventListener("change", () => updateServer({ tool_prefix: prefixInput.value }));
+        card.appendChild(row(t("config.mcpPrefix", "Tool Prefix"), prefixInput));
+
+        const riskSelect = document.createElement("select");
+        for (const level of ["low", "medium", "high", "critical"]) {
+            const opt = document.createElement("option");
+            opt.value = level;
+            opt.textContent = level;
+            riskSelect.appendChild(opt);
+        }
+        riskSelect.value = server.risk_level || "high";
+        riskSelect.addEventListener("change", () => updateServer({ risk_level: riskSelect.value }));
+        card.appendChild(row(t("config.mcpRiskLevel", "Risk Level"), riskSelect));
+
+        const startupInput = document.createElement("input");
+        startupInput.type = "number";
+        startupInput.min = "1";
+        startupInput.step = "1";
+        startupInput.value = String(server.startup_timeout ?? 15);
+        startupInput.addEventListener("change", () => {
+            const v = parseInt(startupInput.value, 10);
+            updateServer({ startup_timeout: Number.isFinite(v) ? v : 15 });
+        });
+        card.appendChild(row(t("config.mcpStartupTimeout", "Startup Timeout (s)"), startupInput));
+
+        const reqInput = document.createElement("input");
+        reqInput.type = "number";
+        reqInput.min = "1";
+        reqInput.step = "1";
+        reqInput.value = String(server.request_timeout ?? 30);
+        reqInput.addEventListener("change", () => {
+            const v = parseInt(reqInput.value, 10);
+            updateServer({ request_timeout: Number.isFinite(v) ? v : 30 });
+        });
+        card.appendChild(row(t("config.mcpRequestTimeout", "Request Timeout (s)"), reqInput));
+
+        const envInput = document.createElement("textarea");
+        envInput.rows = 4;
+        envInput.value = formatEnvMap(server.env);
+        envInput.placeholder = "API_KEY=***\nBASE_URL=https://...";
+        envInput.addEventListener("change", () => updateServer({ env: parseEnvMap(envInput.value) }));
+        card.appendChild(row(t("config.mcpEnv", "Environment (KEY=VALUE per line)"), envInput));
+
+        const discoverWrap = document.createElement("div");
+        discoverWrap.className = "mcp-tools";
+
+        const discoverActions = document.createElement("div");
+        discoverActions.className = "mcp-tools-actions";
+        const discoverBtn = document.createElement("button");
+        discoverBtn.type = "button";
+        discoverBtn.className = "btn btn-sm btn-secondary";
+        discoverBtn.textContent = t("config.mcpDiscoverTools", "Discover Tools");
+        const discoverStatus = document.createElement("span");
+        discoverStatus.className = "mcp-discover-status";
+        discoverActions.appendChild(discoverBtn);
+        discoverActions.appendChild(discoverStatus);
+        discoverWrap.appendChild(discoverActions);
+
+        const discovery = getDiscovery(server, idx);
+        const discoveredTools = Array.isArray(discovery && discovery.tools) ? discovery.tools : [];
+        if (discovery && discovery.error) {
+            const err = document.createElement("div");
+            err.className = "mcp-tools-error";
+            err.textContent = discovery.error;
+            discoverWrap.appendChild(err);
+        }
+
+        const useAll = !Array.isArray(server.enabled_tools) || server.enabled_tools.length === 0;
+        if (discoveredTools.length > 0) {
+            const allWrap = document.createElement("label");
+            allWrap.className = "mcp-use-all";
+            const allToggle = document.createElement("input");
+            allToggle.type = "checkbox";
+            allToggle.checked = useAll;
+            allToggle.addEventListener("change", () => {
+                if (allToggle.checked) {
+                    updateServer({ enabled_tools: [] });
+                } else {
+                    const allNames = discoveredTools
+                        .map((tool) => String(tool && tool.name ? tool.name : "").trim())
+                        .filter(Boolean);
+                    updateServer({ enabled_tools: allNames });
+                }
+            });
+            const allLabel = document.createElement("span");
+            allLabel.textContent = t("config.mcpUseAllTools", "Use all discovered tools");
+            allWrap.appendChild(allToggle);
+            allWrap.appendChild(allLabel);
+            discoverWrap.appendChild(allWrap);
+        }
+
+        if (discoveredTools.length > 0 && !useAll) {
+            const list = document.createElement("div");
+            list.className = "mcp-tool-list";
+            for (const tool of discoveredTools) {
+                const toolName = String(tool && tool.name ? tool.name : "").trim();
+                if (!toolName) continue;
+                const toolDesc = String(tool && tool.description ? tool.description : "");
+                const item = document.createElement("label");
+                item.className = "mcp-tool-item";
+                const cb = document.createElement("input");
+                cb.type = "checkbox";
+                cb.checked = (server.enabled_tools || []).includes(toolName);
+                cb.addEventListener("change", () => {
+                    const nextSet = new Set(server.enabled_tools || []);
+                    if (cb.checked) nextSet.add(toolName);
+                    else nextSet.delete(toolName);
+                    updateServer({ enabled_tools: Array.from(nextSet) });
+                });
+                const text = document.createElement("span");
+                text.textContent = toolDesc ? `${toolName} - ${toolDesc}` : toolName;
+                item.appendChild(cb);
+                item.appendChild(text);
+                list.appendChild(item);
+            }
+            discoverWrap.appendChild(list);
+        } else if (discoveredTools.length > 0 && useAll) {
+            const note = document.createElement("div");
+            note.className = "mcp-tools-note";
+            note.textContent = t("config.mcpAllToolsEnabled", "All discovered tools are currently enabled.");
+            discoverWrap.appendChild(note);
+        } else {
+            const note = document.createElement("div");
+            note.className = "mcp-tools-note";
+            note.textContent = t("config.mcpNoToolsDiscovered", "No tools discovered yet.");
+            discoverWrap.appendChild(note);
+        }
+
+        discoverBtn.addEventListener("click", async () => {
+            discoverBtn.disabled = true;
+            discoverStatus.textContent = t("common.loading", "Loading...");
+            try {
+                const resp = await fetch("/api/mcp/discover-tools", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        server: {
+                            ...server,
+                            args: server.args || [],
+                            env: server.env || {},
+                        },
+                    }),
+                });
+                const data = await resp.json();
+                if (!resp.ok || data.status !== "ok") {
+                    throw new Error(data.message || t("config.loadFailed", "Failed to load"));
+                }
+                setDiscovery(server, idx, {
+                    tools: Array.isArray(data.tools) ? data.tools : [],
+                    error: "",
+                });
+                discoverStatus.textContent = t("config.mcpDiscoverSuccess", "Discovery complete");
+            } catch (err) {
+                setDiscovery(server, idx, {
+                    tools: [],
+                    error: String(err && err.message ? err.message : err),
+                });
+                discoverStatus.textContent = t("config.mcpDiscoverFailed", "Discovery failed");
+            } finally {
+                discoverBtn.disabled = false;
+                render();
+            }
+        });
+
+        card.appendChild(discoverWrap);
+        return card;
+    };
+
+    const render = () => {
+        root.innerHTML = "";
+
+        const controls = document.createElement("div");
+        controls.className = "mcp-editor-controls";
+        const addBtn = document.createElement("button");
+        addBtn.type = "button";
+        addBtn.className = "btn btn-sm btn-secondary";
+        addBtn.textContent = t("config.mcpAddServer", "Add Server");
+        addBtn.addEventListener("click", () => {
+            const next = servers.slice();
+            next.push(normalizeMcpServer({}, next.length));
+            commit(next);
+        });
+        controls.appendChild(addBtn);
+        root.appendChild(controls);
+
+        if (servers.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "mcp-empty";
+            empty.textContent = t("config.mcpNoServers", "No MCP servers configured.");
+            root.appendChild(empty);
+            return;
+        }
+
+        for (let i = 0; i < servers.length; i++) {
+            root.appendChild(renderServerCard(servers[i], i));
+        }
+    };
+
+    render();
+    return root;
 }
 
 function fieldTitle(field) {
@@ -393,6 +760,10 @@ function createFieldInput(field, value, onChange) {
         return select;
     }
 
+    if (type === "mcp_servers") {
+        return createMcpServersInput(field, value, onChange);
+    }
+
     const input = document.createElement("input");
     if (type === "number") {
         input.type = "number";
@@ -610,6 +981,7 @@ async function loadSettings() {
     state.schema = schemaData.schema || { version: 1, categories: [], sections: [] };
     state.originalValues = deepClone(valuesData.values || {});
     state.draftValues = deepClone(valuesData.values || {});
+    state.mcpDiscovery = {};
     KuroPlugins.emit("onSettingsSchema", state.schema);
     markDirty(false);
     renderAll();

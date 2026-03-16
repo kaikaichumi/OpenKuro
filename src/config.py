@@ -465,6 +465,48 @@ class A2AConfig(BaseModel):
     request_timeout: int = 120  # Timeout for remote requests (seconds)
 
 
+class MCPServerConfig(BaseModel):
+    """Single MCP server connection settings."""
+
+    name: str = "default"
+    enabled: bool = True
+    transport: str = "stdio"  # currently supports stdio only
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    startup_timeout: int = 15
+    request_timeout: int = 30
+    tool_prefix: str = ""
+    enabled_tools: list[str] = Field(default_factory=list)  # Empty = all tools
+    risk_level: str = "high"
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "MCPServerConfig":
+        self.name = str(self.name or "").strip() or "default"
+        self.transport = str(self.transport or "stdio").strip().lower() or "stdio"
+        self.command = str(self.command or "").strip()
+        self.args = [str(a).strip() for a in (self.args or []) if str(a).strip()]
+        self.env = {
+            str(k).strip(): str(v)
+            for k, v in (self.env or {}).items()
+            if str(k).strip()
+        }
+        self.enabled_tools = [
+            str(t).strip() for t in (self.enabled_tools or []) if str(t).strip()
+        ]
+        self.risk_level = str(self.risk_level or "high").strip().lower() or "high"
+        self.startup_timeout = max(1, int(self.startup_timeout or 15))
+        self.request_timeout = max(1, int(self.request_timeout or 30))
+        return self
+
+
+class MCPConfig(BaseModel):
+    """Model Context Protocol (MCP) client bridge settings."""
+
+    enabled: bool = False
+    servers: list[MCPServerConfig] = Field(default_factory=list)
+
+
 class ContextCompressionConfig(BaseModel):
     """Context compression settings — auto-summarize old messages when context fills up."""
 
@@ -750,6 +792,7 @@ class KuroConfig(BaseModel):
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     teams: TeamsConfig = Field(default_factory=TeamsConfig)
     a2a: A2AConfig = Field(default_factory=A2AConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
     context_compression: ContextCompressionConfig = Field(default_factory=ContextCompressionConfig)
     memory_lifecycle: MemoryLifecycleConfig = Field(default_factory=MemoryLifecycleConfig)
     learning: LearningConfig = Field(default_factory=LearningConfig)

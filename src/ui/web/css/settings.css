@@ -128,6 +128,116 @@
     white-space: nowrap;
 }
 
+.mcp-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.mcp-editor-controls {
+    display: flex;
+    justify-content: flex-start;
+}
+
+.mcp-empty {
+    color: var(--text-muted);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 0.6rem 0.75rem;
+    font-size: 0.84rem;
+}
+
+.mcp-server-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-secondary);
+    padding: 0.65rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.mcp-server-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.mcp-server-row {
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.mcp-server-row label {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+.mcp-server-row textarea {
+    min-height: 90px;
+}
+
+.mcp-tools {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.55rem;
+}
+
+.mcp-tools-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.mcp-discover-status {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+}
+
+.mcp-tools-error {
+    color: #cc4b4b;
+    font-size: 0.8rem;
+}
+
+.mcp-use-all {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+}
+
+.mcp-tool-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    max-height: 220px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.4rem;
+}
+
+.mcp-tool-item {
+    display: inline-flex;
+    align-items: flex-start;
+    gap: 0.4rem;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+.mcp-tools-note {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+}
+
 @media (max-width: 920px) {
     .settings-shell {
         grid-template-columns: 1fr;
@@ -136,5 +246,9 @@
     .settings-nav {
         position: static;
         max-height: none;
+    }
+
+    .mcp-server-row {
+        grid-template-columns: 1fr;
     }
 }

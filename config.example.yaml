@@ -186,6 +186,23 @@ plugins:
   directories:
     - "~/.kuro/plugins"
 
+# MCP Integration (Model Context Protocol)
+mcp:
+  enabled: false
+  servers:
+    - name: "example-mcp"
+      enabled: true
+      transport: "stdio"          # stdio | sse | streamable_http (currently stdio is supported)
+      command: "python"
+      args: ["-m", "your_mcp_server"]
+      env:
+        YOUR_API_KEY: ""
+      startup_timeout: 15
+      request_timeout: 30
+      tool_prefix: "mcp_example_"
+      enabled_tools: []           # Empty = all discovered tools
+      risk_level: "high"          # low | medium | high | critical
+
 # Skills Configuration
 skills:
   enabled: true
