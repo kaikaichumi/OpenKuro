@@ -279,6 +279,12 @@ class WebServer:
             build_core_settings_schema,
             order=0,
         )
+        from src.ui.settings_schema import build_comfyui_settings_schema
+        self._settings_schema.register(
+            "comfyui",
+            build_comfyui_settings_schema,
+            order=50,
+        )
         self._page_schema = UIPageSchemaRegistry()
         self._page_schema.register(
             "agents",
@@ -2008,6 +2014,10 @@ class WebServer:
         # Delegation complexity routing settings (used directly by delegation tool)
         if new_config.delegation_complexity != old.delegation_complexity:
             applied.append("delegation_complexity")
+
+        # ComfyUI settings (applied via config reference, no restart needed)
+        if new_config.comfyui != old.comfyui:
+            applied.append("comfyui")
 
         # MCP bridge settings (reconnect/reload tools)
         if new_config.mcp != old.mcp:

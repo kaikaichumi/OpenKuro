@@ -268,6 +268,22 @@ class SkillsConfig(BaseModel):
     auto_activate: list[str] = Field(default_factory=list)  # Skills to auto-activate on startup
 
 
+class ComfyUIConfig(BaseModel):
+    """ComfyUI remote server integration configuration."""
+
+    enabled: bool = False
+    api_url: str = "http://localhost:8188"
+    timeout: int = 120  # seconds — generation can take a while
+    output_dir: str = ""  # empty = ~/.kuro/comfyui_output
+    default_checkpoint: str = ""  # e.g. "v1-5-pruned.safetensors"
+    default_width: int = 512
+    default_height: int = 512
+    default_steps: int = 20
+    default_cfg_scale: float = 7.0
+    default_sampler: str = "euler"
+    default_scheduler: str = "normal"
+
+
 class PluginsConfig(BaseModel):
     """Plugin loader configuration."""
 
@@ -789,6 +805,7 @@ class KuroConfig(BaseModel):
     web_ui: WebUIConfig = Field(default_factory=WebUIConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     plugins: PluginsConfig = Field(default_factory=PluginsConfig)
+    comfyui: ComfyUIConfig = Field(default_factory=ComfyUIConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     teams: TeamsConfig = Field(default_factory=TeamsConfig)
     a2a: A2AConfig = Field(default_factory=A2AConfig)
