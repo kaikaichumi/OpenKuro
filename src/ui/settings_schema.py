@@ -48,7 +48,20 @@ class SettingsSchemaRegistry:
                         sections.append(sec)
 
         categories.sort(key=lambda c: int(c.get("order", 999)))
-        sections.sort(key=lambda s: int(s.get("order", 999)))
+        category_order_map = {
+            str(cat.get("id", "")).strip(): int(cat.get("order", 999))
+            for cat in categories
+            if str(cat.get("id", "")).strip()
+        }
+
+        def _section_sort_key(section: dict[str, Any]) -> tuple[int, int, str]:
+            category_id = str(section.get("category", "")).strip()
+            cat_order = category_order_map.get(category_id, 999)
+            sec_order = int(section.get("order", 999))
+            sec_id = str(section.get("id", "")).strip()
+            return (cat_order, sec_order, sec_id)
+
+        sections.sort(key=_section_sort_key)
         return {
             "version": 1,
             "categories": categories,
