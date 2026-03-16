@@ -75,6 +75,31 @@ class DiscordApprovalCallback(ApprovalCallback):
 
         channel_id = self._channel_map.get(session.id)
         if channel_id is None:
+            # Fallback 1: session metadata cache (when session object is copied/reused).
+            meta = getattr(session, "metadata", {}) or {}
+            raw_meta_channel = meta.get("_discord_channel_id")
+            if isinstance(raw_meta_channel, int):
+                channel_id = raw_meta_channel
+            elif isinstance(raw_meta_channel, str) and raw_meta_channel.isdigit():
+                channel_id = int(raw_meta_channel)
+
+            # Fallback 2: discord session user_id is "{channel_id}:{user_id}".
+            if channel_id is None:
+                raw_user = str(getattr(session, "user_id", "") or "")
+                if ":" in raw_user:
+                    maybe_channel = raw_user.split(":", 1)[0].strip()
+                    if maybe_channel.isdigit():
+                        channel_id = int(maybe_channel)
+
+            if channel_id is not None:
+                self._channel_map[session.id] = channel_id
+                logger.info(
+                    "discord_approval_channel_fallback",
+                    session_id=session.id,
+                    channel_id=channel_id,
+                    tool=tool_name,
+                )
+        if channel_id is None:
             logger.error("discord_approval_no_channel", session_id=session.id)
             return False
 
@@ -486,6 +511,8 @@ class DiscordAdapter(BaseAdapter):
 
         session_key = self._session_key(message.channel.id, message.author.id)
         session = self.get_or_create_session(session_key)
+        session.metadata["_discord_channel_id"] = message.channel.id
+        session.metadata["_discord_user_id"] = message.author.id
         # Keep approval routing fresh for command-driven flows (e.g. !delegate).
         self._approval_cb.register_channel(session.id, message.channel.id)
 
@@ -771,6 +798,8 @@ class DiscordAdapter(BaseAdapter):
         """Process a regular chat message through the engine."""
         session_key = self._session_key(message.channel.id, message.author.id)
         session = self.get_or_create_session(session_key)
+        session.metadata["_discord_channel_id"] = message.channel.id
+        session.metadata["_discord_user_id"] = message.author.id
 
         # Register channel for approval callbacks
         self._approval_cb.register_channel(session.id, message.channel.id)
