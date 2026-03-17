@@ -253,8 +253,9 @@ class DiscordAdapter(BaseAdapter):
     """Full Discord bot adapter using discord.py v2+.
 
     Uses message content intent for prefix commands.
-    Session key: f"{channel_id}:{user_id}" — each user in each channel
-    gets their own session.
+    Session key strategy:
+    - DM: f"{channel_id}:{user_id}" (per-user personal memory)
+    - Guild text channel: f"{channel_id}:shared" (shared channel memory)
 
     Supports binding to an AgentInstance for multi-bot scenarios:
     each instance gets its own Discord bot with separate token,
@@ -506,7 +507,12 @@ class DiscordAdapter(BaseAdapter):
 
             asyncio.create_task(
                 self._safe_handle(
-                    self._handle_message(message, content, image_urls=image_urls),
+                    self._handle_message(
+                        message,
+                        content,
+                        image_urls=image_urls,
+                        is_dm=is_dm,
+                    ),
                     message.channel,
                 )
             )
@@ -682,9 +688,14 @@ class DiscordAdapter(BaseAdapter):
             return True  # Empty list = allow all
         return channel_id in allowed
 
-    def _session_key(self, channel_id: int, user_id: int) -> str:
-        """Generate a session key from channel + user IDs."""
-        return f"{channel_id}:{user_id}"
+    def _session_key(self, channel_id: int, user_id: int, *, is_dm: bool) -> str:
+        """Generate a session key.
+
+        DM keeps user-isolated memory; guild channels use shared memory.
+        """
+        if is_dm:
+            return f"{channel_id}:{user_id}"
+        return f"{channel_id}:shared"
 
     async def _handle_command(self, message, cmd_text: str) -> None:
         """Handle prefix commands (!help, !model, etc.)."""
@@ -694,7 +705,12 @@ class DiscordAdapter(BaseAdapter):
         cmd = parts[0].lower() if parts else ""
         args_text = parts[1] if len(parts) > 1 else ""
 
-        session_key = self._session_key(message.channel.id, message.author.id)
+        is_dm = isinstance(message.channel, discord.DMChannel)
+        session_key = self._session_key(
+            message.channel.id,
+            message.author.id,
+            is_dm=is_dm,
+        )
         session = self.get_or_create_session(session_key)
         session.metadata["_discord_channel_id"] = message.channel.id
         session.metadata["_discord_user_id"] = message.author.id
@@ -1011,10 +1027,19 @@ class DiscordAdapter(BaseAdapter):
             )
 
     async def _handle_message(
-        self, message, content: str, *, image_urls: list[str] | None = None,
+        self,
+        message,
+        content: str,
+        *,
+        image_urls: list[str] | None = None,
+        is_dm: bool = False,
     ) -> None:
         """Process a regular chat message through the engine."""
-        session_key = self._session_key(message.channel.id, message.author.id)
+        session_key = self._session_key(
+            message.channel.id,
+            message.author.id,
+            is_dm=is_dm,
+        )
         session = self.get_or_create_session(session_key)
         session.metadata["_discord_channel_id"] = message.channel.id
         session.metadata["_discord_user_id"] = message.author.id
