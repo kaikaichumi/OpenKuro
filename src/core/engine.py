@@ -69,6 +69,14 @@ _SHELL_BULK_HINT_RE = re.compile(
     re.I,
 )
 
+# Tool results that should retain multimodal image context for follow-up actions.
+# Image generation tools (e.g. comfyui_*) are intentionally excluded to avoid
+# pushing large base64 payloads back into the next LLM turn.
+_MULTIMODAL_TOOL_CONTEXT_ALLOWLIST = {
+    "screenshot",
+    "computer_use",
+}
+
 
 def _encode_image_base64(image_path: str) -> str | None:
     """Read an image file and return its base64-encoded data URI string.
@@ -474,6 +482,12 @@ class Engine:
             ]
         return text  # encoding failed, fall back to text only
 
+    @staticmethod
+    def _should_attach_tool_image_to_context(tool_name: str) -> bool:
+        """Return True if a tool image should be attached back to model context."""
+        name = str(tool_name or "").strip().lower()
+        return name in _MULTIMODAL_TOOL_CONTEXT_ALLOWLIST
+
     def _run_image_analysis(self, image_path: str) -> str:
         """Run OCR + OpenCV analysis on an image, returning text description."""
         from src.tools.screen.analyze_image import run_image_analysis
@@ -510,6 +524,47 @@ class Engine:
                 ))
             else:
                 converted.append(m)
+        return converted
+
+    def _strip_non_context_tool_images(self, messages: list[Message]) -> list[Message]:
+        """Drop image payloads from tool messages that don't need visual follow-up.
+
+        This keeps request payloads stable for providers that are sensitive to
+        large data-URI image blobs in historical tool results (e.g. image
+        generation tools).
+        """
+        converted: list[Message] = []
+        for m in messages:
+            if (
+                m.role == Role.TOOL
+                and isinstance(m.content, list)
+                and not self._should_attach_tool_image_to_context(m.name or "")
+            ):
+                text_parts: list[str] = []
+                had_image = False
+                for part in m.content:
+                    if not isinstance(part, dict):
+                        continue
+                    p_type = str(part.get("type", "")).strip().lower()
+                    if p_type == "text":
+                        txt = part.get("text")
+                        if isinstance(txt, str) and txt:
+                            text_parts.append(txt)
+                    elif p_type == "image_url":
+                        had_image = True
+                if had_image:
+                    merged = "\n".join(text_parts).strip() or "[Tool image omitted]"
+                    if "[Image omitted from model context]" not in merged:
+                        merged = f"{merged}\n\n[Image omitted from model context]"
+                    converted.append(Message(
+                        role=m.role,
+                        content=merged,
+                        name=m.name,
+                        tool_call_id=m.tool_call_id,
+                        tool_calls=m.tool_calls,
+                    ))
+                    continue
+            converted.append(m)
         return converted
 
     async def _emergency_compress(
@@ -1140,7 +1195,9 @@ class Engine:
                 )
                 return budget_block_msg
 
-            request_context = self._normalize_system_messages(context_messages)
+            request_context = self._normalize_system_messages(
+                self._strip_non_context_tool_images(context_messages)
+            )
             messages = [m.to_litellm() for m in request_context]
             tool_defs: list[dict[str, Any]] = []
             for t in self.tools.registry.get_all():
@@ -1173,7 +1230,9 @@ class Engine:
                 context_messages = await self._emergency_compress(
                     context_messages, exc.limit
                 )
-                request_context = self._normalize_system_messages(context_messages)
+                request_context = self._normalize_system_messages(
+                    self._strip_non_context_tool_images(context_messages)
+                )
                 messages = [m.to_litellm() for m in request_context]
                 response = await self.model.complete(
                     messages=messages,
@@ -1189,7 +1248,9 @@ class Engine:
                 context_messages = self._convert_images_to_text(
                     context_messages
                 )
-                request_context = self._normalize_system_messages(context_messages)
+                request_context = self._normalize_system_messages(
+                    self._strip_non_context_tool_images(context_messages)
+                )
                 messages = [m.to_litellm() for m in request_context]
                 response = await self.model.complete(
                     messages=messages,
@@ -1292,9 +1353,16 @@ class Engine:
                     # Build tool result message (multimodal if screenshot)
                     content_value: str | list[dict[str, Any]] = output
                     if result.image_path:
-                        content_value = self._build_image_content(
-                            output, result.image_path, model
-                        )
+                        if self._should_attach_tool_image_to_context(tc.name):
+                            content_value = self._build_image_content(
+                                output, result.image_path, model
+                            )
+                        else:
+                            # Keep context compact/stable for generated images and
+                            # other non-screen tools; adapters still send attachments.
+                            content_value = (
+                                f"{output}\n\n[Image saved at: {result.image_path}]"
+                            )
 
                     tool_msg = Message(
                         role=Role.TOOL,

@@ -291,6 +291,14 @@ class PluginsConfig(BaseModel):
     plugins_dir: str = "./plugins"  # 改為安裝目錄（LLM 容易寫入）
 
 
+class RestartToolConfig(BaseModel):
+    """Preconfigured restart-script settings for run_restart_script."""
+
+    enabled: bool = False
+    script_path: str = ""  # Absolute or relative path to restart script
+    working_dir: str = ""  # Empty = use script directory
+
+
 class AgentDefinitionConfig(BaseModel):
     """Persisted agent definition in config."""
 
@@ -805,6 +813,7 @@ class KuroConfig(BaseModel):
     web_ui: WebUIConfig = Field(default_factory=WebUIConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     plugins: PluginsConfig = Field(default_factory=PluginsConfig)
+    restart_tool: RestartToolConfig = Field(default_factory=RestartToolConfig)
     comfyui: ComfyUIConfig = Field(default_factory=ComfyUIConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     teams: TeamsConfig = Field(default_factory=TeamsConfig)

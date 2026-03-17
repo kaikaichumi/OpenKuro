@@ -1,1 +1,1 @@
-"""System tools - version checking and self-update."""
+"""System tools - version/update and operational maintenance helpers."""
