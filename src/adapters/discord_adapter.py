@@ -29,7 +29,7 @@ from src.openai_catalog import (
     is_codex_oauth_model_supported,
     normalize_openai_model,
 )
-from src.tools.base import RiskLevel
+from src.tools.base import RiskLevel, ToolContext
 
 logger = structlog.get_logger()
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -483,6 +483,130 @@ class DiscordAdapter(BaseAdapter):
             except Exception:
                 pass
 
+    def _build_tool_context(self, session: Session) -> ToolContext:
+        """Build a ToolContext bound to the current Discord session."""
+        engine = self.effective_engine
+        active_model = str(
+            session.metadata.get("_active_model")
+            or session.metadata.get("model_override")
+            or engine.model.default_model
+        )
+        return ToolContext(
+            session_id=session.id,
+            config=self.config,
+            model_router=engine.model,
+            active_model=active_model,
+            allowed_directories=[str(p) for p in self.config.sandbox.allowed_directories],
+            max_execution_time=self.config.sandbox.max_execution_time,
+            max_output_size=self.config.sandbox.max_output_size,
+            agent_manager=getattr(engine, "agent_manager", None),
+            team_manager=getattr(engine, "team_manager", None),
+            instance_manager=getattr(engine, "instance_manager", None),
+            memory_manager=getattr(engine, "memory", None),
+            agent_instance_id=getattr(engine, "agent_instance_id", None),
+            session=session,
+        )
+
+    async def _send_chunked_message(
+        self,
+        channel: Any,
+        text: str,
+        *,
+        max_len: int | None = None,
+        fallback: str | None = None,
+    ) -> int:
+        """Send non-empty chunks only (Discord rejects empty messages)."""
+        limit = max_len or self.config.adapters.discord.max_message_length
+        raw_chunks = split_message(text or "", limit)
+        chunks = [c for c in raw_chunks if isinstance(c, str) and c.strip()]
+
+        if not chunks:
+            if fallback and fallback.strip():
+                chunks = [fallback]
+            else:
+                logger.warning("discord_empty_outgoing_message_suppressed")
+                return 0
+
+        sent = 0
+        for chunk in chunks:
+            await channel.send(chunk)
+            sent += 1
+        return sent
+
+    async def _run_diagnose_and_repair(
+        self,
+        session: Session,
+        *,
+        scope: str = "full",
+        auto_fix: bool = True,
+    ) -> str:
+        """Run diagnose_and_repair tool directly for manual/auto self-heal."""
+        scope_norm = str(scope or "full").strip().lower()
+        if scope_norm not in {"full", "errors", "performance", "config"}:
+            scope_norm = "full"
+
+        try:
+            result = await self.effective_engine.tools.execute(
+                "diagnose_and_repair",
+                {"scope": scope_norm, "auto_fix": bool(auto_fix)},
+                self._build_tool_context(session),
+            )
+            if result.success:
+                return result.output or "\u2705 Self-repair completed."
+            return f"\u274c Self-repair failed: {result.error or 'unknown error'}"
+        except Exception as e:
+            return f"\u274c Self-repair failed: {str(e)[:300]}"
+
+    async def _maybe_auto_repair(
+        self,
+        message: Any,
+        session: Session,
+        *,
+        trigger_error: str,
+    ) -> None:
+        """Auto-trigger diagnose_and_repair after consecutive adapter errors."""
+        diag = getattr(self.config, "diagnostics", None)
+        if not diag or not getattr(diag, "enabled", True):
+            return
+        if not bool(getattr(diag, "auto_diagnose_on_error", True)):
+            return
+
+        try:
+            threshold = int(getattr(diag, "error_threshold", 3))
+        except Exception:
+            threshold = 3
+        threshold = max(1, threshold)
+
+        streak = int(session.metadata.get("_discord_error_streak", 0) or 0)
+        if streak < threshold:
+            return
+        if session.metadata.get("_discord_auto_repair_running"):
+            return
+
+        session.metadata["_discord_auto_repair_running"] = True
+        try:
+            logger.warning(
+                "discord_auto_repair_triggered",
+                session_id=session.id,
+                streak=streak,
+                threshold=threshold,
+                error=trigger_error[:120],
+            )
+            report = await self._run_diagnose_and_repair(
+                session,
+                scope="errors",
+                auto_fix=True,
+            )
+            await self._send_chunked_message(
+                message.channel,
+                "\U0001f6e0\ufe0f Detected repeated errors. Auto-repair has been triggered.\n\n"
+                + report,
+                fallback="\U0001f6e0\ufe0f Auto-repair triggered. Check logs for details.",
+            )
+            session.metadata["_discord_error_streak"] = 0
+        finally:
+            session.metadata["_discord_auto_repair_running"] = False
+
     def _is_user_allowed(self, user_id: int) -> bool:
         """Check if the user is in the whitelist (if configured)."""
         allowed = self.config.adapters.discord.allowed_user_ids
@@ -531,6 +655,7 @@ class DiscordAdapter(BaseAdapter):
                 f"`{prefix}stats` — Dashboard overview\n"
                 f"`{prefix}costs` — Token usage & cost breakdown\n"
                 f"`{prefix}security` — Security report\n"
+                f"`{prefix}fix [scope]` — Force self-repair (scope: full/errors/performance/config)\n"
                 f"`{prefix}clear` — Clear conversation history\n"
                 f"`{prefix}trust` — Show/set trust level\n\n"
                 f"**Usage:**\n"
@@ -725,9 +850,12 @@ class DiscordAdapter(BaseAdapter):
                     # Send result (split if needed)
                     max_len = self.config.adapters.discord.max_message_length
                     header = f"\U0001f4e8 **{agent_name}** responded:\n\n"
-                    chunks = split_message(header + result, max_len)
-                    for chunk in chunks:
-                        await message.channel.send(chunk)
+                    await self._send_chunked_message(
+                        message.channel,
+                        header + result,
+                        max_len=max_len,
+                        fallback="\u26a0 Agent returned empty content.",
+                    )
                 except Exception as e:
                     logger.error(
                         "discord_delegate_error",
@@ -758,7 +886,28 @@ class DiscordAdapter(BaseAdapter):
 
             chunks = split_message(result, self.config.adapters.discord.max_message_length)
             for chunk in chunks:
-                await message.channel.send(f"```\n{chunk}\n```")
+                if chunk and chunk.strip():
+                    await message.channel.send(f"```\n{chunk}\n```")
+
+        elif cmd in ("fix", "repair"):
+            scope = (
+                args_text.strip().split(None, 1)[0]
+                if args_text.strip()
+                else "full"
+            )
+            await message.channel.send(
+                f"\U0001f6e0\ufe0f Running self-repair (scope: `{scope}`)..."
+            )
+            report = await self._run_diagnose_and_repair(
+                session,
+                scope=scope,
+                auto_fix=True,
+            )
+            await self._send_chunked_message(
+                message.channel,
+                report,
+                fallback="\u26a0 Self-repair returned empty content.",
+            )
 
         elif cmd == "clear":
             self.clear_session(session_key)
@@ -923,14 +1072,47 @@ class DiscordAdapter(BaseAdapter):
 
                 # Send response (split if needed)
                 max_len = self.config.adapters.discord.max_message_length
-                chunks = split_message(response, max_len)
-                for chunk in chunks:
-                    await message.channel.send(chunk)
+                response_text = response if isinstance(response, str) else str(response or "")
+                empty_response = False
+                if response_text.strip():
+                    session.metadata["_discord_error_streak"] = 0
+                else:
+                    empty_response = True
+                    logger.warning(
+                        "discord_empty_model_response",
+                        session_id=session.id,
+                        user_id=message.author.id,
+                        model=selected_model,
+                    )
+                    session.metadata["_discord_error_streak"] = int(
+                        session.metadata.get("_discord_error_streak", 0) or 0
+                    ) + 1
+                    response_text = (
+                        "\u26a0\ufe0f Model returned an empty response. "
+                        "Please try again, or run `!fix errors` to trigger self-repair."
+                    )
+
+                await self._send_chunked_message(
+                    message.channel,
+                    response_text,
+                    max_len=max_len,
+                    fallback="\u26a0 Empty response suppressed.",
+                )
+                if empty_response:
+                    await self._maybe_auto_repair(
+                        message,
+                        session,
+                        trigger_error="empty_model_response",
+                    )
 
                 # Send generated images as attachments
                 await self._send_images(message.channel, new_images)
 
             except Exception as e:
+                session.metadata["_discord_error_streak"] = int(
+                    session.metadata.get("_discord_error_streak", 0) or 0
+                ) + 1
+                session.metadata["_discord_last_error"] = str(e)
                 logger.error(
                     "discord_process_error",
                     user_id=message.author.id,
@@ -938,6 +1120,11 @@ class DiscordAdapter(BaseAdapter):
                 )
                 await message.channel.send(
                     f"\u274c Error processing message: {str(e)[:200]}"
+                )
+                await self._maybe_auto_repair(
+                    message,
+                    session,
+                    trigger_error=str(e),
                 )
         # Clean up downloaded temp images
         self._cleanup_temp_images(image_paths)
@@ -1103,10 +1290,11 @@ class DiscordAdapter(BaseAdapter):
             if channel is None:
                 channel = await self._bot.fetch_channel(channel_id)
 
-            max_len = self.config.adapters.discord.max_message_length
-            chunks = split_message(message, max_len)
-            for chunk in chunks:
-                await channel.send(chunk)
+            await self._send_chunked_message(
+                channel,
+                message,
+                fallback="\u26a0 Notification content was empty.",
+            )
 
             logger.info("discord_notification_sent", channel_id=channel_id)
             return True
@@ -1126,6 +1314,8 @@ def split_message(text: str, max_len: int = 2000) -> list[str]:
     4. By space (word boundary)
     5. By character (last resort)
     """
+    if not text:
+        return []
     if len(text) <= max_len:
         return [text]
 
@@ -1158,7 +1348,7 @@ def split_message(text: str, max_len: int = 2000) -> list[str]:
         chunks.append(remaining[:split_at])
         remaining = remaining[split_at:]
 
-    return chunks
+    return [c for c in chunks if c]
 
 
 def _format_params_discord(params: dict[str, Any]) -> str:
