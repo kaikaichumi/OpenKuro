@@ -783,6 +783,236 @@ input:focus, select:focus {
 /* Pricing reference */
 .pricing-meta { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; font-size: 0.8rem; color: var(--text-muted); }
 
+/* ── Analytics: Filters & Budgets ── */
+
+.analytics-filters-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.analytics-filters-left {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.analytics-filters-left label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.analytics-filters-left input[type="date"] {
+    max-width: 170px;
+}
+
+.analytics-filters-right {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.analytics-filter-msg {
+    min-height: 1rem;
+    margin-top: 0.35rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.analytics-filter-msg.error {
+    color: var(--danger);
+}
+
+.budget-section .budget-desc {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    margin-bottom: 0.25rem;
+}
+
+.budget-adapter-hint {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    margin-bottom: 0.5rem;
+}
+
+.budget-status {
+    min-height: 1rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.8rem;
+}
+
+.budget-status.ok { color: var(--success); }
+.budget-status.error { color: var(--danger); }
+
+.budget-toolbar {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.budget-empty {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+.budget-rules {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.budget-rule-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-input);
+    padding: 0.75rem;
+}
+
+.budget-rule-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.budget-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 0.5rem;
+}
+
+.budget-grid label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.budget-models-label,
+.budget-targets-label {
+    grid-column: 1 / -1;
+}
+
+.budget-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.budget-inline-check {
+    display: inline-flex !important;
+    flex-direction: row !important;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--text-secondary) !important;
+    font-size: 0.78rem !important;
+}
+
+.budget-inline-check input[type="checkbox"] {
+    width: auto;
+    max-width: none;
+    margin: 0;
+}
+
+.budget-picker-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.budget-picker-row select {
+    flex: 1;
+    max-width: none;
+    min-width: 0;
+}
+
+.budget-picker-row .btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+.budget-chip-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    min-height: 1.7rem;
+}
+
+.budget-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-size: 0.74rem;
+}
+
+.budget-chip-text {
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.budget-chip-del {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.85rem;
+    line-height: 1;
+    padding: 0;
+}
+
+.budget-chip-del:hover {
+    color: var(--danger);
+}
+
+.budget-chip-empty {
+    color: var(--text-muted);
+    font-size: 0.74rem;
+}
+
+.budget-grid small {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+}
+
+.budget-rule-stats {
+    margin-top: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+
+.budget-badge-stop {
+    background: var(--danger);
+    color: white;
+}
+
+@media (max-width: 720px) {
+    .budget-picker-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .budget-picker-row .btn {
+        width: 100%;
+    }
+}
+
 /* ── Agent Cards ── */
 
 .agent-cards { display: flex; flex-direction: column; gap: 1rem; }

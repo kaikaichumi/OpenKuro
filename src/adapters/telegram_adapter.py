@@ -452,6 +452,8 @@ class TelegramAdapter(BaseAdapter):
 
         user_key = str(user.id)
         session = self.get_or_create_session(user_key)
+        session.metadata["username"] = str(user.username or "")
+        session.metadata["display_name"] = str(getattr(user, "full_name", "") or "")
         chat_id = update.effective_chat.id
 
         # Register chat for approval callbacks

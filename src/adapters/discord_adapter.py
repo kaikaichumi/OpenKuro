@@ -274,6 +274,8 @@ class DiscordAdapter(BaseAdapter):
         super().__init__(engine, config, agent_instance=agent_instance)
 
         self._bot = None
+        self._default_channel_id: int | None = None
+        self._default_channel_name: str | None = None
         self._bot_token_override = bot_token_override
         self._config_overrides = config_overrides or {}
         try:
@@ -317,6 +319,66 @@ class DiscordAdapter(BaseAdapter):
             return (model or None), "api"
         return value, "api"
 
+    def _get_oauth_status(self) -> dict[str, Any]:
+        """Get OAuth status with Discord-friendly fallback to codex auth file."""
+        if not self._oauth:
+            return {"configured": False, "logged_in": False}
+
+        try:
+            status = self._oauth.get_status(None)
+        except Exception:
+            status = {"configured": True, "logged_in": False}
+
+        if status.get("logged_in"):
+            return status
+
+        # Discord adapter has no browser cookie session; fallback to ~/.codex/auth.json.
+        loader = getattr(self._oauth, "_load_from_codex_auth_file", None)
+        if callable(loader):
+            try:
+                sess = loader()
+            except Exception:
+                sess = None
+            if sess and getattr(sess, "access_token", ""):
+                return {
+                    "configured": True,
+                    "logged_in": True,
+                    "scope": getattr(sess, "scope", ""),
+                    "email": getattr(sess, "email", None),
+                    "account_id": getattr(sess, "account_id", None),
+                    "plan_type": getattr(sess, "plan_type", None),
+                }
+
+        return status
+
+    async def _get_oauth_auth_context(self) -> dict[str, str] | None:
+        """Get OAuth auth context for model requests, with codex-file fallback."""
+        if not self._oauth:
+            return None
+
+        try:
+            auth_context = await self._oauth.get_auth_context(None)
+        except Exception:
+            auth_context = None
+        if auth_context and auth_context.get("access_token"):
+            return auth_context
+
+        loader = getattr(self._oauth, "_load_from_codex_auth_file", None)
+        if callable(loader):
+            try:
+                sess = loader()
+            except Exception:
+                sess = None
+            if sess and getattr(sess, "access_token", ""):
+                return {
+                    "access_token": str(getattr(sess, "access_token", "") or ""),
+                    "account_id": str(getattr(sess, "account_id", "") or ""),
+                    "plan_type": str(getattr(sess, "plan_type", "") or ""),
+                    "email": str(getattr(sess, "email", "") or ""),
+                }
+
+        return None
+
     async def start(self) -> None:
         """Initialize the Discord bot and start it."""
         # Use token override (from AgentInstance binding) or default config
@@ -346,8 +408,6 @@ class DiscordAdapter(BaseAdapter):
         self._bot = discord.Client(intents=intents)
         self._approval_cb.set_bot(self._bot)
 
-        self._default_channel_id: int | None = None
-
         # Register event handlers
         @self._bot.event
         async def on_ready():
@@ -362,6 +422,7 @@ class DiscordAdapter(BaseAdapter):
                 for channel in guild.text_channels:
                     if self._is_channel_allowed(channel.id):
                         self._default_channel_id = channel.id
+                        self._default_channel_name = str(getattr(channel, "name", "") or "")
                         logger.info("discord_default_channel", channel_id=channel.id, channel_name=channel.name)
                         break
                 if self._default_channel_id:
@@ -637,6 +698,9 @@ class DiscordAdapter(BaseAdapter):
         session = self.get_or_create_session(session_key)
         session.metadata["_discord_channel_id"] = message.channel.id
         session.metadata["_discord_user_id"] = message.author.id
+        session.metadata["_discord_channel_name"] = str(getattr(message.channel, "name", "") or "")
+        session.metadata["_discord_username"] = str(message.author)
+        session.metadata["username"] = str(message.author)
         # Keep approval routing fresh for command-driven flows (e.g. !delegate).
         self._approval_cb.register_channel(session.id, message.channel.id)
 
@@ -682,7 +746,7 @@ class DiscordAdapter(BaseAdapter):
                             "\u274c OpenAI OAuth support is unavailable in this runtime."
                         )
                         return
-                    oauth_status = self._oauth.get_status(None)
+                    oauth_status = self._get_oauth_status()
                     if not oauth_status.get("logged_in"):
                         await message.channel.send(
                             "\u274c OpenAI OAuth is not available for Discord right now. "
@@ -716,8 +780,8 @@ class DiscordAdapter(BaseAdapter):
         elif cmd == "models":
             try:
                 groups = await self.effective_engine.model.list_models_grouped()
-                oauth_status = self._oauth.get_status(None) if self._oauth else {}
-                if oauth_status.get("logged_in"):
+                oauth_status = self._get_oauth_status()
+                if self._oauth:
                     oauth_models: list[str] = list(OPENAI_CODEX_OAUTH_MODELS)
                     extra_oauth = [
                         m.strip()
@@ -733,9 +797,9 @@ class DiscordAdapter(BaseAdapter):
                             oauth_models.append(candidate)
                     groups["openai-oauth"] = oauth_models
                 if not groups:
-                    await message.channel.send("No models available.")
+                    await message.channel.send("目前沒有可用模型。")
                 else:
-                    lines = ["**Available models:**"]
+                    lines = ["**可用模型列表：**"]
                     active_model = session.metadata.get(
                         "model_override", self.config.models.default
                     )
@@ -747,9 +811,9 @@ class DiscordAdapter(BaseAdapter):
                     for provider, models in groups.items():
                         title = provider.capitalize()
                         if provider == "openai-compatible":
-                            title = "OpenAI-Compatible (Local)"
+                            title = "OpenAI 相容（本地）"
                         elif provider == "openai-oauth":
-                            title = "OpenAI (OAuth Subscription)"
+                            title = "OpenAI（OAuth 訂閱）"
                         lines.append(f"\n**{title}:**")
                         for m in models:
                             display = f"oauth:{m}" if provider == "openai-oauth" else m
@@ -762,6 +826,11 @@ class DiscordAdapter(BaseAdapter):
                             )
                             marker = " \u2705" if is_active else ""
                             lines.append(f"  `{display}`{marker}")
+                    if self._oauth and not oauth_status.get("logged_in"):
+                        lines.append(
+                            "\nOAuth 提示：使用 `oauth:openai/...` 模型前，"
+                            "請先在此機器執行 `codex login`。"
+                        )
                     await message.channel.send("\n".join(lines))
             except Exception as e:
                 await message.channel.send(f"\u274c Error listing models: {str(e)[:200]}")
@@ -949,6 +1018,9 @@ class DiscordAdapter(BaseAdapter):
         session = self.get_or_create_session(session_key)
         session.metadata["_discord_channel_id"] = message.channel.id
         session.metadata["_discord_user_id"] = message.author.id
+        session.metadata["_discord_channel_name"] = str(getattr(message.channel, "name", "") or "")
+        session.metadata["_discord_username"] = str(message.author)
+        session.metadata["username"] = str(message.author)
 
         # Register channel for approval callbacks
         self._approval_cb.register_channel(session.id, message.channel.id)
@@ -989,7 +1061,7 @@ class DiscordAdapter(BaseAdapter):
                 # (e.g., diagnostics repair model) that happen in the same request.
                 cached_provider_ctx = None
                 if self._oauth:
-                    auth_context = await self._oauth.get_auth_context(None)
+                    auth_context = await self._get_oauth_auth_context()
                     if auth_context and auth_context.get("access_token"):
                         cached_provider_ctx = {
                             "mode": "codex_oauth",
@@ -1021,7 +1093,7 @@ class DiscordAdapter(BaseAdapter):
                             "\u274c OpenAI OAuth support is unavailable in this runtime."
                         )
                         return
-                    auth_context = await self._oauth.get_auth_context(None)
+                    auth_context = await self._get_oauth_auth_context()
                     if not auth_context or not auth_context.get("access_token"):
                         await message.channel.send(
                             "\u274c OpenAI OAuth token missing. Run `codex login` first."
@@ -1267,6 +1339,18 @@ class DiscordAdapter(BaseAdapter):
     def default_channel_id(self) -> int | None:
         """Get the default notification channel ID (first allowed text channel)."""
         return self._default_channel_id
+
+    @property
+    def default_channel_name(self) -> str | None:
+        """Get the default notification channel name when available."""
+        return self._default_channel_name
+
+    @property
+    def bot_display_name(self) -> str | None:
+        """Get the Discord bot display name for UI labeling."""
+        if self._bot is not None and getattr(self._bot, "user", None) is not None:
+            return str(self._bot.user)
+        return None
 
     async def send_notification(self, user_id: str, message: str) -> bool:
         """Send a proactive notification to a Discord channel.

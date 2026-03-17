@@ -1,4 +1,4 @@
-"""ComfyUI integration plugin — txt2img, custom workflow, status check.
+"""ComfyUI integration plugin — txt2img, img2img, custom workflow, status check.
 
 Connects to a remote ComfyUI instance via its REST API (HTTP).
 Configuration is read from ``config.comfyui`` (managed in the Web UI).
@@ -67,6 +67,121 @@ async def _download_image(url: str, timeout: int) -> bytes:
         resp = await client.get(url)
         resp.raise_for_status()
         return resp.content
+
+
+async def _upload_image_to_comfyui(
+    api_url: str, image_path: str, timeout: int
+) -> str:
+    """Upload a local image to ComfyUI and return the server-side filename.
+
+    ComfyUI stores uploaded images in its ``input/`` folder and returns the
+    filename that ``LoadImage`` can reference.
+    """
+    path = Path(image_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Image not found: {image_path}")
+
+    # Guess content type
+    suffix = path.suffix.lower()
+    content_type = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+    }.get(suffix, "image/png")
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(
+            f"{api_url}/upload/image",
+            files={"image": (path.name, path.read_bytes(), content_type)},
+            data={"overwrite": "true"},
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        return result.get("name", path.name)
+
+
+def _build_img2img_workflow(
+    prompt: str,
+    negative_prompt: str,
+    checkpoint: str,
+    image_name: str,
+    steps: int,
+    cfg_scale: float,
+    sampler: str,
+    scheduler: str,
+    seed: int,
+    denoise: float,
+) -> dict:
+    """Build a ComfyUI img2img API workflow.
+
+    Key difference from txt2img:
+    - Uses LoadImage → VAEEncode instead of EmptyLatentImage
+    - KSampler denoise < 1.0 to preserve original image features
+    """
+    return {
+        "3": {
+            "class_type": "KSampler",
+            "inputs": {
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg_scale,
+                "sampler_name": sampler,
+                "scheduler": scheduler,
+                "denoise": denoise,
+                "model": ["4", 0],
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+                "latent_image": ["10", 0],
+            },
+        },
+        "4": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": checkpoint},
+        },
+        # LoadImage — loads the uploaded image by server-side filename
+        "5": {
+            "class_type": "LoadImage",
+            "inputs": {"image": image_name},
+        },
+        "6": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": prompt,
+                "clip": ["4", 1],
+            },
+        },
+        "7": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "text": negative_prompt,
+                "clip": ["4", 1],
+            },
+        },
+        "8": {
+            "class_type": "VAEDecode",
+            "inputs": {
+                "samples": ["3", 0],
+                "vae": ["4", 2],
+            },
+        },
+        "9": {
+            "class_type": "SaveImage",
+            "inputs": {
+                "filename_prefix": "kuro_img2img",
+                "images": ["8", 0],
+            },
+        },
+        # VAEEncode — encode the input image into latent space
+        "10": {
+            "class_type": "VAEEncode",
+            "inputs": {
+                "pixels": ["5", 0],
+                "vae": ["4", 2],
+            },
+        },
+    }
 
 
 def _build_txt2img_workflow(
@@ -365,7 +480,179 @@ class ComfyUIGenerateTool(BaseTool):
 
 
 # ---------------------------------------------------------------------------
-# Tool 2: comfyui_status  — Check server status & list models
+# Tool 2: comfyui_img2img  — Image-to-Image
+# ---------------------------------------------------------------------------
+
+
+class ComfyUIImg2ImgTool(BaseTool):
+    name = "comfyui_img2img"
+    description = (
+        "Modify an existing image using ComfyUI (img2img). "
+        "Upload a source image, apply a prompt to transform it. "
+        "Use 'denoise' to control how much to change: "
+        "0.2-0.4 = subtle tweaks, 0.5-0.7 = moderate changes, 0.8-1.0 = heavy redraw. "
+        "Great for style transfer, adding details, fixing parts, or re-interpreting a scene."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "image_path": {
+                "type": "string",
+                "description": (
+                    "Absolute path to the source image file (png/jpg/webp). "
+                    "Can be a previously generated image or any local image."
+                ),
+            },
+            "prompt": {
+                "type": "string",
+                "description": "The positive prompt describing the desired output.",
+            },
+            "negative_prompt": {
+                "type": "string",
+                "description": "Negative prompt (things to avoid). Default: ''",
+            },
+            "denoise": {
+                "type": "number",
+                "description": (
+                    "Denoise strength (0.0-1.0). Controls how much to change the image. "
+                    "0.3 = keep most of original, 0.7 = change a lot. Default: 0.5"
+                ),
+            },
+            "checkpoint": {
+                "type": "string",
+                "description": (
+                    "Checkpoint model name. Leave empty for the default in Settings."
+                ),
+            },
+            "steps": {
+                "type": "integer",
+                "description": "Number of sampling steps. Default from config.",
+            },
+            "cfg_scale": {
+                "type": "number",
+                "description": "CFG scale (guidance). Default from config.",
+            },
+            "sampler": {
+                "type": "string",
+                "description": "Sampler name. Default from config.",
+            },
+            "scheduler": {
+                "type": "string",
+                "description": "Scheduler. Default from config.",
+            },
+            "seed": {
+                "type": "integer",
+                "description": "Random seed. -1 for random.",
+            },
+        },
+        "required": ["image_path", "prompt"],
+    }
+    risk_level = RiskLevel.MEDIUM
+
+    async def execute(self, params: dict[str, Any], context: ToolContext) -> ToolResult:
+        cfg = _get_comfyui_cfg(context)
+        if not cfg.get("enabled"):
+            return ToolResult.fail(
+                "ComfyUI integration is disabled. Enable it in Settings > ComfyUI."
+            )
+
+        api_url = cfg["api_url"].rstrip("/")
+        timeout = cfg["timeout"]
+
+        image_path = params["image_path"]
+        prompt_text = params["prompt"]
+        negative = params.get("negative_prompt", "")
+        denoise = params.get("denoise", 0.5)
+        denoise = max(0.0, min(1.0, denoise))  # Clamp to [0, 1]
+
+        checkpoint = params.get("checkpoint") or cfg.get("default_checkpoint", "")
+        if not checkpoint:
+            return ToolResult.fail(
+                "No checkpoint model specified and no default configured. "
+                "Set a default in Settings > ComfyUI or pass 'checkpoint' parameter."
+            )
+
+        steps = params.get("steps") or cfg.get("default_steps", 20)
+        cfg_scale = params.get("cfg_scale") or cfg.get("default_cfg_scale", 7.0)
+        sampler = params.get("sampler") or cfg.get("default_sampler", "euler")
+        scheduler = params.get("scheduler") or cfg.get("default_scheduler", "normal")
+        seed = params.get("seed", -1)
+        if seed == -1:
+            import random
+
+            seed = random.randint(0, 2**32 - 1)
+
+        # Step 1: Upload the source image to ComfyUI
+        try:
+            server_image_name = await _upload_image_to_comfyui(
+                api_url, image_path, timeout
+            )
+        except FileNotFoundError as e:
+            return ToolResult.fail(str(e))
+        except Exception as e:
+            return ToolResult.fail(f"Failed to upload image to ComfyUI: {e}")
+
+        # Step 2: Build and execute img2img workflow
+        workflow = _build_img2img_workflow(
+            prompt=prompt_text,
+            negative_prompt=negative,
+            checkpoint=checkpoint,
+            image_name=server_image_name,
+            steps=steps,
+            cfg_scale=cfg_scale,
+            sampler=sampler,
+            scheduler=scheduler,
+            seed=seed,
+            denoise=denoise,
+        )
+
+        try:
+            history = await _queue_prompt_and_wait(api_url, workflow, timeout)
+        except Exception as e:
+            return ToolResult.fail(f"ComfyUI img2img failed: {e}")
+
+        images = _extract_image_filenames(history)
+        if not images:
+            return ToolResult.fail("ComfyUI returned no images.")
+
+        # Step 3: Download and save result
+        img_info = images[0]
+        img_url = (
+            f"{api_url}/view?"
+            f"filename={quote(img_info['filename'])}"
+            f"&subfolder={quote(img_info['subfolder'])}"
+            f"&type={quote(img_info['type'])}"
+        )
+        try:
+            img_bytes = await _download_image(img_url, timeout=30)
+        except Exception as e:
+            return ToolResult.fail(f"Failed to download generated image: {e}")
+
+        local_path = _save_images_locally(
+            cfg.get("output_dir", ""), img_info, img_bytes
+        )
+
+        summary_lines = [
+            "img2img completed successfully!",
+            f"Source: {image_path}",
+            f"Saved to: {local_path}",
+            f"Prompt: {prompt_text[:80]}{'...' if len(prompt_text) > 80 else ''}",
+            f"Denoise: {denoise} | Steps: {steps} | CFG: {cfg_scale}",
+            f"Seed: {seed} | Sampler: {sampler}/{scheduler}",
+            f"Checkpoint: {checkpoint}",
+        ]
+
+        return ToolResult.ok(
+            "\n".join(summary_lines),
+            image_path=str(local_path),
+            source_image=image_path,
+            seed=seed,
+            denoise=denoise,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tool 3: comfyui_status  — Check server status & list models
 # ---------------------------------------------------------------------------
 
 
@@ -477,7 +764,7 @@ class ComfyUIStatusTool(BaseTool):
 
 
 # ---------------------------------------------------------------------------
-# Tool 3: comfyui_workflow  — Run a custom workflow JSON
+# Tool 4: comfyui_workflow  — Run a custom workflow JSON
 # ---------------------------------------------------------------------------
 
 

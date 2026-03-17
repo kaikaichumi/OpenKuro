@@ -398,6 +398,9 @@ class SlackAdapter(BaseAdapter):
 
         session_key = self._session_key(channel_id, user_id)
         session = self.get_or_create_session(session_key)
+        session.metadata["username"] = str(event.get("username", "") or "")
+        session.metadata["_slack_channel_id"] = channel_id
+        session.metadata["_slack_user_id"] = user_id
         self._approval_cb.register_channel(session.id, channel_id)
 
         model = session.metadata.get("model_override")

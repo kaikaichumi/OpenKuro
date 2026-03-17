@@ -19,6 +19,7 @@ import structlog
 
 from src.config import KuroConfig
 from src.core.action_log import ActionLogger
+from src.core.analytics import get_budget_manager
 from src.core.memory.manager import MemoryManager
 from src.core.model_router import (
     ContextOverflowError,
@@ -171,6 +172,7 @@ class Engine:
         self.sandbox = Sandbox(config.sandbox)
         self.sanitizer = Sanitizer()
         self.audit = audit_log or AuditLog()
+        self.budget_manager = get_budget_manager()
 
         # Task complexity estimator (set externally after construction)
         self.complexity_estimator: ComplexityEstimator | None = None
@@ -676,6 +678,61 @@ class Engine:
             except Exception:
                 pass
 
+    async def _check_budget_stop_guard(self, model: str, session: Session) -> str | None:
+        """Return a user-facing block message when a hard budget limit is exceeded."""
+        manager = getattr(self, "budget_manager", None)
+        if manager is None:
+            return None
+        try:
+            result = await manager.check_stop_limits(model=model)
+        except Exception as e:
+            logger.debug("budget_stop_check_failed", model=model, error=str(e))
+            return None
+
+        if not result.get("blocked"):
+            return None
+
+        matches = result.get("matches") or []
+        details: list[str] = []
+        for item in matches[:3]:
+            try:
+                spent_val = float(item.get("spent_usd", 0.0) or 0.0)
+            except Exception:
+                spent_val = 0.0
+            try:
+                limit_val = float(item.get("limit_usd", 0.0) or 0.0)
+            except Exception:
+                limit_val = 0.0
+            details.append(
+                f"{item.get('name', item.get('id', 'rule'))} "
+                f"(${spent_val:.4f}/${limit_val:.4f})"
+            )
+        joined = "; ".join(details) if details else "budget limit exceeded"
+        return (
+            "此模型已達到預算硬上限，請求已被阻擋。"
+            f"{joined}。請到 Analytics 調整預算規則或切換模型。"
+        )
+
+    async def _notify_budget_threshold(self, model: str, session: Session) -> None:
+        """Send budget threshold notifications via configured adapters."""
+        manager = getattr(self, "budget_manager", None)
+        if manager is None:
+            return
+        adapter_manager = getattr(self, "adapter_manager", None)
+        if adapter_manager is None:
+            return
+        try:
+            result = await manager.check_and_notify(
+                model=model,
+                session=session,
+                adapter_manager=adapter_manager,
+            )
+            sent = int(result.get("sent", 0) or 0)
+            if sent > 0:
+                logger.info("budget_notifications_sent", model=model, sent=sent)
+        except Exception as e:
+            logger.debug("budget_notify_failed", model=model, error=str(e))
+
     @staticmethod
     def _new_execution_guard_state() -> dict[str, Any]:
         """Initialize per-task execution guard counters."""
@@ -1055,6 +1112,34 @@ class Engine:
         ).strip().lower()
         max_risk_level = risk_map.get(max_risk_name, RiskLevel.CRITICAL)
         for round_num in range(max_rounds):
+            active_model_for_budget = str(
+                session.metadata.get("_active_model")
+                or model
+                or self.model.default_model
+            )
+            budget_block_msg = await self._check_budget_stop_guard(
+                active_model_for_budget, session
+            )
+            if budget_block_msg:
+                self._emit(
+                    "error",
+                    agent_id=event_agent_id,
+                    content=budget_block_msg[:120],
+                    metadata={
+                        "budget_block": True,
+                        "model": active_model_for_budget,
+                    },
+                )
+                assistant_msg = Message(
+                    role=Role.ASSISTANT,
+                    content=budget_block_msg,
+                )
+                session.add_message(assistant_msg)
+                await self.action_log.log_conversation(
+                    session.id, "assistant", budget_block_msg
+                )
+                return budget_block_msg
+
             request_context = self._normalize_system_messages(context_messages)
             messages = [m.to_litellm() for m in request_context]
             tool_defs: list[dict[str, Any]] = []
@@ -1112,15 +1197,26 @@ class Engine:
                     tools=tools,
                 )
 
+            resolved_response_model = (
+                response.model
+                or model
+                or self.model.default_model
+            )
+            session.metadata["_active_model"] = resolved_response_model
+
             # Log token usage
             if response.usage:
                 try:
                     await self.audit.log_token_usage(
                         session_id=session.id,
-                        model=response.model or model or self.model.default_model,
+                        model=resolved_response_model,
                         prompt_tokens=response.usage.get("prompt_tokens", 0),
                         completion_tokens=response.usage.get("completion_tokens", 0),
                         total_tokens=response.usage.get("total_tokens", 0),
+                    )
+                    await self._notify_budget_threshold(
+                        resolved_response_model,
+                        session,
                     )
                 except Exception:
                     pass  # Don't let token logging break the main loop
@@ -1553,6 +1649,35 @@ class Engine:
         messages = [m.to_litellm() for m in normalized]
         tools = self.tools.registry.get_openai_tools() or None
 
+        active_model_for_budget = str(
+            session.metadata.get("_active_model")
+            or model
+            or self.model.default_model
+        )
+        budget_block_msg = await self._check_budget_stop_guard(
+            active_model_for_budget, session
+        )
+        if budget_block_msg:
+            self._emit(
+                "error",
+                agent_id=event_agent_id,
+                content=budget_block_msg[:120],
+                metadata={
+                    "budget_block": True,
+                    "model": active_model_for_budget,
+                },
+            )
+            assistant_msg = Message(
+                role=Role.ASSISTANT,
+                content=budget_block_msg,
+            )
+            session.add_message(assistant_msg)
+            await self.action_log.log_conversation(
+                session.id, "assistant", budget_block_msg
+            )
+            yield budget_block_msg
+            return
+
         # First try a non-streaming call to check for tool calls
         response = await self.model.complete(
             messages=messages,
@@ -1560,15 +1685,26 @@ class Engine:
             tools=tools,
         )
 
+        resolved_response_model = (
+            response.model
+            or model
+            or self.model.default_model
+        )
+        session.metadata["_active_model"] = resolved_response_model
+
         # Log token usage for stream path
         if response.usage:
             try:
                 await self.audit.log_token_usage(
                     session_id=session.id,
-                    model=response.model or model or self.model.default_model,
+                    model=resolved_response_model,
                     prompt_tokens=response.usage.get("prompt_tokens", 0),
                     completion_tokens=response.usage.get("completion_tokens", 0),
                     total_tokens=response.usage.get("total_tokens", 0),
+                )
+                await self._notify_budget_threshold(
+                    resolved_response_model,
+                    session,
                 )
             except Exception:
                 pass

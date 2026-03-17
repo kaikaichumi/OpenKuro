@@ -551,6 +551,152 @@ class WebServer:
 
         return catalog
 
+    @staticmethod
+    def _normalize_budget_target_for_adapter(adapter_name: str, target: str) -> str:
+        """Normalize target IDs for adapters that use compound session keys."""
+        base = adapter_name.split(":", 1)[0].strip().lower()
+        value = str(target or "").strip()
+        if not value:
+            return ""
+        # Discord/Slack sessions are often stored as "channel_id:user_id".
+        # Notifications should target the channel ID.
+        if base in {"discord", "slack"} and ":" in value:
+            return value.split(":", 1)[0].strip()
+        return value
+
+    @staticmethod
+    def _format_budget_target_label(adapter_name: str, user_id: str, alias: str | None = None) -> str:
+        base = f"{adapter_name}: {user_id}"
+        alias_text = str(alias or "").strip()
+        if alias_text:
+            return f"{alias_text} ({base})"
+        return base
+
+    def _collect_budget_target_options(self) -> list[dict[str, str]]:
+        """Collect candidate notify targets with readable labels for UI dropdown."""
+        options_map: dict[tuple[str, str], dict[str, Any]] = {}
+
+        def _add(
+            adapter_name: str | None,
+            user_id: str | int | None,
+            source: str,
+            alias: str | None = None,
+        ) -> None:
+            adapter = str(adapter_name or "").strip()
+            raw_target = str(user_id or "").strip()
+            if not adapter or not raw_target:
+                return
+            target = self._normalize_budget_target_for_adapter(adapter, raw_target)
+            if not target:
+                return
+
+            key = (adapter, target)
+            alias_text = str(alias or "").strip()
+            option = options_map.get(key)
+            if option is None:
+                option = {
+                    "adapter": adapter,
+                    "user_id": target,
+                    "label": self._format_budget_target_label(adapter, target, alias_text),
+                    "source": source,
+                    "_aliases": set(),
+                }
+                options_map[key] = option
+            else:
+                # Prefer a readable alias from any richer source (adapter/session).
+                if alias_text:
+                    option["label"] = self._format_budget_target_label(adapter, target, alias_text)
+                    option["source"] = source
+
+            if alias_text:
+                option["_aliases"].add(alias_text)
+
+        scheduler = getattr(self.engine, "scheduler", None)
+        if scheduler is not None:
+            _add(
+                getattr(scheduler, "_default_notify_adapter", None),
+                getattr(scheduler, "_default_notify_target", None),
+                "scheduler_default",
+            )
+            tasks = getattr(scheduler, "tasks", {}) or {}
+            for task in tasks.values():
+                _add(
+                    getattr(task, "notify_adapter", None),
+                    getattr(task, "notify_user_id", None),
+                    "scheduler_task",
+                )
+
+        adapter_manager = getattr(self.engine, "adapter_manager", None)
+        if adapter_manager is not None:
+            for adapter_name in adapter_manager.adapter_names:
+                adapter = adapter_manager.get(adapter_name)
+                if adapter is None:
+                    continue
+
+                instance_alias = adapter_name.split(":", 1)[1].strip() if ":" in adapter_name else ""
+                bot_name = str(getattr(adapter, "bot_display_name", "") or "").strip()
+                default_channel_name = str(getattr(adapter, "default_channel_name", "") or "").strip()
+                default_alias_parts: list[str] = []
+                if bot_name:
+                    default_alias_parts.append(bot_name)
+                elif instance_alias:
+                    default_alias_parts.append(instance_alias)
+                if default_channel_name:
+                    default_alias_parts.append(f"#{default_channel_name}")
+                _add(
+                    adapter_name,
+                    getattr(adapter, "default_channel_id", None),
+                    "adapter_default",
+                    alias=" - ".join(default_alias_parts) if default_alias_parts else None,
+                )
+
+                sessions = getattr(adapter, "_sessions", None)
+                if isinstance(sessions, dict):
+                    for sess in sessions.values():
+                        meta = getattr(sess, "metadata", {}) or {}
+                        channel_name = str(meta.get("_discord_channel_name") or "").strip()
+                        adapter_base = adapter_name.split(":", 1)[0].strip().lower()
+                        if not channel_name and adapter_base == "discord":
+                            bot = getattr(adapter, "_bot", None)
+                            normalized = self._normalize_budget_target_for_adapter(
+                                adapter_name,
+                                str(getattr(sess, "user_id", "") or "").strip(),
+                            )
+                            if bot is not None and normalized.isdigit():
+                                with contextlib.suppress(Exception):
+                                    channel_obj = bot.get_channel(int(normalized))
+                                    if channel_obj is not None:
+                                        channel_name = str(getattr(channel_obj, "name", "") or "").strip()
+
+                        alias_parts: list[str] = []
+                        if bot_name:
+                            alias_parts.append(bot_name)
+                        elif instance_alias:
+                            alias_parts.append(instance_alias)
+                        if channel_name:
+                            alias_parts.append(f"#{channel_name}")
+                        alias = " - ".join(alias_parts) if alias_parts else None
+
+                        _add(
+                            adapter_name,
+                            getattr(sess, "user_id", None),
+                            "adapter_session",
+                            alias=alias,
+                        )
+
+        options: list[dict[str, str]] = []
+        for item in options_map.values():
+            item.pop("_aliases", None)
+            options.append({
+                "adapter": str(item.get("adapter", "")),
+                "user_id": str(item.get("user_id", "")),
+                "label": str(item.get("label", "")),
+                "source": str(item.get("source", "")),
+            })
+
+        options.sort(key=lambda x: (x["adapter"], x["label"], x["user_id"]))
+        return options
+
     def _create_app(self) -> FastAPI:
         app = FastAPI(title="Kuro", docs_url=None, redoc_url=None)
 
@@ -962,18 +1108,36 @@ class WebServer:
         # === Analytics API ===
 
         @app.get("/api/analytics/usage")
-        async def get_analytics_usage():
+        async def get_analytics_usage(
+            days: int = Query(30, ge=1, le=365),
+            start: str | None = Query(None),
+            end: str | None = Query(None),
+        ):
             """Get tool usage analytics from action logs."""
             from src.core.analytics import UsageAnalyzer
+
             analyzer = UsageAnalyzer()
-            return await analyzer.get_usage_summary()
+            return await analyzer.get_usage_summary(
+                days=days,
+                start_date=start,
+                end_date=end,
+            )
 
         @app.get("/api/analytics/costs")
-        async def get_analytics_costs():
+        async def get_analytics_costs(
+            days: int = Query(30, ge=1, le=365),
+            start: str | None = Query(None),
+            end: str | None = Query(None),
+        ):
             """Get estimated cost analytics."""
             from src.core.analytics import CostEstimator
+
             estimator = CostEstimator()
-            return await estimator.estimate_costs()
+            return await estimator.estimate_costs(
+                days=days,
+                start_date=start,
+                end_date=end,
+            )
 
         @app.get("/api/analytics/suggestions")
         async def get_analytics_suggestions():
@@ -1004,6 +1168,48 @@ class WebServer:
             from src.core.analytics import delete_custom_pricing
             deleted = delete_custom_pricing(model)
             return {"model": model, "deleted": deleted}
+
+        @app.get("/api/analytics/budgets")
+        async def get_analytics_budgets(
+            include_stats: bool = Query(True),
+        ):
+            """Get analytics budget rules and current period usage."""
+            from src.core.analytics import get_budget_manager
+
+            manager = get_budget_manager()
+            payload = await manager.get_rules(include_stats=include_stats)
+            adapter_manager = getattr(self.engine, "adapter_manager", None)
+            payload["available_adapters"] = (
+                list(adapter_manager.adapter_names)
+                if adapter_manager is not None
+                else []
+            )
+            payload["target_options"] = self._collect_budget_target_options()
+            return payload
+
+        @app.put("/api/analytics/budgets")
+        async def update_analytics_budgets(request: Request):
+            """Replace all analytics budget rules."""
+            from src.core.analytics import get_budget_manager
+
+            body = await request.json()
+            rules = body.get("rules", [])
+            if not isinstance(rules, list):
+                return JSONResponse(
+                    {"status": "error", "message": "rules must be a list"},
+                    status_code=400,
+                )
+
+            manager = get_budget_manager()
+            payload = await manager.replace_rules(rules)
+            adapter_manager = getattr(self.engine, "adapter_manager", None)
+            payload["available_adapters"] = (
+                list(adapter_manager.adapter_names)
+                if adapter_manager is not None
+                else []
+            )
+            payload["target_options"] = self._collect_budget_target_options()
+            return payload
 
         @app.get("/security")
         async def security_page():
