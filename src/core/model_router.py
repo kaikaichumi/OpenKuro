@@ -516,7 +516,9 @@ class ModelRouter:
     @staticmethod
     def _extract_sse_delta(event: dict[str, Any]) -> str | None:
         event_type = str(event.get("type", "")).strip().lower()
-        if not (event_type.endswith(".delta") or event_type.endswith(".done")):
+        # `.done` often carries the finalized full text snapshot, which can
+        # duplicate content already streamed via `.delta` chunks.
+        if not event_type.endswith(".delta"):
             return None
         for key in ("delta", "text", "output_text"):
             raw = event.get(key)
