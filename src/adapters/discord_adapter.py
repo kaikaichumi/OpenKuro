@@ -1392,10 +1392,28 @@ class DiscordAdapter(BaseAdapter):
             logger.warning("aiohttp_not_available", hint="pip install aiohttp")
             return []
 
+        try:
+            from src.core.security.egress import EgressBroker
+            egress = EgressBroker(getattr(self.config, "egress_policy", None))
+        except Exception:
+            egress = None
+
         paths: list[str] = []
         async with aiohttp.ClientSession() as http:
             for url in urls[:5]:  # limit to 5 images
                 try:
+                    if egress is not None:
+                        allowed, reason = egress.check_url(
+                            url,
+                            tool_name="discord_image_download",
+                        )
+                        if not allowed:
+                            logger.info(
+                                "discord_image_download_blocked",
+                                url=url[:120],
+                                reason=reason,
+                            )
+                            continue
                     async with http.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                         if resp.status != 200:
                             continue
@@ -1407,8 +1425,15 @@ class DiscordAdapter(BaseAdapter):
                             ext = ".gif"
                         elif "webp" in ct:
                             ext = ".webp"
-                        data = await resp.read()
-                        if len(data) > 20 * 1024 * 1024:  # skip >20 MB
+                        max_image_bytes = 20 * 1024 * 1024
+                        if egress is not None:
+                            policy_cap = int(getattr(egress, "max_response_bytes", 0) or 0)
+                            if policy_cap > 0:
+                                max_image_bytes = min(max_image_bytes, policy_cap)
+                            data = await egress.read_limited_bytes(resp, max_bytes=max_image_bytes)
+                        else:
+                            data = await resp.read()
+                        if len(data) > max_image_bytes:
                             continue
                         tmp = tempfile.NamedTemporaryFile(
                             suffix=ext, prefix="kuro_discord_", delete=False

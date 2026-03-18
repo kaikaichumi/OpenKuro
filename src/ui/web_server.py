@@ -2223,6 +2223,22 @@ class WebServer:
             self.engine.sandbox = self.engine.sandbox.__class__(new_config.sandbox)
             applied.append("sandbox")
 
+        # Tool policy + egress policy
+        if (new_config.tool_policy != old.tool_policy) or (new_config.egress_policy != old.egress_policy):
+            from src.core.security.egress import EgressBroker
+            from src.core.security.tool_policy import ToolPolicyCore
+
+            self.engine.egress_broker = EgressBroker(new_config.egress_policy)
+            self.engine.tool_policy = ToolPolicyCore(
+                new_config.tool_policy,
+                self.engine.egress_broker,
+            )
+            applied.append("tool_policy")
+
+        # Budget fuse (session-level circuit breaker)
+        if new_config.budget_fuse != old.budget_fuse:
+            applied.append("budget_fuse")
+
         # Diagnostics settings (applied via config reference, no engine restart needed)
         if new_config.diagnostics != old.diagnostics:
             applied.append("diagnostics")

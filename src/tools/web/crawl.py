@@ -24,6 +24,7 @@ import aiohttp
 import structlog
 
 from src.config import get_kuro_home
+from src.core.security.egress import EgressBroker
 from src.tools.base import BaseTool, RiskLevel, ToolContext, ToolResult
 from src.tools.web.browse import BrowserManager
 
@@ -380,27 +381,49 @@ class WebCrawlBatchTool(BaseTool):
         session: aiohttp.ClientSession,
         url: str,
         *,
+        broker: EgressBroker,
         proxy: str | None = None,
     ) -> tuple[int, str, str, str, str | None]:
         """Fetch a page over HTTP and return status, final URL, content-type, html, error."""
+        allowed, reason = broker.check_url(url, tool_name=self.name)
+        if not allowed:
+            return 0, url, "", "", f"egress_blocked: {reason}"
         try:
             async with session.get(url, allow_redirects=True, proxy=proxy or None) as resp:
                 status = int(resp.status)
                 final_url = str(resp.url)
+                allowed_final, reason_final = broker.check_url(final_url, tool_name=self.name)
+                if not allowed_final:
+                    return status, final_url, "", "", f"egress_blocked_redirect: {reason_final}"
                 content_type = (resp.headers.get("content-type") or "").lower()
                 if "text/html" not in content_type:
                     return status, final_url, content_type, "", f"non-html content-type: {content_type}"
-                html = await resp.text(errors="ignore")
+                body = await broker.read_limited_bytes(resp)
+                html = body.decode("utf-8", errors="ignore")
                 return status, final_url, content_type, html, None
+        except ValueError as e:
+            return 0, url, "", "", str(e)
         except Exception as e:
             return 0, url, "", "", str(e)
 
-    async def _fetch_dynamic(self, url: str, context: ToolContext) -> tuple[str, str, str | None]:
+    async def _fetch_dynamic(
+        self,
+        url: str,
+        context: ToolContext,
+        *,
+        broker: EgressBroker,
+    ) -> tuple[str, str, str | None]:
         """Fetch rendered HTML with Playwright."""
+        allowed, reason = broker.check_url(url, tool_name=self.name)
+        if not allowed:
+            return url, "", f"egress_blocked: {reason}"
         try:
             manager = BrowserManager.get_instance()
             page = await manager.ensure_page(headless=_headless_for_context(context))
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            allowed_final, reason_final = broker.check_url(str(page.url), tool_name=self.name)
+            if not allowed_final:
+                return str(page.url), "", f"egress_blocked_redirect: {reason_final}"
             html = await page.content()
             title = await page.title()
             return str(page.url), html, title
@@ -417,6 +440,7 @@ class WebCrawlBatchTool(BaseTool):
         max_links_per_page: int,
         dynamic_fallback: bool,
         runtime: _RuntimeController,
+        broker: EgressBroker,
     ) -> _FetchedPage:
         """Fetch one page and extract title/text/links."""
         started = time.perf_counter()
@@ -426,6 +450,7 @@ class WebCrawlBatchTool(BaseTool):
         status, final_url, content_type, html, error = await self._fetch_http(
             session,
             item.url,
+            broker=broker,
             proxy=proxy,
         )
         source = "http"
@@ -435,7 +460,11 @@ class WebCrawlBatchTool(BaseTool):
         should_fallback = bool(dynamic_fallback and (error or status >= 400 or len(text) < 120))
 
         if should_fallback:
-            fb_url, fb_html, fb_meta = await self._fetch_dynamic(final_url or item.url, context)
+            fb_url, fb_html, fb_meta = await self._fetch_dynamic(
+                final_url or item.url,
+                context,
+                broker=broker,
+            )
             if fb_html:
                 final_url = fb_url
                 html = fb_html
@@ -679,6 +708,7 @@ class WebCrawlBatchTool(BaseTool):
             return ToolResult.fail("No valid start URLs after checkpoint restore")
 
         allowed_domains = {urlparse(u).netloc.lower() for u in start_urls}
+        broker = EgressBroker(getattr(getattr(context, "config", None), "egress_policy", None))
         runtime = _RuntimeController(
             per_domain_delay_ms=per_domain_delay_ms,
             proxy_pool=proxy_pool,
@@ -712,6 +742,7 @@ class WebCrawlBatchTool(BaseTool):
                             max_links_per_page=max_links_per_page,
                             dynamic_fallback=dynamic_fallback,
                             runtime=runtime,
+                            broker=broker,
                         )
                         for item in batch
                     ]
@@ -728,6 +759,9 @@ class WebCrawlBatchTool(BaseTool):
                         domain = parsed.netloc.lower()
 
                         if same_domain_only and domain not in allowed_domains:
+                            continue
+                        allowed, _ = broker.check_url(candidate_url, tool_name=self.name)
+                        if not allowed:
                             continue
                         if not _matches_filters(candidate_url, include_patterns, exclude_patterns):
                             continue

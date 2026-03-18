@@ -28,8 +28,10 @@ from src.core.model_router import (
 )
 from src.core.security.approval import ApprovalPolicy
 from src.core.security.audit import AuditLog
+from src.core.security.egress import EgressBroker
 from src.core.security.sandbox import Sandbox
 from src.core.security.sanitizer import Sanitizer
+from src.core.security.tool_policy import ToolPolicyCore
 from src.core.tool_system import ToolSystem
 from src.core.types import Message, ModelResponse, Role, Session, ToolCall
 from src.openai_catalog import is_openai_compatible_local_base_url
@@ -179,6 +181,11 @@ class Engine:
         # Security components
         self.approval_policy = ApprovalPolicy(config.security)
         self.sandbox = Sandbox(config.sandbox)
+        self.egress_broker = EgressBroker(getattr(config, "egress_policy", None))
+        self.tool_policy = ToolPolicyCore(
+            getattr(config, "tool_policy", None),
+            self.egress_broker,
+        )
         self.sanitizer = Sanitizer()
         self.audit = audit_log or AuditLog()
         self.budget_manager = get_budget_manager()
@@ -844,6 +851,82 @@ class Engine:
             return int(str(value).strip())
         except Exception:
             return default
+
+    @staticmethod
+    def _is_network_tool_name(tool_name: str) -> bool:
+        """Heuristic classification for network/egress-heavy tools."""
+        name = str(tool_name or "").strip().lower()
+        if not name:
+            return False
+        return (
+            name.startswith("web_")
+            or name.startswith("comfyui_")
+            or name.startswith("mcp_")
+            or name in {"send_message", "a2a_discover_peers", "a2a_call_agent"}
+        )
+
+    @staticmethod
+    def _get_session_labels(session: Session) -> set[str]:
+        """Get normalized data labels associated with a session."""
+        raw = session.metadata.get("_data_labels", [])
+        if not isinstance(raw, list):
+            return set()
+        return {str(v).strip().lower() for v in raw if str(v).strip()}
+
+    @staticmethod
+    def _set_session_labels(session: Session, labels: set[str]) -> None:
+        """Persist normalized data labels to session metadata."""
+        session.metadata["_data_labels"] = sorted(
+            {str(v).strip().lower() for v in labels if str(v).strip()}
+        )
+
+    @staticmethod
+    def _estimate_result_bytes(result: ToolResult) -> int:
+        """Approximate tool result payload size in bytes."""
+        total = 0
+        try:
+            total += len(str(result.output or "").encode("utf-8"))
+        except Exception:
+            pass
+        try:
+            total += len(str(result.error or "").encode("utf-8"))
+        except Exception:
+            pass
+        try:
+            total += len(json.dumps(result.data or {}, ensure_ascii=False, default=str).encode("utf-8"))
+        except Exception:
+            pass
+        image_path = str(getattr(result, "image_path", "") or "").strip()
+        if image_path:
+            try:
+                p = Path(image_path)
+                if p.is_file():
+                    total += max(0, int(p.stat().st_size))
+            except Exception:
+                pass
+        return max(0, total)
+
+    def _get_budget_fuse_state(self, session: Session) -> dict[str, Any]:
+        """Get mutable session budget-fuse counters."""
+        raw = session.metadata.get("_budget_fuse", {})
+        state = dict(raw) if isinstance(raw, dict) else {}
+        state["tool_calls"] = self._safe_int(state.get("tool_calls"), 0)
+        state["network_calls"] = self._safe_int(state.get("network_calls"), 0)
+        state["network_bytes"] = self._safe_int(state.get("network_bytes"), 0)
+        state["locked"] = bool(state.get("locked", False))
+        state["network_bytes_over"] = bool(state.get("network_bytes_over", False))
+        return state
+
+    @staticmethod
+    def _set_budget_fuse_state(session: Session, state: dict[str, Any]) -> None:
+        """Persist budget-fuse counters into session metadata."""
+        session.metadata["_budget_fuse"] = {
+            "tool_calls": max(0, int(state.get("tool_calls", 0) or 0)),
+            "network_calls": max(0, int(state.get("network_calls", 0) or 0)),
+            "network_bytes": max(0, int(state.get("network_bytes", 0) or 0)),
+            "locked": bool(state.get("locked", False)),
+            "network_bytes_over": bool(state.get("network_bytes_over", False)),
+        }
 
     @staticmethod
     def _extract_json_object(raw_text: str) -> dict[str, Any] | None:
@@ -1873,6 +1956,14 @@ class Engine:
         guard_enabled = bool(guard_cfg and getattr(guard_cfg, "enabled", False) and not full_access_mode)
         if guard_enabled and guard_state is None:
             guard_state = self._new_execution_guard_state()
+        active_model = str(
+            session.metadata.get("_active_model")
+            or session.metadata.get("model_override")
+            or self.model.default_model
+        )
+        policy_decision: Any = None
+        force_explicit_approval = False
+        forced_approval_reasons: list[str] = []
 
         async def _deny(
             reason: str,
@@ -2048,6 +2139,131 @@ class Engine:
                             extra_data={"plan_violations": violations, "plan": plan},
                         )
 
+        # === Security Layer 0.5: Tool Policy Core (context-aware rules) ===
+        if not full_access_mode:
+            tool_policy = getattr(self, "tool_policy", None)
+            if tool_policy is not None:
+                try:
+                    policy_decision = tool_policy.evaluate(
+                        tool_name=tool_call.name,
+                        arguments=tool_call.arguments,
+                        session=session,
+                        active_model=active_model,
+                        guard_state=guard_state,
+                        session_labels=self._get_session_labels(session),
+                    )
+                except Exception as e:
+                    logger.warning("tool_policy_check_failed", tool=tool_call.name, error=str(e))
+                else:
+                    if not bool(getattr(policy_decision, "allowed", True)):
+                        return await _deny(
+                            str(getattr(policy_decision, "reason", "Denied by tool policy")),
+                            policy_denied=True,
+                            result_summary="Tool policy denied",
+                            extra_data={
+                                "policy_rule": str(getattr(policy_decision, "matched_rule", "default")),
+                            },
+                        )
+
+                    isolation_tier = str(
+                        getattr(policy_decision, "isolation_tier", "standard") or "standard"
+                    ).strip().lower()
+                    if isolation_tier in {"restricted", "sealed"}:
+                        force_explicit_approval = True
+                        forced_approval_reasons.append(
+                            f"Tool policy isolation tier '{isolation_tier}' requires explicit approval"
+                        )
+                    if (
+                        isolation_tier == "sealed"
+                        and tool.risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL)
+                    ):
+                        return await _deny(
+                            (
+                                "Tool policy sealed isolation tier blocks high-risk tools "
+                                f"({tool_call.name}, risk={tool.risk_level.value})"
+                            ),
+                            policy_denied=True,
+                            result_summary="Tool policy sealed-tier denial",
+                            extra_data={
+                                "policy_rule": str(getattr(policy_decision, "matched_rule", "default")),
+                                "isolation_tier": isolation_tier,
+                            },
+                        )
+
+        # === Security Layer 0.6: Budget Fuse (session circuit breaker) ===
+        budget_fuse_state: dict[str, Any] | None = None
+        is_network_tool = self._is_network_tool_name(tool_call.name)
+        budget_fuse_cfg = getattr(self.config, "budget_fuse", None)
+        if (
+            not full_access_mode
+            and budget_fuse_cfg is not None
+            and bool(getattr(budget_fuse_cfg, "enabled", False))
+        ):
+            action = str(getattr(budget_fuse_cfg, "action", "deny") or "deny").strip().lower()
+            if action not in {"deny", "require_approval"}:
+                action = "deny"
+
+            budget_fuse_state = self._get_budget_fuse_state(session)
+            if budget_fuse_state.get("locked"):
+                return await _deny(
+                    "Budget fuse is locked for this session (limit exceeded earlier)",
+                    policy_denied=True,
+                    result_summary="Budget fuse locked",
+                    extra_data={"budget_fuse_locked": True},
+                )
+
+            next_tool_calls = int(budget_fuse_state.get("tool_calls", 0) or 0) + 1
+            next_network_calls = int(budget_fuse_state.get("network_calls", 0) or 0)
+            if is_network_tool:
+                next_network_calls += 1
+
+            max_tool_calls = max(
+                0,
+                self._safe_int(getattr(budget_fuse_cfg, "max_tool_calls_per_session", 0), 0),
+            )
+            max_network_calls = max(
+                0,
+                self._safe_int(getattr(budget_fuse_cfg, "max_network_calls_per_session", 0), 0),
+            )
+            max_network_bytes = max(
+                0,
+                self._safe_int(getattr(budget_fuse_cfg, "max_network_bytes_per_session", 0), 0),
+            )
+
+            violations: list[str] = []
+            if max_tool_calls and next_tool_calls > max_tool_calls:
+                violations.append(f"tool_calls={next_tool_calls}/{max_tool_calls}")
+            if is_network_tool and max_network_calls and next_network_calls > max_network_calls:
+                violations.append(f"network_calls={next_network_calls}/{max_network_calls}")
+            if (
+                is_network_tool
+                and max_network_bytes
+                and bool(budget_fuse_state.get("network_bytes_over", False))
+            ):
+                violations.append(
+                    "network_bytes already above limit "
+                    f"({int(budget_fuse_state.get('network_bytes', 0) or 0)}/{max_network_bytes})"
+                )
+
+            if violations:
+                reason = "Budget fuse threshold reached: " + "; ".join(violations)
+                if action == "deny":
+                    budget_fuse_state["locked"] = True
+                    self._set_budget_fuse_state(session, budget_fuse_state)
+                    return await _deny(
+                        reason,
+                        policy_denied=True,
+                        result_summary="Budget fuse denied",
+                        extra_data={"budget_fuse_violation": violations},
+                    )
+                force_explicit_approval = True
+                forced_approval_reasons.append(reason)
+
+            budget_fuse_state["tool_calls"] = next_tool_calls
+            if is_network_tool:
+                budget_fuse_state["network_calls"] = next_network_calls
+            self._set_budget_fuse_state(session, budget_fuse_state)
+
         # === Security Layer 1: Sandbox pre-check ===
         if (not full_access_mode) and tool_call.name == "shell_execute":
             command = tool_call.arguments.get("command", "")
@@ -2069,30 +2285,38 @@ class Engine:
 
         # === Security Layer 2: Approval check ===
         decision = self.approval_policy.check(tool_call.name, tool.risk_level, session.id)
-
-        if not decision.approved:
-            if decision.method == "policy_denied":
-                logger.warning(
-                    "tool_policy_denied",
-                    tool=tool_call.name,
-                    risk=tool.risk_level.value,
-                    reason=decision.reason,
-                )
-                return await _deny(
-                    decision.reason,
-                    policy_denied=True,
-                    result_summary=decision.reason,
-                )
-
-            logger.info(
-                "tool_approval_requested",
+        if decision.method == "policy_denied":
+            logger.warning(
+                "tool_policy_denied",
                 tool=tool_call.name,
                 risk=tool.risk_level.value,
                 reason=decision.reason,
             )
+            return await _deny(
+                decision.reason,
+                policy_denied=True,
+                result_summary=decision.reason,
+            )
+
+        needs_explicit_approval = force_explicit_approval or (not decision.approved)
+        if needs_explicit_approval:
+            if forced_approval_reasons:
+                approval_reason = "; ".join(forced_approval_reasons)
+            else:
+                approval_reason = decision.reason
+            logger.info(
+                "tool_approval_requested",
+                tool=tool_call.name,
+                risk=tool.risk_level.value,
+                reason=approval_reason,
+                forced=bool(forced_approval_reasons),
+            )
+            approval_args = dict(tool_call.arguments)
+            if forced_approval_reasons:
+                approval_args["_forced_approval_reasons"] = list(forced_approval_reasons)
             approved = await self.approval_cb.request_approval(
                 tool_call.name,
-                tool_call.arguments,
+                approval_args,
                 tool.risk_level,
                 session,
             )
@@ -2109,11 +2333,7 @@ class Engine:
             session_id=session.id,
             config=self.config,
             model_router=self.model,
-            active_model=str(
-                session.metadata.get("_active_model")
-                or session.metadata.get("model_override")
-                or self.model.default_model
-            ),
+            active_model=active_model,
             allowed_directories=[str(p) for p in self.config.sandbox.allowed_directories],
             max_execution_time=self.config.sandbox.max_execution_time,
             max_output_size=self.config.sandbox.max_output_size,
@@ -2128,6 +2348,46 @@ class Engine:
         start = time.monotonic()
         result = await self.tools.execute(tool_call.name, tool_call.arguments, context)
         duration_ms = int((time.monotonic() - start) * 1000)
+
+        if result.success and policy_decision is not None:
+            taint_labels = list(getattr(policy_decision, "taint_on_success", []) or [])
+            if taint_labels:
+                labels_before = self._get_session_labels(session)
+                merged = set(labels_before)
+                merged.update(
+                    str(v).strip().lower()
+                    for v in taint_labels
+                    if str(v).strip()
+                )
+                if merged != labels_before:
+                    self._set_session_labels(session, merged)
+                    logger.info(
+                        "session_labels_updated",
+                        session_id=session.id,
+                        labels=sorted(merged),
+                        tool=tool_call.name,
+                    )
+
+        if budget_fuse_state is not None and is_network_tool:
+            action = str(getattr(budget_fuse_cfg, "action", "deny") or "deny").strip().lower()
+            if action not in {"deny", "require_approval"}:
+                action = "deny"
+            max_network_bytes = max(
+                0,
+                self._safe_int(getattr(budget_fuse_cfg, "max_network_bytes_per_session", 0), 0),
+            )
+            used_bytes = self._estimate_result_bytes(result)
+            budget_fuse_state["network_bytes"] = int(budget_fuse_state.get("network_bytes", 0) or 0) + used_bytes
+            if max_network_bytes and budget_fuse_state["network_bytes"] > max_network_bytes:
+                if action == "deny":
+                    budget_fuse_state["locked"] = True
+                else:
+                    budget_fuse_state["network_bytes_over"] = True
+                result.data["budget_fuse_warning"] = (
+                    "Network byte budget exceeded: "
+                    f"{budget_fuse_state['network_bytes']}/{max_network_bytes}"
+                )
+            self._set_budget_fuse_state(session, budget_fuse_state)
 
         # === Security Layer 3: Audit log ===
         await self.audit.log_tool_execution(

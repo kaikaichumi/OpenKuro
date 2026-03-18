@@ -22,6 +22,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
+from src.core.security.egress import EgressBroker
 from src.tools.base import BaseTool, RiskLevel, ToolContext, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -51,21 +52,62 @@ def _get_comfyui_cfg(context: ToolContext) -> dict[str, Any]:
     }
 
 
-async def _api_get(url: str, timeout: int) -> dict:
+def _get_egress_broker(context: ToolContext | None) -> EgressBroker:
+    cfg = getattr(context, "config", None) if context is not None else None
+    egress_cfg = getattr(cfg, "egress_policy", None) if cfg is not None else None
+    return EgressBroker(egress_cfg)
+
+
+def _assert_egress_allowed(
+    broker: EgressBroker | None,
+    url: str,
+    *,
+    tool_name: str,
+) -> None:
+    if broker is None:
+        return
+    allowed, reason = broker.check_url(url, tool_name=tool_name)
+    if not allowed:
+        raise PermissionError(f"Egress blocked URL '{url}': {reason}")
+
+
+async def _api_get(
+    url: str,
+    timeout: int,
+    *,
+    broker: EgressBroker | None = None,
+    tool_name: str = "comfyui_api",
+) -> dict:
+    _assert_egress_allowed(broker, url, tool_name=tool_name)
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.get(url)
         resp.raise_for_status()
         return resp.json()
 
 
-async def _api_post(url: str, data: dict, timeout: int) -> dict:
+async def _api_post(
+    url: str,
+    data: dict,
+    timeout: int,
+    *,
+    broker: EgressBroker | None = None,
+    tool_name: str = "comfyui_api",
+) -> dict:
+    _assert_egress_allowed(broker, url, tool_name=tool_name)
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(url, json=data)
         resp.raise_for_status()
         return resp.json()
 
 
-async def _download_image(url: str, timeout: int) -> bytes:
+async def _download_image(
+    url: str,
+    timeout: int,
+    *,
+    broker: EgressBroker | None = None,
+    tool_name: str = "comfyui_download",
+) -> bytes:
+    _assert_egress_allowed(broker, url, tool_name=tool_name)
     async with httpx.AsyncClient(
         timeout=timeout,
         follow_redirects=True,
@@ -126,7 +168,13 @@ def _ext_from_url(url: str) -> str:
     return ".png"
 
 
-async def _resolve_image_ref_to_local_path(image_ref: str, timeout: int) -> tuple[str, bool]:
+async def _resolve_image_ref_to_local_path(
+    image_ref: str,
+    timeout: int,
+    *,
+    broker: EgressBroker | None = None,
+    tool_name: str = "comfyui_img2img",
+) -> tuple[str, bool]:
     """Resolve local path / URL / data URI to a local file path.
 
     Returns: (local_path, is_temporary_file)
@@ -157,7 +205,12 @@ async def _resolve_image_ref_to_local_path(image_ref: str, timeout: int) -> tupl
         return tmp.name, True
 
     if raw.lower().startswith("http://") or raw.lower().startswith("https://"):
-        image_bytes = await _download_image(raw, timeout=min(timeout, 60))
+        image_bytes = await _download_image(
+            raw,
+            timeout=min(timeout, 60),
+            broker=broker,
+            tool_name=tool_name,
+        )
         suffix = _ext_from_url(raw)
         tmp = tempfile.NamedTemporaryFile(
             suffix=suffix,
@@ -172,7 +225,12 @@ async def _resolve_image_ref_to_local_path(image_ref: str, timeout: int) -> tupl
 
 
 async def _upload_image_to_comfyui(
-    api_url: str, image_path: str, timeout: int
+    api_url: str,
+    image_path: str,
+    timeout: int,
+    *,
+    broker: EgressBroker | None = None,
+    tool_name: str = "comfyui_img2img",
 ) -> str:
     """Upload a local image to ComfyUI and return the server-side filename.
 
@@ -193,9 +251,11 @@ async def _upload_image_to_comfyui(
         ".bmp": "image/bmp",
     }.get(suffix, "image/png")
 
+    upload_url = f"{api_url}/upload/image"
+    _assert_egress_allowed(broker, upload_url, tool_name=tool_name)
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(
-            f"{api_url}/upload/image",
+            upload_url,
             files={"image": (path.name, path.read_bytes(), content_type)},
             data={"overwrite": "true"},
         )
@@ -363,6 +423,9 @@ async def _queue_prompt_and_wait(
     api_url: str,
     workflow: dict,
     timeout: int,
+    *,
+    broker: EgressBroker | None = None,
+    tool_name: str = "comfyui_api",
 ) -> dict:
     """Queue a prompt on ComfyUI and poll until it finishes.
 
@@ -370,7 +433,13 @@ async def _queue_prompt_and_wait(
     """
     client_id = str(uuid.uuid4())
     payload = {"prompt": workflow, "client_id": client_id}
-    result = await _api_post(f"{api_url}/prompt", payload, timeout)
+    result = await _api_post(
+        f"{api_url}/prompt",
+        payload,
+        timeout,
+        broker=broker,
+        tool_name=tool_name,
+    )
     prompt_id = result.get("prompt_id")
     if not prompt_id:
         raise RuntimeError(f"ComfyUI did not return a prompt_id: {result}")
@@ -378,7 +447,12 @@ async def _queue_prompt_and_wait(
     # Poll history until our prompt_id shows up as completed
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        history = await _api_get(f"{api_url}/history/{prompt_id}", timeout=10)
+        history = await _api_get(
+            f"{api_url}/history/{prompt_id}",
+            timeout=10,
+            broker=broker,
+            tool_name=tool_name,
+        )
         entry = history.get(prompt_id)
         if entry:
             status = entry.get("status", {})
@@ -497,6 +571,7 @@ class ComfyUIGenerateTool(BaseTool):
 
         api_url = cfg["api_url"].rstrip("/")
         timeout = cfg["timeout"]
+        broker = _get_egress_broker(context)
 
         prompt_text = params["prompt"]
         negative = params.get("negative_prompt", "")
@@ -535,7 +610,13 @@ class ComfyUIGenerateTool(BaseTool):
         )
 
         try:
-            history = await _queue_prompt_and_wait(api_url, workflow, timeout)
+            history = await _queue_prompt_and_wait(
+                api_url,
+                workflow,
+                timeout,
+                broker=broker,
+                tool_name=self.name,
+            )
         except Exception as e:
             return ToolResult.fail(f"ComfyUI generation failed: {e}")
 
@@ -552,7 +633,12 @@ class ComfyUIGenerateTool(BaseTool):
             f"&type={quote(img_info['type'])}"
         )
         try:
-            img_bytes = await _download_image(img_url, timeout=30)
+            img_bytes = await _download_image(
+                img_url,
+                timeout=30,
+                broker=broker,
+                tool_name=self.name,
+            )
         except Exception as e:
             return ToolResult.fail(f"Failed to download generated image: {e}")
 
@@ -667,6 +753,7 @@ class ComfyUIImg2ImgTool(BaseTool):
 
         api_url = cfg["api_url"].rstrip("/")
         timeout = cfg["timeout"]
+        broker = _get_egress_broker(context)
 
         image_ref = (
             params.get("image_path")
@@ -705,10 +792,17 @@ class ComfyUIImg2ImgTool(BaseTool):
             # Step 1: Resolve source image (path/url/data-uri) and upload to ComfyUI
             try:
                 resolved_image_path, temp_image_created = await _resolve_image_ref_to_local_path(
-                    str(image_ref), timeout
+                    str(image_ref),
+                    timeout,
+                    broker=broker,
+                    tool_name=self.name,
                 )
                 server_image_name = await _upload_image_to_comfyui(
-                    api_url, resolved_image_path, timeout
+                    api_url,
+                    resolved_image_path,
+                    timeout,
+                    broker=broker,
+                    tool_name=self.name,
                 )
             except FileNotFoundError as e:
                 return ToolResult.fail(str(e))
@@ -730,7 +824,13 @@ class ComfyUIImg2ImgTool(BaseTool):
             )
 
             try:
-                history = await _queue_prompt_and_wait(api_url, workflow, timeout)
+                history = await _queue_prompt_and_wait(
+                    api_url,
+                    workflow,
+                    timeout,
+                    broker=broker,
+                    tool_name=self.name,
+                )
             except Exception as e:
                 return ToolResult.fail(f"ComfyUI img2img failed: {e}")
 
@@ -747,7 +847,12 @@ class ComfyUIImg2ImgTool(BaseTool):
                 f"&type={quote(img_info['type'])}"
             )
             try:
-                img_bytes = await _download_image(img_url, timeout=30)
+                img_bytes = await _download_image(
+                    img_url,
+                    timeout=30,
+                    broker=broker,
+                    tool_name=self.name,
+                )
             except Exception as e:
                 return ToolResult.fail(f"Failed to download generated image: {e}")
 
@@ -813,13 +918,24 @@ class ComfyUIStatusTool(BaseTool):
         api_url = cfg["api_url"].rstrip("/")
         timeout = min(cfg.get("timeout", 30), 15)
         list_models = params.get("list_models", True)
+        broker = _get_egress_broker(context)
 
         lines: list[str] = []
 
         # 1. System stats / queue
         try:
-            system = await _api_get(f"{api_url}/system_stats", timeout)
-            queue = await _api_get(f"{api_url}/queue", timeout)
+            system = await _api_get(
+                f"{api_url}/system_stats",
+                timeout,
+                broker=broker,
+                tool_name=self.name,
+            )
+            queue = await _api_get(
+                f"{api_url}/queue",
+                timeout,
+                broker=broker,
+                tool_name=self.name,
+            )
             running = len(queue.get("queue_running", []))
             pending = len(queue.get("queue_pending", []))
             lines.append(f"ComfyUI is online at {api_url}")
@@ -849,7 +965,10 @@ class ComfyUIStatusTool(BaseTool):
         if list_models:
             try:
                 obj_info = await _api_get(
-                    f"{api_url}/object_info/CheckpointLoaderSimple", timeout
+                    f"{api_url}/object_info/CheckpointLoaderSimple",
+                    timeout,
+                    broker=broker,
+                    tool_name=self.name,
                 )
                 ckpt_info = obj_info.get("CheckpointLoaderSimple", {})
                 ckpt_input = ckpt_info.get("input", {}).get("required", {})
@@ -877,7 +996,10 @@ class ComfyUIStatusTool(BaseTool):
         # 3. List samplers
         try:
             sampler_info = await _api_get(
-                f"{api_url}/object_info/KSampler", timeout
+                f"{api_url}/object_info/KSampler",
+                timeout,
+                broker=broker,
+                tool_name=self.name,
             )
             ks = sampler_info.get("KSampler", {}).get("input", {}).get("required", {})
             samplers = ks.get("sampler_name", [[]])[0]
@@ -925,6 +1047,7 @@ class ComfyUIWorkflowTool(BaseTool):
 
         api_url = cfg["api_url"].rstrip("/")
         timeout = cfg["timeout"]
+        broker = _get_egress_broker(context)
 
         try:
             workflow = json.loads(params["workflow_json"])
@@ -932,7 +1055,13 @@ class ComfyUIWorkflowTool(BaseTool):
             return ToolResult.fail(f"Invalid workflow JSON: {e}")
 
         try:
-            history = await _queue_prompt_and_wait(api_url, workflow, timeout)
+            history = await _queue_prompt_and_wait(
+                api_url,
+                workflow,
+                timeout,
+                broker=broker,
+                tool_name=self.name,
+            )
         except Exception as e:
             return ToolResult.fail(f"ComfyUI workflow execution failed: {e}")
 
@@ -950,7 +1079,12 @@ class ComfyUIWorkflowTool(BaseTool):
                 f"&type={quote(img_info['type'])}"
             )
             try:
-                img_bytes = await _download_image(img_url, timeout=30)
+                img_bytes = await _download_image(
+                    img_url,
+                    timeout=30,
+                    broker=broker,
+                    tool_name=self.name,
+                )
                 local_path = _save_images_locally(output_dir, img_info, img_bytes)
                 saved_paths.append(str(local_path))
             except Exception as e:

@@ -116,6 +116,7 @@ Optional env overrides:
 # OPENAI_CODEX_OAUTH_BRIDGE_PORT="1455"
 # OPENAI_CODEX_OAUTH_BRIDGE_PATH="/auth/callback"
 # OPENAI_CODEX_OAUTH_MODELS="gpt-5.4,gpt-5.4-pro,gpt-5.3-codex,gpt-5.3-chat-latest,gpt-5.2-pro,gpt-5.2-codex,gpt-5.2-chat-latest,gpt-5.2,gpt-5-pro,gpt-5.1-codex-max,gpt-5.1-codex,gpt-5.1-codex-mini,gpt-5.1-chat-latest,gpt-5.1,gpt-5-codex,gpt-5-chat-latest,gpt-5,codex-mini-latest"
+# OPENAI_OAUTH_SESSION_FILE="~/.codex/openai_oauth_sessions.json"
 # OPENAI_CODEX_INSTRUCTIONS="You are Codex, a software engineering assistant running in a local user workspace."
 ```
 
@@ -854,6 +855,38 @@ sandbox:
   max_execution_time: 30
   max_output_size: 100000
 
+tool_policy:
+  enabled: true
+  default_rule:
+    require_explicit_approval: false
+    isolation_tier: "standard"           # standard | restricted | sealed
+    max_calls_per_session: 0             # 0 = no hard limit
+    max_calls_per_task: 0                # 0 = no hard limit
+    taint_on_success: []                 # labels appended to session on success
+  tool_rules:
+    "web_*":
+      isolation_tier: "restricted"
+      taint_on_success: ["external_untrusted"]
+    "shell_execute":
+      isolation_tier: "sealed"
+      require_explicit_approval: true
+
+egress_policy:
+  enabled: true
+  default_action: "allow"                # allow | deny
+  allow_http: true                       # false = https only
+  allow_private_network: true            # localhost / LAN
+  allowed_domains: []                    # optional global allowlist
+  blocked_domains: []                    # optional global blocklist
+  max_response_bytes: 5000000            # 0 = unlimited
+
+budget_fuse:
+  enabled: true
+  action: "deny"                         # deny | require_approval
+  max_tool_calls_per_session: 0          # 0 = no hard limit
+  max_network_calls_per_session: 0       # 0 = no hard limit
+  max_network_bytes_per_session: 0       # 0 = no hard limit
+
 context_compression:
   enabled: true
   trigger_threshold: 0.6
@@ -930,32 +963,49 @@ action_log:
 
 ---
 
-## System Prompt Encryption
-
-Protect the AI's core instructions from casual inspection. See [docs/SYSTEM_PROMPT_ENCRYPTION.md](docs/SYSTEM_PROMPT_ENCRYPTION.md) for implementation details.
-
-```bash
-# Encrypt from a file
-poetry run kuro --encrypt-prompt --prompt-file my_prompt.txt
-
-# Encrypt interactively
-poetry run kuro --encrypt-prompt
-# Enter prompt text, then Ctrl+D (Unix) or Ctrl+Z (Windows)
-```
-
----
-
 ## Security Architecture
 
-### 5-Layer Defense
+### Layered Defense
 
 | Layer | Module | Description |
 |---|---|---|
 | Approval | `approval.py` | Risk-based human approval. LOW auto-passes, MEDIUM+ requires confirmation |
+| Tool Policy Core | `tool_policy.py` | Per-tool adapter/model/domain rules, isolation tiers, session taint labels |
+| Egress Broker | `egress.py` | Central outbound URL checks (allowlist/blocklist/private-network/response-size caps) |
 | Sandbox | `sandbox.py` | Directory whitelist, command blacklist, execution timeout |
+| Budget Fuse | `engine.py` + config | Session-level circuit breaker for tool/network calls and payload size |
 | Credentials | `credentials.py` | OS keychain via `keyring` (no plaintext config) |
 | Audit | `audit.py` | SQLite append-only log with HMAC integrity verification |
 | Sanitizer | `sanitizer.py` | Input/output sanitization, prompt injection detection |
+
+### Current Security Architecture (Runtime)
+
+```mermaid
+flowchart TD
+    A["User / Adapter<br/>Web, Discord, Telegram, CLI"] --> B["Engine<br/>LLM + Tool Loop"]
+    B --> C["Sanitizer<br/>Input/Output Hygiene"]
+    C --> D["Tool Availability Check<br/>disabled_tools"]
+    D --> E["Execution Guard<br/>loop/bulk/high-risk plan checks"]
+    E --> F["Tool Policy Core<br/>adapter/model/domain/label rules<br/>isolation tier"]
+    F --> G["Budget Fuse<br/>session tool/network circuit breaker"]
+    G --> H["Sandbox Pre-check<br/>command/path restrictions"]
+    H --> I["Approval Policy / Human Approval"]
+    I --> J["Tool Execute"]
+    J --> K["Audit + Action Log"]
+    J --> L["Session Data Labels<br/>taint_on_success"]
+    J --> M["Budget Counters Update"]
+
+    J --> N["Network Tool Path"]
+    N --> O["Egress Broker<br/>URL allow/deny + private-net + size cap"]
+    O --> P["External Services<br/>Web/Crawl/MCP/ComfyUI/etc."]
+```
+
+`full_access_mode: true` bypasses most checks above and should only be used in isolated environments.
+
+### Data Taint Labels
+
+The policy core can attach labels after successful tool execution (`taint_on_success`), then use `required_labels` / `blocked_labels` rules to gate later tools.  
+Example: mark all `web_*` outputs as `external_untrusted`, then prevent sensitive write/send actions unless additional checks are approved.
 
 ### Risk Levels
 

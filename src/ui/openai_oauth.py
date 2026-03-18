@@ -148,6 +148,8 @@ class OpenAIOAuthManager:
 
         self._pending: dict[str, _PendingAuth] = {}
         self._sessions: dict[str, _OAuthSession] = {}
+        self._session_store_path = self._oauth_session_store_path()
+        self._load_sessions_from_disk()
         self._lock = asyncio.Lock()
         self._bridge_runner: aiohttp_web.AppRunner | None = None
         self._bridge_site: aiohttp_web.BaseSite | None = None
@@ -290,14 +292,152 @@ class OpenAIOAuthManager:
             return Path(home).expanduser()
         return Path.home() / ".codex"
 
-    def _prune(self) -> None:
+    def _oauth_session_store_path(self) -> Path:
+        raw = os.environ.get("OPENAI_OAUTH_SESSION_FILE", "").strip()
+        if raw:
+            return Path(raw).expanduser()
+        return self._codex_home() / "openai_oauth_sessions.json"
+
+    @staticmethod
+    def _session_to_dict(sess: _OAuthSession) -> dict[str, Any]:
+        return {
+            "access_token": sess.access_token,
+            "refresh_token": sess.refresh_token,
+            "id_token": sess.id_token,
+            "scope": sess.scope,
+            "expires_at": sess.expires_at,
+            "created_at": sess.created_at,
+            "account_id": sess.account_id,
+            "plan_type": sess.plan_type,
+            "email": sess.email,
+        }
+
+    @staticmethod
+    def _session_from_dict(data: dict[str, Any]) -> _OAuthSession | None:
+        if not isinstance(data, dict):
+            return None
+
+        access_token = str(data.get("access_token", "")).strip()
+        refresh_token = str(data.get("refresh_token", "")).strip()
+        if not access_token or not refresh_token:
+            return None
+
+        id_token_raw = data.get("id_token")
+        id_token = str(id_token_raw).strip() if isinstance(id_token_raw, str) else None
+        scope = str(data.get("scope", _CODEX_SCOPE_DEFAULT)).strip() or _CODEX_SCOPE_DEFAULT
+
+        expires_at_raw = data.get("expires_at")
+        expires_at: float | None = None
+        if isinstance(expires_at_raw, (int, float)):
+            expires_at = float(expires_at_raw)
+
+        created_at_raw = data.get("created_at")
+        if isinstance(created_at_raw, (int, float)):
+            created_at = float(created_at_raw)
+        else:
+            created_at = time.time()
+
+        account_raw = data.get("account_id")
+        plan_raw = data.get("plan_type")
+        email_raw = data.get("email")
+        account_id = str(account_raw).strip() if isinstance(account_raw, str) else ""
+        plan_type = str(plan_raw).strip() if isinstance(plan_raw, str) else ""
+        email = str(email_raw).strip() if isinstance(email_raw, str) else ""
+        account_id = account_id or None
+        plan_type = plan_type or None
+        email = email or None
+
+        return _OAuthSession(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            id_token=id_token,
+            scope=scope,
+            expires_at=expires_at,
+            created_at=created_at,
+            account_id=account_id,
+            plan_type=plan_type,
+            email=email,
+        )
+
+    def _load_sessions_from_disk(self) -> None:
+        path = self._session_store_path
+        if not path.exists():
+            return
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                return
+            sessions_raw = raw.get("sessions", raw)
+            if not isinstance(sessions_raw, dict):
+                return
+
+            loaded = 0
+            for sid_raw, payload in sessions_raw.items():
+                sid = str(sid_raw).strip()
+                if not sid:
+                    continue
+                sess = self._session_from_dict(payload) if isinstance(payload, dict) else None
+                if sess:
+                    self._sessions[sid] = sess
+                    loaded += 1
+
+            if loaded > 0:
+                logger.info(
+                    "openai_oauth_sessions_loaded",
+                    count=loaded,
+                    path=str(path),
+                )
+
+            if self._prune():
+                self._persist_sessions_to_disk()
+        except Exception as e:
+            logger.warning(
+                "openai_oauth_sessions_load_failed",
+                path=str(path),
+                error=str(e),
+            )
+
+    def _persist_sessions_to_disk(self) -> None:
+        path = self._session_store_path
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "version": 1,
+                "sessions": {
+                    sid: self._session_to_dict(sess)
+                    for sid, sess in self._sessions.items()
+                },
+            }
+            tmp_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(tmp_path, path)
+            if os.name != "nt":
+                with contextlib.suppress(Exception):
+                    path.chmod(0o600)
+        except Exception as e:
+            with contextlib.suppress(Exception):
+                tmp_path.unlink(missing_ok=True)
+            logger.warning(
+                "openai_oauth_sessions_persist_failed",
+                path=str(path),
+                error=str(e),
+            )
+
+    def _prune(self) -> bool:
+        changed = False
         now = time.time()
         for state, pending in list(self._pending.items()):
             if now - pending.created_at > 600:
                 self._pending.pop(state, None)
+                changed = True
         for sid, sess in list(self._sessions.items()):
             if sess.expires_at and now > sess.expires_at + 3600 and not sess.refresh_token:
                 self._sessions.pop(sid, None)
+                changed = True
+        return changed
 
     def build_login_url(self, request: Request, session_id: str) -> str:
         if not self.configured:
@@ -384,6 +524,7 @@ class OpenAIOAuthManager:
             email=email,
         )
         self._sessions[session_id] = sess
+        self._persist_sessions_to_disk()
         return sess
 
     async def exchange_code(
@@ -517,6 +658,7 @@ class OpenAIOAuthManager:
                 refreshed = await self._refresh(session_id, sess)
                 if not refreshed:
                     self._sessions.pop(session_id, None)
+                    self._persist_sessions_to_disk()
                     return None
                 return refreshed.access_token
             return sess.access_token
@@ -545,5 +687,7 @@ class OpenAIOAuthManager:
         if not session_id:
             return
         async with self._lock:
-            self._sessions.pop(session_id, None)
-            self._prune()
+            removed = self._sessions.pop(session_id, None) is not None
+            pruned = self._prune()
+            if removed or pruned:
+                self._persist_sessions_to_disk()

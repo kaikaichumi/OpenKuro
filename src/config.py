@@ -567,6 +567,109 @@ class ExecutionGuardConfig(BaseModel):
     plan_max_tokens: int = 280
 
 
+class ToolPolicyRuleConfig(BaseModel):
+    """Per-tool policy rule for context-aware security checks."""
+
+    enabled: bool = True
+    allowed_adapters: list[str] = Field(default_factory=list)
+    denied_adapters: list[str] = Field(default_factory=list)
+    allowed_models: list[str] = Field(default_factory=list)  # fnmatch patterns
+    denied_models: list[str] = Field(default_factory=list)  # fnmatch patterns
+    allowed_domains: list[str] = Field(default_factory=list)
+    blocked_domains: list[str] = Field(default_factory=list)
+    allow_private_network: bool | None = None  # None = inherit egress policy
+    max_calls_per_session: int = 0  # 0 = unlimited
+    max_calls_per_task: int = 0  # 0 = unlimited
+    require_explicit_approval: bool = False
+    isolation_tier: str = "standard"  # standard | restricted | sealed
+    required_labels: list[str] = Field(default_factory=list)
+    blocked_labels: list[str] = Field(default_factory=list)
+    taint_on_success: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "ToolPolicyRuleConfig":
+        self.allowed_adapters = [
+            str(v).strip().lower() for v in (self.allowed_adapters or []) if str(v).strip()
+        ]
+        self.denied_adapters = [
+            str(v).strip().lower() for v in (self.denied_adapters or []) if str(v).strip()
+        ]
+        self.allowed_models = [str(v).strip() for v in (self.allowed_models or []) if str(v).strip()]
+        self.denied_models = [str(v).strip() for v in (self.denied_models or []) if str(v).strip()]
+        self.allowed_domains = [str(v).strip().lower() for v in (self.allowed_domains or []) if str(v).strip()]
+        self.blocked_domains = [str(v).strip().lower() for v in (self.blocked_domains or []) if str(v).strip()]
+        self.required_labels = [str(v).strip().lower() for v in (self.required_labels or []) if str(v).strip()]
+        self.blocked_labels = [str(v).strip().lower() for v in (self.blocked_labels or []) if str(v).strip()]
+        self.taint_on_success = [str(v).strip().lower() for v in (self.taint_on_success or []) if str(v).strip()]
+        self.max_calls_per_session = max(0, int(self.max_calls_per_session or 0))
+        self.max_calls_per_task = max(0, int(self.max_calls_per_task or 0))
+        tier = str(self.isolation_tier or "standard").strip().lower()
+        if tier not in {"standard", "restricted", "sealed"}:
+            tier = "standard"
+        self.isolation_tier = tier
+        return self
+
+
+class ToolPolicyCoreConfig(BaseModel):
+    """Context-aware policy core for per-tool restrictions and labels."""
+
+    enabled: bool = True
+    default_rule: ToolPolicyRuleConfig = Field(default_factory=ToolPolicyRuleConfig)
+    # Key = exact tool name or fnmatch pattern (e.g. "web_*")
+    tool_rules: dict[str, ToolPolicyRuleConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "ToolPolicyCoreConfig":
+        normalized: dict[str, ToolPolicyRuleConfig] = {}
+        for key, value in (self.tool_rules or {}).items():
+            pattern = str(key or "").strip()
+            if not pattern:
+                continue
+            normalized[pattern] = value
+        self.tool_rules = normalized
+        return self
+
+
+class EgressPolicyConfig(BaseModel):
+    """Outbound network policy shared by web/crawl/plugin HTTP requests."""
+
+    enabled: bool = True
+    default_action: str = "allow"  # allow | deny
+    allow_http: bool = True  # False = https only
+    allow_private_network: bool = True
+    allowed_domains: list[str] = Field(default_factory=list)
+    blocked_domains: list[str] = Field(default_factory=list)
+    max_response_bytes: int = 5_000_000  # 0 = unlimited
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "EgressPolicyConfig":
+        action = str(self.default_action or "allow").strip().lower()
+        self.default_action = action if action in {"allow", "deny"} else "allow"
+        self.allowed_domains = [str(v).strip().lower() for v in (self.allowed_domains or []) if str(v).strip()]
+        self.blocked_domains = [str(v).strip().lower() for v in (self.blocked_domains or []) if str(v).strip()]
+        self.max_response_bytes = max(0, int(self.max_response_bytes or 0))
+        return self
+
+
+class BudgetFuseConfig(BaseModel):
+    """Session-level circuit breaker for tool/network usage."""
+
+    enabled: bool = True
+    action: str = "deny"  # deny | require_approval
+    max_tool_calls_per_session: int = 0  # 0 = unlimited
+    max_network_calls_per_session: int = 0  # 0 = unlimited
+    max_network_bytes_per_session: int = 0  # 0 = unlimited
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "BudgetFuseConfig":
+        action = str(self.action or "deny").strip().lower()
+        self.action = action if action in {"deny", "require_approval"} else "deny"
+        self.max_tool_calls_per_session = max(0, int(self.max_tool_calls_per_session or 0))
+        self.max_network_calls_per_session = max(0, int(self.max_network_calls_per_session or 0))
+        self.max_network_bytes_per_session = max(0, int(self.max_network_bytes_per_session or 0))
+        return self
+
+
 class MemoryLifecycleConfig(BaseModel):
     """Memory lifecycle management — prevent infinite memory growth."""
 
@@ -810,6 +913,9 @@ class KuroConfig(BaseModel):
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+    tool_policy: ToolPolicyCoreConfig = Field(default_factory=ToolPolicyCoreConfig)
+    egress_policy: EgressPolicyConfig = Field(default_factory=EgressPolicyConfig)
+    budget_fuse: BudgetFuseConfig = Field(default_factory=BudgetFuseConfig)
     execution_guard: ExecutionGuardConfig = Field(default_factory=ExecutionGuardConfig)
     action_log: ActionLogConfig = Field(default_factory=ActionLogConfig)
     adapters: AdaptersConfig = Field(default_factory=AdaptersConfig)

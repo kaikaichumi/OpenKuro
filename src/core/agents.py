@@ -22,8 +22,10 @@ from src.config import KuroConfig
 from src.core.model_router import ContextOverflowError, ModelRouter
 from src.core.security.approval import ApprovalPolicy
 from src.core.security.audit import AuditLog
+from src.core.security.egress import EgressBroker
 from src.core.security.sandbox import Sandbox
 from src.core.security.sanitizer import Sanitizer
+from src.core.security.tool_policy import ToolPolicyCore
 from src.core.tool_system import ToolSystem
 from src.core.types import AgentDefinition, Message, Role, Session, ToolCall
 from src.tools.base import RiskLevel, ToolContext, ToolResult
@@ -113,6 +115,11 @@ class AgentRunner:
 
         # Sub-agent security
         self.sandbox = Sandbox(config.sandbox)
+        self.egress_broker = EgressBroker(getattr(config, "egress_policy", None))
+        self.tool_policy = ToolPolicyCore(
+            getattr(config, "tool_policy", None),
+            self.egress_broker,
+        )
         self.sanitizer = Sanitizer()
 
         # Own session
@@ -619,6 +626,10 @@ class AgentRunner:
         full_access_mode = bool(
             getattr(self.config.security, "full_access_mode", False)
         )
+        active_model = str(self.definition.model or "")
+        policy_decision: Any = None
+        force_explicit_approval = False
+        forced_approval_reasons: list[str] = []
 
         # Phase 1: Recursive delegation depth check
         if tool_call.name == "delegate_to_agent":
@@ -654,6 +665,45 @@ class AgentRunner:
                 f"Tool '{tool_call.name}' is disabled by configuration"
             )
 
+        # Tool policy core (same rule engine as main Engine)
+        if not full_access_mode and getattr(self, "tool_policy", None) is not None:
+            try:
+                policy_decision = self.tool_policy.evaluate(
+                    tool_name=tool_call.name,
+                    arguments=tool_call.arguments,
+                    session=self._parent_session or self.session,
+                    active_model=active_model,
+                    guard_state=None,
+                    session_labels=None,
+                )
+            except Exception as e:
+                logger.warning(
+                    "agent_tool_policy_check_failed",
+                    agent=self.definition.name,
+                    tool=tool_call.name,
+                    error=str(e),
+                )
+            else:
+                if not bool(getattr(policy_decision, "allowed", True)):
+                    return ToolResult.denied(
+                        str(getattr(policy_decision, "reason", "Denied by tool policy"))
+                    )
+                isolation_tier = str(
+                    getattr(policy_decision, "isolation_tier", "standard") or "standard"
+                ).strip().lower()
+                if isolation_tier in {"restricted", "sealed"}:
+                    force_explicit_approval = True
+                    forced_approval_reasons.append(
+                        f"tool policy isolation tier '{isolation_tier}' requires explicit approval"
+                    )
+                if (
+                    isolation_tier == "sealed"
+                    and tool.risk_level in (RiskLevel.HIGH, RiskLevel.CRITICAL)
+                ):
+                    return ToolResult.denied(
+                        f"Tool policy sealed isolation tier blocks high-risk tool '{tool_call.name}'"
+                    )
+
         # Sandbox pre-check (same as Engine)
         if (not full_access_mode) and tool_call.name == "shell_execute":
             command = tool_call.arguments.get("command", "")
@@ -681,16 +731,21 @@ class AgentRunner:
         decision = self.approval_policy.check(
             tool_call.name, tool.risk_level, approval_session.id
         )
-        if not decision.approved:
-            if decision.method == "policy_denied":
-                return ToolResult(
-                    success=False,
-                    error=f"Denied: {decision.reason}",
-                    data={"policy_denied": True},
-                )
+        if decision.method == "policy_denied":
+            return ToolResult(
+                success=False,
+                error=f"Denied: {decision.reason}",
+                data={"policy_denied": True},
+            )
+
+        needs_explicit_approval = force_explicit_approval or (not decision.approved)
+        if needs_explicit_approval:
+            approval_args = dict(tool_call.arguments)
+            if forced_approval_reasons:
+                approval_args["_forced_approval_reasons"] = list(forced_approval_reasons)
             approved = await self.approval_cb.request_approval(
                 tool_call.name,
-                tool_call.arguments,
+                approval_args,
                 tool.risk_level,
                 approval_session,
             )
@@ -727,6 +782,26 @@ class AgentRunner:
             tool_call.name, tool_call.arguments, context
         )
         duration_ms = int((time.monotonic() - start) * 1000)
+
+        if result.success and policy_decision is not None:
+            labels = [
+                str(v).strip().lower()
+                for v in (getattr(policy_decision, "taint_on_success", []) or [])
+                if str(v).strip()
+            ]
+            if labels:
+                target_sessions = [self.session]
+                if self._parent_session is not None:
+                    target_sessions.append(self._parent_session)
+                for target in target_sessions:
+                    existing = target.metadata.get("_data_labels", [])
+                    merged = set(existing if isinstance(existing, list) else [])
+                    merged.update(labels)
+                    target.metadata["_data_labels"] = sorted(
+                        str(v).strip().lower()
+                        for v in merged
+                        if str(v).strip()
+                    )
 
         # Audit
         await self.audit.log_tool_execution(

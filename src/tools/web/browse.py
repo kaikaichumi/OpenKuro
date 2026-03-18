@@ -15,6 +15,7 @@ from typing import Any
 import structlog
 
 from src.config import get_kuro_home
+from src.core.security.egress import EgressBroker
 from src.tools.base import BaseTool, RiskLevel, ToolContext, ToolResult
 
 logger = structlog.get_logger()
@@ -140,6 +141,12 @@ def _should_headless(context: ToolContext) -> bool:
     return False
 
 
+def _get_egress_broker(context: ToolContext) -> EgressBroker:
+    cfg = getattr(context, "config", None)
+    egress_cfg = getattr(cfg, "egress_policy", None) if cfg is not None else None
+    return EgressBroker(egress_cfg)
+
+
 class WebNavigateTool(BaseTool):
     """Navigate the browser to a URL."""
 
@@ -177,6 +184,11 @@ class WebNavigateTool(BaseTool):
         # Auto-add https:// if no protocol
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
+
+        broker = _get_egress_broker(context)
+        allowed, reason = broker.check_url(url, tool_name=self.name)
+        if not allowed:
+            return ToolResult.fail(f"Egress blocked URL: {reason}")
 
         try:
             manager = BrowserManager.get_instance()
@@ -320,6 +332,10 @@ class WebClickTool(BaseTool):
 
             new_title = await page.title()
             new_url = page.url
+            broker = _get_egress_broker(context)
+            allowed, reason = broker.check_url(new_url, tool_name=self.name)
+            if not allowed:
+                return ToolResult.fail(f"Click navigated to blocked URL: {reason}")
 
             return ToolResult.ok(
                 f"Clicked: {clicked_desc}\n"
