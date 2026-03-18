@@ -714,6 +714,33 @@ class ModelRouter:
                 continue
             if not isinstance(parameters, dict):
                 parameters = {"type": "object", "properties": {}}
+            else:
+                # Copy before normalization so we don't mutate original tool defs.
+                parameters = dict(parameters)
+
+            schema_type = str(parameters.get("type", "")).strip().lower()
+            if not schema_type:
+                schema_type = "object"
+                parameters["type"] = "object"
+
+            # Codex OAuth tool schema validation is stricter and rejects object
+            # schemas without explicit properties. Normalize no-arg tools to a
+            # valid optional placeholder field.
+            if schema_type == "object":
+                props = parameters.get("properties")
+                if not isinstance(props, dict):
+                    props = {}
+                if not props:
+                    props = {
+                        "_noop": {
+                            "type": "string",
+                            "description": "No parameters required. Leave empty.",
+                        }
+                    }
+                parameters["properties"] = props
+                required = parameters.get("required")
+                if not isinstance(required, list):
+                    parameters["required"] = []
             codex_tool: dict[str, Any] = {
                 "type": "function",
                 "name": name,
