@@ -94,6 +94,7 @@ _VISION_CAPABLE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"gemini", re.I),
     re.compile(r"llava", re.I),
     re.compile(r"minicpm-v", re.I),
+    re.compile(r"qwen3\.5", re.I),
     re.compile(r"qwen.*vl", re.I),
     re.compile(r"internvl", re.I),
     re.compile(r"cogvlm", re.I),
@@ -103,7 +104,7 @@ _VISION_CAPABLE_PATTERNS: list[re.Pattern[str]] = [
 # Known text-only model families (higher priority than vision patterns)
 _TEXT_ONLY_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"glm-4(?!v)", re.I),
-    re.compile(r"qwen3(?!.*vl)", re.I),
+    re.compile(r"qwen3(?!\.5)(?!.*vl)", re.I),
     re.compile(r"deepseek", re.I),
     re.compile(r"mistral(?!.*pixtral)", re.I),
     re.compile(r"llama3\.\d", re.I),
@@ -906,7 +907,11 @@ class ModelRouter:
                 # Vision error: no point trying other models in the chain
                 # — they will likely fail the same way.
                 if _is_vision_error(error_str):
-                    self._text_only_cache.add(model_name)
+                    # Missing mmproj is often a runtime setup issue (fixable
+                    # without changing model identity), so avoid hard-caching
+                    # text-only mode in that specific case.
+                    if "mmproj" not in error_str.lower():
+                        self._text_only_cache.add(model_name)
                     logger.warning(
                         "vision_not_supported",
                         model=model_name,

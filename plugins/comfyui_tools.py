@@ -9,13 +9,16 @@ Dependencies: httpx (already in project requirements).
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import re
+import tempfile
 import time
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -63,10 +66,109 @@ async def _api_post(url: str, data: dict, timeout: int) -> dict:
 
 
 async def _download_image(url: str, timeout: int) -> bytes:
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout,
+        follow_redirects=True,
+        headers={"User-Agent": "OpenKuro/ComfyUI"},
+    ) as client:
         resp = await client.get(url)
         resp.raise_for_status()
         return resp.content
+
+
+def _normalize_image_ref(image_ref: str) -> str:
+    """Normalize image reference text to a usable raw ref/path."""
+    raw = str(image_ref or "").strip().strip("'\"")
+    if not raw:
+        return ""
+
+    # Discord/Markdown wrappers like <https://...> or ![img](https://...)
+    if raw.startswith("<") and raw.endswith(">"):
+        raw = raw[1:-1].strip()
+
+    md_link_match = re.search(r"\((https?://[^\s)]+)\)", raw, flags=re.IGNORECASE)
+    if md_link_match:
+        return md_link_match.group(1).strip()
+
+    md_data_match = re.search(r"\((data:image/[^\s)]+)\)", raw, flags=re.IGNORECASE)
+    if md_data_match:
+        return md_data_match.group(1).strip()
+
+    # Fallback: first URL in free-form text
+    url_match = re.search(r"(https?://\S+)", raw, flags=re.IGNORECASE)
+    if url_match:
+        return url_match.group(1).rstrip('>)}]\'",.;')
+
+    return raw
+
+
+def _ext_from_data_uri(uri: str) -> str:
+    lower = uri.lower()
+    if lower.startswith("data:image/jpeg"):
+        return ".jpg"
+    if lower.startswith("data:image/webp"):
+        return ".webp"
+    if lower.startswith("data:image/bmp"):
+        return ".bmp"
+    if lower.startswith("data:image/gif"):
+        return ".gif"
+    return ".png"
+
+
+def _ext_from_url(url: str) -> str:
+    try:
+        path = urlparse(url).path or ""
+    except Exception:
+        path = ""
+    suffix = Path(path).suffix.lower()
+    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}:
+        return ".jpg" if suffix == ".jpeg" else suffix
+    return ".png"
+
+
+async def _resolve_image_ref_to_local_path(image_ref: str, timeout: int) -> tuple[str, bool]:
+    """Resolve local path / URL / data URI to a local file path.
+
+    Returns: (local_path, is_temporary_file)
+    """
+    raw = _normalize_image_ref(image_ref)
+    if not raw:
+        raise FileNotFoundError("image_path is required")
+
+    p = Path(raw)
+    if p.is_file():
+        return str(p), False
+
+    if raw.startswith("data:image/"):
+        if "," not in raw:
+            raise ValueError("Invalid data URI image format")
+        header, payload = raw.split(",", 1)
+        if ";base64" not in header.lower():
+            raise ValueError("Data URI must be base64-encoded")
+        image_bytes = base64.b64decode(payload, validate=False)
+        suffix = _ext_from_data_uri(header)
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=suffix,
+            prefix="kuro_img2img_",
+            delete=False,
+        )
+        tmp.write(image_bytes)
+        tmp.close()
+        return tmp.name, True
+
+    if raw.lower().startswith("http://") or raw.lower().startswith("https://"):
+        image_bytes = await _download_image(raw, timeout=min(timeout, 60))
+        suffix = _ext_from_url(raw)
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=suffix,
+            prefix="kuro_img2img_",
+            delete=False,
+        )
+        tmp.write(image_bytes)
+        tmp.close()
+        return tmp.name, True
+
+    raise FileNotFoundError(f"Image not found: {image_ref}")
 
 
 async def _upload_image_to_comfyui(
@@ -499,8 +601,15 @@ class ComfyUIImg2ImgTool(BaseTool):
             "image_path": {
                 "type": "string",
                 "description": (
-                    "Absolute path to the source image file (png/jpg/webp). "
-                    "Can be a previously generated image or any local image."
+                    "Source image path/reference. Supports absolute local path, "
+                    "http(s) image URL, or data:image/... base64 URI."
+                ),
+            },
+            "image_url": {
+                "type": "string",
+                "description": (
+                    "Alias of image_path for URL inputs. "
+                    "Supports http(s) image URL or data:image/... base64 URI."
                 ),
             },
             "prompt": {
@@ -559,7 +668,15 @@ class ComfyUIImg2ImgTool(BaseTool):
         api_url = cfg["api_url"].rstrip("/")
         timeout = cfg["timeout"]
 
-        image_path = params["image_path"]
+        image_ref = (
+            params.get("image_path")
+            or params.get("image_url")
+            or params.get("source_image")
+        )
+        if not image_ref:
+            return ToolResult.fail(
+                "image_path is required (supports local path, http(s) URL, or data URI)."
+            )
         prompt_text = params["prompt"]
         negative = params.get("negative_prompt", "")
         denoise = params.get("denoise", 0.5)
@@ -582,73 +699,85 @@ class ComfyUIImg2ImgTool(BaseTool):
 
             seed = random.randint(0, 2**32 - 1)
 
-        # Step 1: Upload the source image to ComfyUI
+        resolved_image_path = ""
+        temp_image_created = False
         try:
-            server_image_name = await _upload_image_to_comfyui(
-                api_url, image_path, timeout
+            # Step 1: Resolve source image (path/url/data-uri) and upload to ComfyUI
+            try:
+                resolved_image_path, temp_image_created = await _resolve_image_ref_to_local_path(
+                    str(image_ref), timeout
+                )
+                server_image_name = await _upload_image_to_comfyui(
+                    api_url, resolved_image_path, timeout
+                )
+            except FileNotFoundError as e:
+                return ToolResult.fail(str(e))
+            except Exception as e:
+                return ToolResult.fail(f"Failed to upload image to ComfyUI: {e}")
+
+            # Step 2: Build and execute img2img workflow
+            workflow = _build_img2img_workflow(
+                prompt=prompt_text,
+                negative_prompt=negative,
+                checkpoint=checkpoint,
+                image_name=server_image_name,
+                steps=steps,
+                cfg_scale=cfg_scale,
+                sampler=sampler,
+                scheduler=scheduler,
+                seed=seed,
+                denoise=denoise,
             )
-        except FileNotFoundError as e:
-            return ToolResult.fail(str(e))
-        except Exception as e:
-            return ToolResult.fail(f"Failed to upload image to ComfyUI: {e}")
 
-        # Step 2: Build and execute img2img workflow
-        workflow = _build_img2img_workflow(
-            prompt=prompt_text,
-            negative_prompt=negative,
-            checkpoint=checkpoint,
-            image_name=server_image_name,
-            steps=steps,
-            cfg_scale=cfg_scale,
-            sampler=sampler,
-            scheduler=scheduler,
-            seed=seed,
-            denoise=denoise,
-        )
+            try:
+                history = await _queue_prompt_and_wait(api_url, workflow, timeout)
+            except Exception as e:
+                return ToolResult.fail(f"ComfyUI img2img failed: {e}")
 
-        try:
-            history = await _queue_prompt_and_wait(api_url, workflow, timeout)
-        except Exception as e:
-            return ToolResult.fail(f"ComfyUI img2img failed: {e}")
+            images = _extract_image_filenames(history)
+            if not images:
+                return ToolResult.fail("ComfyUI returned no images.")
 
-        images = _extract_image_filenames(history)
-        if not images:
-            return ToolResult.fail("ComfyUI returned no images.")
+            # Step 3: Download and save result
+            img_info = images[0]
+            img_url = (
+                f"{api_url}/view?"
+                f"filename={quote(img_info['filename'])}"
+                f"&subfolder={quote(img_info['subfolder'])}"
+                f"&type={quote(img_info['type'])}"
+            )
+            try:
+                img_bytes = await _download_image(img_url, timeout=30)
+            except Exception as e:
+                return ToolResult.fail(f"Failed to download generated image: {e}")
 
-        # Step 3: Download and save result
-        img_info = images[0]
-        img_url = (
-            f"{api_url}/view?"
-            f"filename={quote(img_info['filename'])}"
-            f"&subfolder={quote(img_info['subfolder'])}"
-            f"&type={quote(img_info['type'])}"
-        )
-        try:
-            img_bytes = await _download_image(img_url, timeout=30)
-        except Exception as e:
-            return ToolResult.fail(f"Failed to download generated image: {e}")
+            local_path = _save_images_locally(
+                cfg.get("output_dir", ""), img_info, img_bytes
+            )
 
-        local_path = _save_images_locally(
-            cfg.get("output_dir", ""), img_info, img_bytes
-        )
+            summary_lines = [
+                "img2img completed successfully!",
+                f"Source: {image_ref}",
+                f"Saved to: {local_path}",
+                f"Prompt: {prompt_text[:80]}{'...' if len(prompt_text) > 80 else ''}",
+                f"Denoise: {denoise} | Steps: {steps} | CFG: {cfg_scale}",
+                f"Seed: {seed} | Sampler: {sampler}/{scheduler}",
+                f"Checkpoint: {checkpoint}",
+            ]
 
-        summary_lines = [
-            "img2img completed successfully!",
-            f"Source: {image_path}",
-            f"Saved to: {local_path}",
-            f"Prompt: {prompt_text[:80]}{'...' if len(prompt_text) > 80 else ''}",
-            f"Denoise: {denoise} | Steps: {steps} | CFG: {cfg_scale}",
-            f"Seed: {seed} | Sampler: {sampler}/{scheduler}",
-            f"Checkpoint: {checkpoint}",
-        ]
-
-        return ToolResult.ok(
-            "\n".join(summary_lines),
-            image_path=str(local_path),
-            source_image=image_path,
-            seed=seed,
-            denoise=denoise,
-        )
+            return ToolResult.ok(
+                "\n".join(summary_lines),
+                image_path=str(local_path),
+                source_image=image_ref,
+                seed=seed,
+                denoise=denoise,
+            )
+        finally:
+            if temp_image_created and resolved_image_path:
+                try:
+                    Path(resolved_image_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
 
 
 # ---------------------------------------------------------------------------

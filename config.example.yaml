@@ -264,6 +264,10 @@ restart_tool:
   enabled: false
   script_path: ""   # e.g. "./scripts/restart_kuro.ps1" or "/opt/kuro/restart.sh"
   working_dir: ""   # empty = script folder
+  # Optional: when set, tool can do stop -> delay -> start sequence
+  start_script_path: ""   # e.g. "./scripts/start_kuro.ps1"
+  start_working_dir: ""   # empty = start script folder
+  restart_delay_seconds: 3
 
 # LangSmith Tracing (Observability)
 # tracing:

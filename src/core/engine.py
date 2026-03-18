@@ -32,6 +32,7 @@ from src.core.security.sandbox import Sandbox
 from src.core.security.sanitizer import Sanitizer
 from src.core.tool_system import ToolSystem
 from src.core.types import Message, ModelResponse, Role, Session, ToolCall
+from src.openai_catalog import is_openai_compatible_local_base_url
 from src.tools.base import RiskLevel, ToolContext, ToolResult
 
 if TYPE_CHECKING:
@@ -500,6 +501,25 @@ class Engine:
             grid_size=vision_cfg.grid_size,
             max_elements=vision_cfg.max_elements,
         )
+
+    def _is_local_model_target(self, model_name: str | None) -> bool:
+        """Return True when the model target is a local runtime endpoint."""
+        target = str(model_name or "").strip()
+        if not target:
+            return False
+        provider = target.split("/", 1)[0].strip().lower()
+        if provider in {"ollama", "llama"}:
+            return True
+        if provider == "openai":
+            cfg = self.config.models.providers.get("openai")
+            base_url = str(getattr(cfg, "base_url", "") or "").strip()
+            return is_openai_compatible_local_base_url(base_url)
+        return False
+
+    @staticmethod
+    def _is_http_image_url(value: str) -> bool:
+        raw = str(value or "").strip().lower()
+        return raw.startswith("http://") or raw.startswith("https://")
 
     def _convert_images_to_text(self, messages: list[Message]) -> list[Message]:
         """Strip image content from multimodal messages (for vision error retry)."""
@@ -1069,12 +1089,24 @@ class Engine:
         # Add user message (multimodal if images provided)
         user_content: str | list[dict] = user_text
         if images:
+            target_for_images = model or self.model.default_model
+            auth_mode = str(session.metadata.get("model_auth_mode", "api")).strip().lower()
+            local_target = (
+                auth_mode != "oauth"
+                and self._is_local_model_target(target_for_images)
+            )
             parts: list[dict] = [{"type": "text", "text": user_text}]
             for img in images:
-                if img.startswith("data:"):
-                    url = img
+                img_ref = str(img or "").strip()
+                if not img_ref:
+                    continue
+                if img_ref.startswith("data:"):
+                    url = img_ref
+                elif self._is_http_image_url(img_ref) and not local_target:
+                    # For cloud models, keep remote URL to avoid large base64 payloads.
+                    url = img_ref
                 else:
-                    url = _encode_image_base64(img)
+                    url = _encode_image_base64(img_ref)
                 if url:
                     parts.append({"type": "image_url", "image_url": {"url": url}})
             if len(parts) > 1:

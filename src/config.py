@@ -295,8 +295,11 @@ class RestartToolConfig(BaseModel):
     """Preconfigured restart-script settings for run_restart_script."""
 
     enabled: bool = False
-    script_path: str = ""  # Absolute or relative path to restart script
+    script_path: str = ""  # Absolute or relative path to stop/restart script
     working_dir: str = ""  # Empty = use script directory
+    start_script_path: str = ""  # Optional start script run after script_path
+    start_working_dir: str = ""  # Empty = use start_script_path directory
+    restart_delay_seconds: int = 3  # Delay between stop and start (0-300)
 
 
 class AgentDefinitionConfig(BaseModel):

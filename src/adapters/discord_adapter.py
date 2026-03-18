@@ -22,17 +22,21 @@ import structlog
 
 from src.adapters.base import BaseAdapter
 from src.config import KuroConfig
+from src.core.agents import AgentRunner
 from src.core.engine import ApprovalCallback, Engine
-from src.core.types import Session
+from src.core.security.approval import ApprovalPolicy
+from src.core.types import AgentDefinition, Session
 from src.openai_catalog import (
     OPENAI_CODEX_OAUTH_MODELS,
     is_codex_oauth_model_supported,
+    is_openai_compatible_local_base_url,
     normalize_openai_model,
 )
 from src.tools.base import RiskLevel, ToolContext
 
 logger = structlog.get_logger()
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_FIX_SCOPES = {"full", "errors", "performance", "config"}
 
 # Approval timeout in seconds
 DEFAULT_APPROVAL_TIMEOUT = 60
@@ -319,6 +323,20 @@ class DiscordAdapter(BaseAdapter):
             model = value[len("api:"):].strip()
             return (model or None), "api"
         return value, "api"
+
+    def _is_local_model_target(self, model_name: str | None) -> bool:
+        """Return True when model points to a local runtime endpoint."""
+        target = str(model_name or "").strip()
+        if not target:
+            return False
+        provider = target.split("/", 1)[0].strip().lower()
+        if provider in {"ollama", "llama"}:
+            return True
+        if provider == "openai":
+            cfg = self.config.models.providers.get("openai")
+            base_url = str(getattr(cfg, "base_url", "") or "").strip()
+            return is_openai_compatible_local_base_url(base_url)
+        return False
 
     def _get_oauth_status(self) -> dict[str, Any]:
         """Get OAuth status with Discord-friendly fallback to codex auth file."""
@@ -624,6 +642,125 @@ class DiscordAdapter(BaseAdapter):
         except Exception as e:
             return f"\u274c Self-repair failed: {str(e)[:300]}"
 
+    @staticmethod
+    def _parse_fix_command_args(args_text: str) -> tuple[str, str]:
+        """Parse !fix arguments: !fix [scope] [description]."""
+        raw = (args_text or "").strip()
+        if not raw:
+            return "full", ""
+
+        parts = raw.split(None, 1)
+        head = parts[0].strip().lower()
+        if head in _FIX_SCOPES:
+            detail = parts[1].strip() if len(parts) > 1 else ""
+            return head, detail
+
+        return "full", raw
+
+    def _resolve_fix_agent_model(self) -> str:
+        """Pick model for the dedicated fix agent."""
+        diag = getattr(self.config, "diagnostics", None)
+        repair_model = str(getattr(diag, "repair_model", "main") or "main").strip()
+        if repair_model.lower().startswith("oauth:"):
+            repair_model = repair_model.split(":", 1)[1].strip()
+        elif repair_model.lower().startswith("api:"):
+            repair_model = repair_model.split(":", 1)[1].strip()
+        if repair_model and repair_model.lower() != "main":
+            return repair_model
+        default_model = str(self.config.models.default or "").strip()
+        if default_model.lower().startswith("oauth:"):
+            default_model = default_model.split(":", 1)[1].strip()
+        elif default_model.lower().startswith("api:"):
+            default_model = default_model.split(":", 1)[1].strip()
+        return default_model or "gemini/gemini-3-flash-preview"
+
+    @staticmethod
+    def _build_fix_agent_task(scope: str, detail: str) -> str:
+        lines = [
+            f"Run a deep repair workflow with scope '{scope}'.",
+            "Inspect errors/logs and root cause first, then apply fixes directly when safe.",
+            "Use tools freely (including file edits, shell, diagnostics, and restart if needed).",
+            "After fixing, validate with concrete checks/tests and report exact changes.",
+            "Final report must include: root cause, actions taken, verification results, and remaining risks.",
+        ]
+        detail_text = detail.strip()
+        if detail_text:
+            lines.append(f"User-provided repair request: {detail_text}")
+        return "\n".join(lines)
+
+    async def _run_fix_agent(
+        self,
+        session: Session,
+        *,
+        scope: str,
+        detail: str,
+    ) -> str:
+        """Run a dedicated high-privilege fix agent for manual !fix command."""
+        target_engine = self.effective_engine
+        fix_model = self._resolve_fix_agent_model()
+        task = self._build_fix_agent_task(scope, detail)
+
+        # Isolated security override for this run only.
+        override_cfg = self.config.model_copy(deep=True)
+        override_cfg.security.full_access_mode = True
+        override_cfg.security.max_risk_level = "critical"
+        override_cfg.security.disabled_tools = []
+        override_policy = ApprovalPolicy(override_cfg.security)
+
+        defn = AgentDefinition(
+            name=f"fix_agent_{uuid4().hex[:8]}",
+            model=fix_model,
+            system_prompt=(
+                "You are Kuro Fix Agent, a dedicated repair specialist. "
+                "Act decisively, prioritize restoring service stability, and "
+                "make concrete fixes instead of only giving advice."
+            ),
+            max_tool_rounds=8,
+            temperature=0.2,
+            complexity_tier="expert",
+            created_by="runtime",
+            inherit_context=True,
+            max_depth=1,
+        )
+
+        logger.info(
+            "discord_fix_agent_start",
+            session_id=session.id,
+            model=fix_model,
+            scope=scope,
+            has_detail=bool(detail.strip()),
+        )
+
+        try:
+            runner = AgentRunner(
+                definition=defn,
+                model_router=target_engine.model,
+                tool_system=target_engine.tools,
+                config=override_cfg,
+                approval_policy=override_policy,
+                approval_callback=self._approval_cb,
+                audit_log=target_engine.audit,
+                parent_session=session,
+                parent_context=list(session.messages),
+                depth=0,
+                agent_manager=getattr(target_engine, "agent_manager", None),
+            )
+            result = await runner.run(task)
+            text = result if isinstance(result, str) else str(result)
+            clean = (text or "").strip()
+            if clean:
+                return clean
+            return "\u26a0 Fix agent finished but returned empty content."
+        except Exception as e:
+            logger.error(
+                "discord_fix_agent_failed",
+                session_id=session.id,
+                model=fix_model,
+                scope=scope,
+                error=str(e),
+            )
+            return f"\u274c Fix agent failed: {str(e)[:300]}"
+
     async def _maybe_auto_repair(
         self,
         message: Any,
@@ -735,7 +872,7 @@ class DiscordAdapter(BaseAdapter):
                 f"`{prefix}stats` — Dashboard overview\n"
                 f"`{prefix}costs` — Token usage & cost breakdown\n"
                 f"`{prefix}security` — Security report\n"
-                f"`{prefix}fix [scope]` — Force self-repair (scope: full/errors/performance/config)\n"
+                f"`{prefix}fix [scope] [issue/goal]` - Run dedicated fix agent (temporary full access)\n"
                 f"`{prefix}clear` — Clear conversation history\n"
                 f"`{prefix}trust` — Show/set trust level\n\n"
                 f"**Usage:**\n"
@@ -975,23 +1112,28 @@ class DiscordAdapter(BaseAdapter):
                     await message.channel.send(f"```\n{chunk}\n```")
 
         elif cmd in ("fix", "repair"):
-            scope = (
-                args_text.strip().split(None, 1)[0]
-                if args_text.strip()
-                else "full"
+            scope, detail = self._parse_fix_command_args(args_text)
+            detail_preview = detail.strip()
+            if len(detail_preview) > 180:
+                detail_preview = detail_preview[:177] + "..."
+
+            status = (
+                f"\U0001f6e0\ufe0f Launching dedicated fix agent "
+                f"(scope: `{scope}`, temporary full-access mode)..."
             )
-            await message.channel.send(
-                f"\U0001f6e0\ufe0f Running self-repair (scope: `{scope}`)..."
-            )
-            report = await self._run_diagnose_and_repair(
+            if detail_preview:
+                status += f"\nIssue: {detail_preview}"
+            await message.channel.send(status)
+
+            report = await self._run_fix_agent(
                 session,
                 scope=scope,
-                auto_fix=True,
+                detail=detail,
             )
             await self._send_chunked_message(
                 message.channel,
                 report,
-                fallback="\u26a0 Self-repair returned empty content.",
+                fallback="\u26a0 Fix agent returned empty content.",
             )
 
         elif cmd == "clear":
@@ -1068,10 +1210,21 @@ class DiscordAdapter(BaseAdapter):
             images=len(image_urls) if image_urls else 0,
         )
 
-        # Download images to temp files for multimodal processing
-        image_paths: list[str] = []
+        # Build image payloads for model input:
+        # - cloud models: keep remote URLs to avoid huge base64 token overhead
+        # - local models: download to local temp files for reliable access
+        image_inputs: list[str] = []
+        temp_image_paths: list[str] = []
         if image_urls:
-            image_paths = await self._download_images(image_urls)
+            is_local_target = (
+                effective_mode != "oauth"
+                and self._is_local_model_target(str(selected_model or ""))
+            )
+            if is_local_target:
+                temp_image_paths = await self._download_images(image_urls)
+                image_inputs = temp_image_paths
+            else:
+                image_inputs = list(image_urls[:5])  # same cap as downloader
 
         # Send typing indicator
         async with message.channel.typing():
@@ -1155,7 +1308,7 @@ class DiscordAdapter(BaseAdapter):
                 with model_ctx:
                     response = await self.process_incoming(
                         content, session, model=model,
-                        images=image_paths if image_paths else None,
+                        images=image_inputs if image_inputs else None,
                     )
 
                 # Collect any new images generated during processing (screenshots, etc.)
@@ -1224,7 +1377,7 @@ class DiscordAdapter(BaseAdapter):
                     trigger_error=str(e),
                 )
         # Clean up downloaded temp images
-        self._cleanup_temp_images(image_paths)
+        self._cleanup_temp_images(temp_image_paths)
 
     # ── Image helpers ──────────────────────────────────────────
 
