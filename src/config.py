@@ -265,6 +265,7 @@ class SkillsConfig(BaseModel):
         "./skills",        # 安裝目錄（優先，LLM 容易寫入）
         "~/.kuro/skills",  # 使用者 home 目錄
     ])
+    auto_activate_all: bool = True  # Activate all discovered skills on startup by default
     auto_activate: list[str] = Field(default_factory=list)  # Skills to auto-activate on startup
 
 

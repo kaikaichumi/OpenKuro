@@ -232,6 +232,8 @@ class SkillsManager:
             skill = self._parse_skill_file(dest_file, source="local")
             if skill:
                 self._skills[skill.name] = skill
+                if self._config and bool(getattr(self._config, "auto_activate_all", False)):
+                    self._active.add(skill.name)
 
             logger.info("Installed skill '%s' to %s", skill_name, dest_dir)
             return str(dest_dir)

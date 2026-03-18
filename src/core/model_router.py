@@ -588,11 +588,148 @@ class ModelRouter:
             "total_tokens": total_tokens,
         }
 
+    @staticmethod
+    def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            payload = raw.strip()
+            if not payload:
+                return {}
+            try:
+                parsed = json.loads(payload)
+            except Exception:
+                return {"_raw": raw}
+            if isinstance(parsed, dict):
+                return parsed
+            return {"_value": parsed}
+        return {}
+
+    @staticmethod
+    def _dedupe_tool_calls(tool_calls: list[ToolCall]) -> list[ToolCall]:
+        deduped: list[ToolCall] = []
+        seen: set[tuple[str, str, str]] = set()
+        for tc in tool_calls:
+            try:
+                args_key = json.dumps(tc.arguments, ensure_ascii=False, sort_keys=True)
+            except Exception:
+                args_key = str(tc.arguments)
+            key = (str(tc.id or "").strip(), str(tc.name or "").strip(), args_key)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(tc)
+        return deduped
+
+    def _extract_tool_calls_from_output_items(
+        self,
+        output_items: list[Any] | None,
+    ) -> list[ToolCall]:
+        calls: list[ToolCall] = []
+        if not isinstance(output_items, list):
+            return calls
+        for item in output_items:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type", "")).strip().lower()
+            if item_type not in {"function_call", "tool_call"}:
+                continue
+            name = str(item.get("name") or item.get("tool_name") or "").strip()
+            if not name:
+                continue
+            raw_id = item.get("call_id") or item.get("id")
+            call_id = str(raw_id).strip() if raw_id is not None else ""
+            if not call_id:
+                call_id = f"call_{len(calls) + 1}_{name}"
+            arguments = self._parse_tool_arguments(item.get("arguments"))
+            calls.append(ToolCall(id=call_id, name=name, arguments=arguments))
+        return calls
+
+    def _extract_tool_calls_from_response_obj(
+        self,
+        response_obj: dict[str, Any] | None,
+    ) -> list[ToolCall]:
+        if not isinstance(response_obj, dict):
+            return []
+
+        calls: list[ToolCall] = []
+
+        calls.extend(
+            self._extract_tool_calls_from_output_items(response_obj.get("output"))
+        )
+
+        required_action = response_obj.get("required_action")
+        if isinstance(required_action, dict):
+            submit = required_action.get("submit_tool_outputs")
+            if isinstance(submit, dict):
+                raw_calls = submit.get("tool_calls")
+                if isinstance(raw_calls, list):
+                    for raw_tc in raw_calls:
+                        if not isinstance(raw_tc, dict):
+                            continue
+                        fn = raw_tc.get("function")
+                        if isinstance(fn, dict):
+                            name = str(fn.get("name", "")).strip()
+                            arguments = self._parse_tool_arguments(fn.get("arguments"))
+                        else:
+                            name = str(raw_tc.get("name", "")).strip()
+                            arguments = self._parse_tool_arguments(
+                                raw_tc.get("arguments")
+                            )
+                        if not name:
+                            continue
+                        raw_id = raw_tc.get("id") or raw_tc.get("call_id")
+                        call_id = str(raw_id).strip() if raw_id is not None else ""
+                        if not call_id:
+                            call_id = f"call_{len(calls) + 1}_{name}"
+                        calls.append(
+                            ToolCall(id=call_id, name=name, arguments=arguments)
+                        )
+
+        return self._dedupe_tool_calls(calls)
+
+    @staticmethod
+    def _normalize_codex_tools(
+        tools: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        if not tools:
+            return []
+        normalized: list[dict[str, Any]] = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            tool_type = str(tool.get("type", "")).strip().lower()
+            if tool_type and tool_type != "function":
+                continue
+            function = tool.get("function")
+            if isinstance(function, dict):
+                name = str(function.get("name", "")).strip()
+                description = str(function.get("description", "")).strip()
+                parameters = function.get("parameters")
+            else:
+                name = str(tool.get("name", "")).strip()
+                description = str(tool.get("description", "")).strip()
+                parameters = tool.get("parameters")
+            if not name:
+                continue
+            if not isinstance(parameters, dict):
+                parameters = {"type": "object", "properties": {}}
+            codex_tool: dict[str, Any] = {
+                "type": "function",
+                "name": name,
+                "parameters": parameters,
+            }
+            if description:
+                codex_tool["description"] = description
+            normalized.append(codex_tool)
+        return normalized
+
     def _build_codex_payload(
         self,
         *,
         model_name: str,
         messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         model_id_raw = model_name.split("/")[-1] if "/" in model_name else model_name
         model_id = self._normalize_codex_model_id(model_id_raw)
@@ -600,7 +737,7 @@ class ModelRouter:
             os.environ.get("OPENAI_CODEX_INSTRUCTIONS", "").strip()
             or _CODEX_DEFAULT_INSTRUCTIONS
         )
-        return {
+        payload: dict[str, Any] = {
             "model": model_id,
             "input": self._messages_to_codex_input(messages),
             "instructions": instructions,
@@ -610,6 +747,11 @@ class ModelRouter:
             "reasoning": {"summary": "auto"},
             "include": ["reasoning.encrypted_content"],
         }
+        codex_tools = self._normalize_codex_tools(tools)
+        if codex_tools:
+            payload["tools"] = codex_tools
+            payload["tool_choice"] = "auto"
+        return payload
 
     @staticmethod
     def _normalize_codex_model_id(model_id: str) -> str:
@@ -621,12 +763,18 @@ class ModelRouter:
         model_name: str,
         messages: list[dict[str, Any]],
         auth: dict[str, Any],
+        tools: list[dict[str, Any]] | None = None,
     ) -> ModelResponse:
-        payload = self._build_codex_payload(model_name=model_name, messages=messages)
+        payload = self._build_codex_payload(
+            model_name=model_name,
+            messages=messages,
+            tools=tools,
+        )
         headers = self._build_codex_headers(auth)
         timeout = aiohttp.ClientTimeout(total=240, sock_read=240)
 
         deltas: list[str] = []
+        event_tool_calls: list[ToolCall] = []
         final_response: dict[str, Any] | None = None
         async with aiohttp.ClientSession(timeout=timeout) as client:
             async with client.post(_CODEX_RESPONSES_URL, json=payload, headers=headers) as resp:
@@ -652,6 +800,11 @@ class ModelRouter:
                             if isinstance(response_obj, dict):
                                 final_response = response_obj
                             continue
+                        item = event.get("item")
+                        if isinstance(item, dict):
+                            event_tool_calls.extend(
+                                self._extract_tool_calls_from_output_items([item])
+                            )
                         delta = self._extract_sse_delta(event)
                         if delta:
                             deltas.append(delta)
@@ -662,6 +815,11 @@ class ModelRouter:
                         response_obj = event.get("response")
                         if isinstance(response_obj, dict):
                             final_response = response_obj
+                        item = event.get("item")
+                        if isinstance(item, dict):
+                            event_tool_calls.extend(
+                                self._extract_tool_calls_from_output_items([item])
+                            )
                         delta = self._extract_sse_delta(event)
                         if delta:
                             deltas.append(delta)
@@ -669,12 +827,16 @@ class ModelRouter:
         content = "".join(deltas).strip()
         if not content:
             content = self._extract_text_from_response_obj(final_response)
+        tool_calls = self._extract_tool_calls_from_response_obj(final_response)
+        if not tool_calls and event_tool_calls:
+            tool_calls = self._dedupe_tool_calls(event_tool_calls)
         usage = self._extract_usage_from_response_obj(final_response)
         return ModelResponse(
             content=content,
+            tool_calls=tool_calls or None,
             model=model_name,
             usage=usage,
-            finish_reason="stop",
+            finish_reason="tool_calls" if tool_calls else "stop",
         )
 
     async def _stream_codex_oauth(
@@ -771,11 +933,6 @@ class ModelRouter:
             provider_auth = self._provider_auth(provider)
             try:
                 if self._is_codex_oauth_mode(provider, provider_auth):
-                    if tools:
-                        logger.debug(
-                            "codex_oauth_tools_ignored",
-                            model=model_name,
-                        )
                     logger.info(
                         "model_request",
                         requested_model=target_model,
@@ -791,6 +948,7 @@ class ModelRouter:
                         model_name=model_name,
                         messages=messages,
                         auth=provider_auth or {},
+                        tools=tools,
                     )
                     _latency = (_time.monotonic() - _t0) * 1000
 

@@ -867,6 +867,8 @@ class DiscordAdapter(BaseAdapter):
                 f"`{prefix}model <name>` — Switch AI model\n"
                 f"`{prefix}model oauth:<openai/model>` — Switch OpenAI model via OAuth\n"
                 f"`{prefix}models` — List available models\n"
+                f"`{prefix}skills` — List all skills and status\n"
+                f"`{prefix}skill <name>` — Toggle one skill on/off\n"
                 f"`{prefix}agents` — List available sub-agents\n"
                 f"`{prefix}delegate <agent> <task>` — Delegate task to a sub-agent\n"
                 f"`{prefix}stats` — Dashboard overview\n"
@@ -987,6 +989,169 @@ class DiscordAdapter(BaseAdapter):
                     await message.channel.send("\n".join(lines))
             except Exception as e:
                 await message.channel.send(f"\u274c Error listing models: {str(e)[:200]}")
+
+        elif cmd == "skills":
+            sm = getattr(self.effective_engine, "skills", None)
+            prefix = self.config.adapters.discord.command_prefix
+            if sm is None:
+                await message.channel.send("\u274c Skills system is unavailable.")
+                return
+
+            sub = args_text.strip()
+            sub_lower = sub.lower()
+
+            if sub_lower == "available":
+                available = sm.list_available_skills()
+                if not available:
+                    await message.channel.send(
+                        "\U0001f4e6 No installable skills found in the built-in catalog."
+                    )
+                    return
+                lines = ["\U0001f4e6 **Installable Skills:**"]
+                for item in sorted(
+                    available,
+                    key=lambda it: str(it.get("name", "")).lower(),
+                ):
+                    name = str(item.get("name", "")).strip()
+                    if not name:
+                        continue
+                    desc = str(item.get("description", "")).strip() or "No description"
+                    installed = bool(item.get("installed"))
+                    state = "installed" if installed else "not installed"
+                    lines.append(f"- `{name}` — {desc} ({state})")
+                lines.append(
+                    f"\nInstall with `{prefix}skills install <name>`"
+                )
+                await self._send_chunked_message(
+                    message.channel,
+                    "\n".join(lines),
+                )
+                return
+
+            if sub_lower.startswith("install "):
+                skill_name = sub[8:].strip()
+                if not skill_name:
+                    await message.channel.send(
+                        f"\u274c Usage: `{prefix}skills install <name>`"
+                    )
+                    return
+                installed_path = sm.install_skill(skill_name)
+                if not installed_path:
+                    await message.channel.send(
+                        f"\u274c Failed to install `{skill_name}`. "
+                        f"Use `{prefix}skills available` to see valid names."
+                    )
+                    return
+                for skill in sm.list_skills():
+                    sm.activate(skill.name)
+                await message.channel.send(
+                    f"\u2705 Installed `{skill_name}` and enabled all skills by default."
+                )
+                return
+
+            skills = sorted(sm.list_skills(), key=lambda s: s.name.lower())
+            if not skills:
+                await message.channel.send(
+                    "\U0001f9e9 No skills found. Put SKILL.md under `~/.kuro/skills/<name>/`."
+                )
+                return
+
+            active = getattr(sm, "_active", set())
+            lines = ["\U0001f9e9 **Skills:**"]
+            for skill in skills:
+                status = "\U0001f7e2 ON" if skill.name in active else "\u26aa OFF"
+                desc = skill.description or "No description"
+                lines.append(f"- {status} `{skill.name}` — {desc}")
+            lines.append("")
+            lines.append(f"Toggle: `{prefix}skill <name>`")
+            lines.append(f"Enable: `{prefix}skill on <name>`")
+            lines.append(f"Disable: `{prefix}skill off <name>`")
+            lines.append(f"All ON/OFF: `{prefix}skill all on|off`")
+            lines.append(f"Catalog: `{prefix}skills available`")
+            lines.append(f"Install: `{prefix}skills install <name>`")
+            await self._send_chunked_message(
+                message.channel,
+                "\n".join(lines),
+            )
+
+        elif cmd == "skill":
+            sm = getattr(self.effective_engine, "skills", None)
+            prefix = self.config.adapters.discord.command_prefix
+            if sm is None:
+                await message.channel.send("\u274c Skills system is unavailable.")
+                return
+
+            raw = args_text.strip()
+            if not raw:
+                await message.channel.send(
+                    f"\u274c Usage: `{prefix}skill <name>` or `{prefix}skill on|off <name>`"
+                )
+                return
+
+            skills = sm.list_skills()
+            if not skills:
+                await message.channel.send(
+                    f"\U0001f9e9 No skills found. Use `{prefix}skills` to verify catalog loading."
+                )
+                return
+
+            raw_lower = raw.lower()
+            if raw_lower in {"all on", "on all", "all off", "off all"}:
+                enable = "on" in raw_lower.split()
+                changed = 0
+                for skill in skills:
+                    ok = sm.activate(skill.name) if enable else sm.deactivate(skill.name)
+                    if ok:
+                        changed += 1
+                state = "ON" if enable else "OFF"
+                await message.channel.send(
+                    f"\u2705 Set all skills to **{state}** ({changed}/{len(skills)} changed)."
+                )
+                return
+
+            action = "toggle"
+            skill_name = raw
+            parts = raw.split(None, 1)
+            if len(parts) == 2 and parts[0].lower() in {"on", "off"}:
+                action = parts[0].lower()
+                skill_name = parts[1].strip()
+
+            if not skill_name:
+                await message.channel.send(
+                    f"\u274c Usage: `{prefix}skill <name>` or `{prefix}skill on|off <name>`"
+                )
+                return
+
+            target_name = skill_name
+            target_skill = sm.get_skill(target_name)
+            if target_skill is None:
+                for skill in skills:
+                    if skill.name.lower() == skill_name.lower():
+                        target_name = skill.name
+                        target_skill = skill
+                        break
+            if target_skill is None:
+                await message.channel.send(
+                    f"\u274c Skill `{skill_name}` not found. Use `{prefix}skills` to list loaded skills."
+                )
+                return
+
+            active = getattr(sm, "_active", set())
+            if action == "on":
+                sm.activate(target_name)
+            elif action == "off":
+                sm.deactivate(target_name)
+            else:
+                if target_name in active:
+                    sm.deactivate(target_name)
+                else:
+                    sm.activate(target_name)
+
+            active_now = target_name in getattr(sm, "_active", set())
+            state = "ON" if active_now else "OFF"
+            await message.channel.send(
+                f"\U0001f9e9 Skill `{target_name}` is now **{state}**."
+            )
 
         elif cmd == "agents":
             agent_manager = getattr(self.effective_engine, "agent_manager", None)

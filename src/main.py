@@ -174,6 +174,9 @@ def build_engine(
     skills_manager = SkillsManager(config.skills)
     if config.skills.enabled:
         skills_manager.discover_skills()
+        if bool(getattr(config.skills, "auto_activate_all", True)):
+            for skill in skills_manager.list_skills():
+                skills_manager.activate(skill.name)
         for name in config.skills.auto_activate:
             skills_manager.activate(name)
 
