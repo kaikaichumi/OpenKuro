@@ -333,6 +333,101 @@ class ModelRouter:
             return True
         return False
 
+    @staticmethod
+    def _sanitize_strict_function_turns(
+        messages: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """Sanitize tool-call history for strict providers (e.g., Gemini).
+
+        Gemini requires each assistant function-call turn to be followed
+        immediately by function-response/tool turns. If context compression
+        or truncation leaves orphan entries, requests fail with 400.
+        """
+        sanitized: list[dict[str, Any]] = []
+        dropped_assistant_calls = 0
+        dropped_tool_turns = 0
+        i = 0
+
+        while i < len(messages):
+            msg = messages[i]
+            if not isinstance(msg, dict):
+                i += 1
+                continue
+
+            role = str(msg.get("role", "")).strip().lower()
+            tool_calls = msg.get("tool_calls")
+            has_tool_calls = (
+                role == "assistant"
+                and isinstance(tool_calls, list)
+                and bool(tool_calls)
+            )
+
+            if has_tool_calls:
+                expected_ids: list[str] = []
+                for tc in tool_calls:
+                    if not isinstance(tc, dict):
+                        continue
+                    raw_id = tc.get("id")
+                    tc_id = str(raw_id).strip() if raw_id is not None else ""
+                    if tc_id:
+                        expected_ids.append(tc_id)
+
+                j = i + 1
+                tool_msgs: list[dict[str, Any]] = []
+                while j < len(messages):
+                    nxt = messages[j]
+                    if not isinstance(nxt, dict):
+                        break
+                    nxt_role = str(nxt.get("role", "")).strip().lower()
+                    if nxt_role != "tool":
+                        break
+                    tool_msgs.append(nxt)
+                    j += 1
+
+                valid_pair = bool(tool_msgs)
+                if valid_pair and expected_ids:
+                    seen_ids = {
+                        str(tm.get("tool_call_id", "")).strip()
+                        for tm in tool_msgs
+                        if isinstance(tm, dict)
+                    }
+                    valid_pair = all(tc_id in seen_ids for tc_id in expected_ids)
+
+                if valid_pair:
+                    sanitized.append(msg)
+                    sanitized.extend(tool_msgs)
+                    i = j
+                    continue
+
+                # Degrade broken assistant tool-call turn into plain assistant text
+                # when content exists; otherwise drop it.
+                content = msg.get("content")
+                keep_content = (
+                    isinstance(content, str) and bool(content.strip())
+                ) or (
+                    isinstance(content, list) and bool(content)
+                )
+                if keep_content:
+                    repaired = dict(msg)
+                    repaired.pop("tool_calls", None)
+                    sanitized.append(repaired)
+
+                dropped_assistant_calls += 1
+                dropped_tool_turns += len(tool_msgs)
+                i = j if tool_msgs else i + 1
+                continue
+
+            if role == "tool":
+                # Orphan tool response without a preceding function-call turn.
+                dropped_tool_turns += 1
+                i += 1
+                continue
+
+            sanitized.append(msg)
+            i += 1
+
+        return sanitized, dropped_assistant_calls, dropped_tool_turns
+
     @property
     def default_model(self) -> str:
         return self.config.models.default
@@ -998,11 +1093,26 @@ class ModelRouter:
 
                 kwargs: dict[str, Any] = {
                     "model": self._to_litellm_model(model_name),
-                    "messages": messages,
                     "temperature": temp,
                     "max_tokens": max_tok,
                     "stream": False,  # Non-streaming for complete()
                 }
+                prepared_messages = messages
+                if provider == "gemini":
+                    (
+                        prepared_messages,
+                        dropped_calls,
+                        dropped_tools,
+                    ) = self._sanitize_strict_function_turns(messages)
+                    if dropped_calls or dropped_tools:
+                        logger.warning(
+                            "gemini_function_turn_sanitized",
+                            dropped_assistant_calls=dropped_calls,
+                            dropped_tool_turns=dropped_tools,
+                            before=len(messages),
+                            after=len(prepared_messages),
+                        )
+                kwargs["messages"] = prepared_messages
 
                 # Get provider-specific base_url
                 if provider_cfg and provider_cfg.base_url and provider != "ollama":
