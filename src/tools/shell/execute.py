@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 from typing import Any
 
 from src.tools.base import BaseTool, RiskLevel, ToolContext, ToolResult
+
+_SUDO_RE = re.compile(r"(^|[;&|]\s*)sudo\b", re.IGNORECASE)
 
 
 class ShellExecuteTool(BaseTool):
@@ -42,6 +45,14 @@ class ShellExecuteTool(BaseTool):
         if not command:
             return ToolResult.fail("Command is required")
 
+        # Never allow interactive privilege escalation from agent shell runs.
+        # It can block on password prompts and stall the whole request.
+        if sys.platform != "win32" and _SUDO_RE.search(command or ""):
+            return ToolResult.fail(
+                "sudo commands are not executed by the agent. "
+                "Please run this command manually on the host terminal."
+            )
+
         # Resolve working directory
         if working_dir:
             cwd = os.path.expanduser(working_dir)
@@ -60,6 +71,7 @@ class ShellExecuteTool(BaseTool):
                 shell_cmd = ["powershell", "-NoProfile", "-Command", command]
                 proc = await asyncio.create_subprocess_exec(
                     *shell_cmd,
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=cwd,
@@ -69,6 +81,7 @@ class ShellExecuteTool(BaseTool):
                 # Use shell on Unix
                 proc = await asyncio.create_subprocess_shell(
                     command,
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=cwd,
