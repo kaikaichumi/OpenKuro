@@ -28,6 +28,7 @@ from src.core.security.approval import ApprovalPolicy
 from src.core.types import AgentDefinition, Session
 from src.openai_catalog import (
     OPENAI_CODEX_OAUTH_MODELS,
+    OPENAI_OFFICIAL_MODELS,
     is_codex_oauth_model_supported,
     is_openai_compatible_local_base_url,
     normalize_openai_model,
@@ -37,6 +38,13 @@ from src.tools.base import RiskLevel, ToolContext
 logger = structlog.get_logger()
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _FIX_SCOPES = {"full", "errors", "performance", "config"}
+_COMPUTER_OPERATION_TOOL_NAMES = {
+    "computer_use",
+    "mouse_action",
+    "keyboard_action",
+    "screen_info",
+    "screenshot",
+}
 
 # Approval timeout in seconds
 DEFAULT_APPROVAL_TIMEOUT = 60
@@ -938,6 +946,13 @@ class DiscordAdapter(BaseAdapter):
                 oauth_status = self._get_oauth_status()
                 if self._oauth:
                     oauth_models: list[str] = list(OPENAI_CODEX_OAUTH_MODELS)
+                    for m in OPENAI_OFFICIAL_MODELS:
+                        candidate = normalize_openai_model(m)
+                        if (
+                            is_codex_oauth_model_supported(candidate)
+                            and candidate not in oauth_models
+                        ):
+                            oauth_models.append(candidate)
                     extra_oauth = [
                         m.strip()
                         for m in os.environ.get("OPENAI_CODEX_OAUTH_MODELS", "").split(",")
@@ -1468,6 +1483,7 @@ class DiscordAdapter(BaseAdapter):
                 # Record generated image paths before processing
                 images_before = set(self._collect_generated_images(session))
                 legacy_before = self._collect_session_images(session)
+                message_count_before = len(session.messages)
 
                 # Process through engine (routes to agent instance if bound)
                 with model_ctx:
@@ -1484,6 +1500,18 @@ class DiscordAdapter(BaseAdapter):
                 # Backward-compatible fallback for older sessions/messages.
                 if not new_images:
                     new_images = self._collect_new_images(session, legacy_before)
+                recent_tool_names = self._collect_recent_tool_names(
+                    session,
+                    start_index=message_count_before,
+                )
+                used_computer_tools = any(
+                    name in _COMPUTER_OPERATION_TOOL_NAMES
+                    for name in recent_tool_names
+                )
+                if used_computer_tools and not new_images:
+                    auto_capture = await self._capture_post_action_screenshot(session)
+                    if auto_capture and auto_capture not in new_images:
+                        new_images.append(auto_capture)
 
                 # Send response (split if needed)
                 max_len = self.config.adapters.discord.max_message_length
@@ -1679,18 +1707,173 @@ class DiscordAdapter(BaseAdapter):
                                             break
         return new_images
 
+    @staticmethod
+    def _collect_recent_tool_names(session: Any, start_index: int) -> list[str]:
+        """Collect tool names from messages appended after start_index."""
+        names: list[str] = []
+        msgs = getattr(session, "messages", []) or []
+        for msg in msgs[max(0, int(start_index or 0)):]:
+            role_obj = getattr(msg, "role", None)
+            role = str(getattr(role_obj, "value", role_obj or "")).strip().lower()
+            if role != "tool":
+                continue
+            raw_name = getattr(msg, "name", "")
+            name = str(raw_name or "").strip()
+            if name:
+                names.append(name)
+        return names
+
+    async def _capture_post_action_screenshot(self, session: Session) -> str | None:
+        """Capture a screenshot after computer-operation tool usage."""
+        try:
+            disabled = getattr(self.config.security, "disabled_tools", []) or []
+            if "screenshot" in disabled:
+                return None
+        except Exception:
+            pass
+
+        try:
+            result = await self.effective_engine.tools.execute(
+                "screenshot",
+                {"monitor": 1},
+                self._build_tool_context(session),
+            )
+        except Exception as e:
+            logger.debug("discord_post_action_capture_failed", error=str(e))
+            return None
+
+        if not result.success:
+            logger.debug(
+                "discord_post_action_capture_tool_failed",
+                error=result.error or "",
+            )
+            return None
+
+        path = str(result.image_path or "").strip()
+        if not path:
+            return None
+        try:
+            generated = session.metadata.setdefault("generated_images", [])
+            if isinstance(generated, list) and path not in generated:
+                generated.append(path)
+        except Exception:
+            pass
+        return path
+
+    @staticmethod
+    def _fit_image_for_discord(path: str, max_bytes: int) -> str | None:
+        """Best-effort re-encode/resize so the image fits Discord upload limits."""
+        import tempfile
+        from pathlib import Path
+
+        try:
+            from PIL import Image
+        except Exception:
+            return None
+
+        src = Path(path)
+        if not src.is_file():
+            return None
+
+        try:
+            with Image.open(src) as raw_img:
+                base = raw_img.convert("RGB")
+                orig_w, orig_h = base.size
+                scale = 1.0
+
+                def _resample_mode() -> Any:
+                    if hasattr(Image, "Resampling"):
+                        return Image.Resampling.LANCZOS
+                    return Image.LANCZOS
+
+                for attempt in range(10):
+                    if scale < 1.0:
+                        w = max(1, int(orig_w * scale))
+                        h = max(1, int(orig_h * scale))
+                        candidate_img = base.resize((w, h), _resample_mode())
+                    else:
+                        candidate_img = base
+
+                    quality = max(30, 92 - attempt * 7)
+                    tmp = tempfile.NamedTemporaryFile(
+                        suffix=".jpg",
+                        prefix="kuro_discord_img_",
+                        delete=False,
+                    )
+                    tmp_path = tmp.name
+                    tmp.close()
+                    try:
+                        candidate_img.save(
+                            tmp_path,
+                            format="JPEG",
+                            quality=quality,
+                            optimize=True,
+                            progressive=True,
+                        )
+                        if Path(tmp_path).stat().st_size <= max_bytes:
+                            return tmp_path
+                    except Exception:
+                        try:
+                            Path(tmp_path).unlink()
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            Path(tmp_path).unlink()
+                        except Exception:
+                            pass
+
+                    if attempt in {1, 3, 5, 7}:
+                        scale *= 0.75
+        except Exception:
+            return None
+
+        return None
+
     async def _send_images(self, channel: Any, image_paths: list[str]) -> None:
         """Send image files as Discord attachments."""
         import discord
         from pathlib import Path
 
+        max_bytes = 8 * 1024 * 1024
+        try:
+            guild = getattr(channel, "guild", None)
+            guild_limit = int(getattr(guild, "filesize_limit", 0) or 0) if guild else 0
+            if guild_limit > 0:
+                max_bytes = guild_limit
+        except Exception:
+            pass
+
         for path in image_paths[:5]:  # limit to 5 images
+            temp_prepared: str | None = None
             try:
                 p = Path(path)
-                if p.is_file() and p.stat().st_size < 8 * 1024 * 1024:  # Discord 8MB limit
-                    await channel.send(file=discord.File(str(p), filename=p.name))
+                if not p.is_file():
+                    continue
+
+                send_path = p
+                if p.stat().st_size > max_bytes:
+                    prepared = self._fit_image_for_discord(str(p), max_bytes)
+                    if not prepared:
+                        logger.warning(
+                            "discord_image_too_large",
+                            path=str(p),
+                            size=p.stat().st_size,
+                            limit=max_bytes,
+                        )
+                        continue
+                    temp_prepared = prepared
+                    send_path = Path(prepared)
+
+                await channel.send(file=discord.File(str(send_path), filename=send_path.name))
             except Exception as e:
                 logger.debug("discord_send_image_failed", path=path, error=str(e))
+            finally:
+                if temp_prepared:
+                    try:
+                        Path(temp_prepared).unlink()
+                    except Exception:
+                        pass
 
     @staticmethod
     def _cleanup_temp_images(paths: list[str]) -> None:

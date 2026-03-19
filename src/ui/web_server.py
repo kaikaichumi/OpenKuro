@@ -28,6 +28,7 @@ from src.core.engine import ApprovalCallback, Engine, ToolExecutionCallback, _en
 from src.core.types import AgentDefinition, Session
 from src.openai_catalog import (
     OPENAI_CODEX_OAUTH_MODELS,
+    OPENAI_OFFICIAL_MODELS,
     is_codex_oauth_model_supported,
     normalize_openai_model,
 )
@@ -46,7 +47,30 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Path to static web files
 WEB_DIR = Path(__file__).parent / "web"
-_OPENAI_OAUTH_MODEL_DEFAULTS: list[str] = list(OPENAI_CODEX_OAUTH_MODELS)
+
+
+def _build_openai_oauth_model_defaults() -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: str) -> None:
+        model = normalize_openai_model(raw)
+        if not model or model in seen:
+            return
+        if not is_codex_oauth_model_supported(model):
+            return
+        seen.add(model)
+        merged.append(model)
+
+    for model in OPENAI_OFFICIAL_MODELS:
+        _add(model)
+    for model in OPENAI_CODEX_OAUTH_MODELS:
+        _add(model)
+
+    return merged
+
+
+_OPENAI_OAUTH_MODEL_DEFAULTS: list[str] = _build_openai_oauth_model_defaults()
 
 
 @dataclass
