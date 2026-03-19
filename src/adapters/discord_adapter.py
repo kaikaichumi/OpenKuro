@@ -45,6 +45,13 @@ _COMPUTER_OPERATION_TOOL_NAMES = {
     "screen_info",
     "screenshot",
 }
+_WEB_OPERATION_TOOL_NAMES = {
+    "web_navigate",
+    "web_click",
+    "web_type",
+    "web_get_text",
+    "web_screenshot",
+}
 
 # Approval timeout in seconds
 DEFAULT_APPROVAL_TIMEOUT = 60
@@ -1504,12 +1511,15 @@ class DiscordAdapter(BaseAdapter):
                     session,
                     start_index=message_count_before,
                 )
-                used_computer_tools = any(
-                    name in _COMPUTER_OPERATION_TOOL_NAMES
+                used_visual_tools = any(
+                    (name in _COMPUTER_OPERATION_TOOL_NAMES) or (name in _WEB_OPERATION_TOOL_NAMES)
                     for name in recent_tool_names
                 )
-                if used_computer_tools and not new_images:
-                    auto_capture = await self._capture_post_action_screenshot(session)
+                if used_visual_tools and not new_images:
+                    auto_capture = await self._capture_post_action_screenshot(
+                        session,
+                        recent_tool_names=recent_tool_names,
+                    )
                     if auto_capture and auto_capture not in new_images:
                         new_images.append(auto_capture)
 
@@ -1723,42 +1733,63 @@ class DiscordAdapter(BaseAdapter):
                 names.append(name)
         return names
 
-    async def _capture_post_action_screenshot(self, session: Session) -> str | None:
-        """Capture a screenshot after computer-operation tool usage."""
+    async def _capture_post_action_screenshot(
+        self,
+        session: Session,
+        *,
+        recent_tool_names: list[str] | None = None,
+    ) -> str | None:
+        """Capture a screenshot after computer/web operation tool usage."""
         try:
             disabled = getattr(self.config.security, "disabled_tools", []) or []
-            if "screenshot" in disabled:
-                return None
+            disabled_set = {str(t).strip() for t in disabled if str(t).strip()}
         except Exception:
-            pass
+            disabled_set = set()
 
-        try:
-            result = await self.effective_engine.tools.execute(
-                "screenshot",
-                {"monitor": 1},
-                self._build_tool_context(session),
-            )
-        except Exception as e:
-            logger.debug("discord_post_action_capture_failed", error=str(e))
-            return None
+        recent_set = {str(n).strip() for n in (recent_tool_names or []) if str(n).strip()}
+        prefer_web = bool(recent_set & _WEB_OPERATION_TOOL_NAMES)
 
-        if not result.success:
-            logger.debug(
-                "discord_post_action_capture_tool_failed",
-                error=result.error or "",
-            )
-            return None
+        capture_plan: list[tuple[str, dict[str, Any]]] = []
+        if prefer_web and "web_screenshot" not in disabled_set:
+            capture_plan.append(("web_screenshot", {"full_page": False}))
+        if "screenshot" not in disabled_set:
+            capture_plan.append(("screenshot", {"monitor": 1}))
 
-        path = str(result.image_path or "").strip()
-        if not path:
-            return None
-        try:
-            generated = session.metadata.setdefault("generated_images", [])
-            if isinstance(generated, list) and path not in generated:
-                generated.append(path)
-        except Exception:
-            pass
-        return path
+        for tool_name, params in capture_plan:
+            try:
+                result = await self.effective_engine.tools.execute(
+                    tool_name,
+                    params,
+                    self._build_tool_context(session),
+                )
+            except Exception as e:
+                logger.debug(
+                    "discord_post_action_capture_failed",
+                    tool=tool_name,
+                    error=str(e),
+                )
+                continue
+
+            if not result.success:
+                logger.debug(
+                    "discord_post_action_capture_tool_failed",
+                    tool=tool_name,
+                    error=result.error or "",
+                )
+                continue
+
+            path = str(result.image_path or "").strip()
+            if not path:
+                continue
+            try:
+                generated = session.metadata.setdefault("generated_images", [])
+                if isinstance(generated, list) and path not in generated:
+                    generated.append(path)
+            except Exception:
+                pass
+            return path
+
+        return None
 
     @staticmethod
     def _fit_image_for_discord(path: str, max_bytes: int) -> str | None:

@@ -482,6 +482,7 @@ class WebScreenshotTool(BaseTool):
                 f"URL: {page.url}\n"
                 f"Size: {file_size / 1024:.1f} KB\n"
                 f"Full page: {full_page}",
+                image_path=str(filepath),
                 path=str(filepath),
                 title=title,
                 url=page.url,
