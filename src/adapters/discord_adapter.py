@@ -1599,6 +1599,14 @@ class DiscordAdapter(BaseAdapter):
                     session,
                     start_index=message_count_before,
                 )
+                tool_output_images = self._collect_recent_tool_output_images(
+                    session,
+                    start_index=message_count_before,
+                )
+                tool_call_images = self._collect_recent_tool_call_image_targets(
+                    session,
+                    start_index=message_count_before,
+                )
                 used_visual_tools = any(
                     (name in _COMPUTER_OPERATION_TOOL_NAMES) or (name in _WEB_OPERATION_TOOL_NAMES)
                     for name in recent_tool_names
@@ -1610,6 +1618,12 @@ class DiscordAdapter(BaseAdapter):
                     )
                     if auto_capture and auto_capture not in new_images:
                         new_images.append(auto_capture)
+                for image_path in tool_output_images:
+                    if image_path not in new_images:
+                        new_images.append(image_path)
+                for image_path in tool_call_images:
+                    if image_path not in new_images:
+                        new_images.append(image_path)
 
                 # Send response (split if needed)
                 max_len = self.config.adapters.discord.max_message_length
@@ -1887,6 +1901,130 @@ class DiscordAdapter(BaseAdapter):
             if len(issues) >= max(1, int(limit)):
                 break
         return issues
+
+    def _collect_recent_tool_output_images(
+        self,
+        session: Any,
+        *,
+        start_index: int,
+        limit: int = 5,
+    ) -> list[str]:
+        """Collect local image file paths mentioned in recent tool outputs."""
+        from pathlib import Path
+        import re
+
+        # Absolute Windows path + image extension
+        win_path_re = re.compile(
+            r"([A-Za-z]:[\\/][^\n\r\"<>|:*?]+?\.(?:png|jpg|jpeg|gif|webp|bmp))",
+            re.IGNORECASE,
+        )
+        # Absolute POSIX path + image extension (Wayland/Linux fallback outputs)
+        posix_path_re = re.compile(
+            r"(/[^ \n\r\t\"'<>]+?\.(?:png|jpg|jpeg|gif|webp|bmp))",
+            re.IGNORECASE,
+        )
+
+        found: list[str] = []
+        seen: set[str] = set()
+        msgs = getattr(session, "messages", []) or []
+        for msg in msgs[max(0, int(start_index or 0)):]:
+            role_obj = getattr(msg, "role", None)
+            role = str(getattr(role_obj, "value", role_obj or "")).strip().lower()
+            if role != "tool":
+                continue
+
+            text = self._extract_tool_message_text(getattr(msg, "content", ""))
+            if not text:
+                continue
+
+            candidates: list[str] = []
+            candidates.extend(m.group(1).strip() for m in win_path_re.finditer(text))
+            candidates.extend(m.group(1).strip() for m in posix_path_re.finditer(text))
+
+            for candidate in candidates:
+                cleaned = candidate.strip().strip("`'\"")
+                key = cleaned.lower()
+                if key in seen:
+                    continue
+                p = Path(cleaned)
+                if not p.is_file():
+                    continue
+                seen.add(key)
+                found.append(str(p))
+                if len(found) >= max(1, int(limit)):
+                    return found
+
+        return found
+
+    def _collect_recent_tool_call_image_targets(
+        self,
+        session: Any,
+        *,
+        start_index: int,
+        limit: int = 5,
+    ) -> list[str]:
+        """Collect local image paths referenced in recent assistant tool-call args."""
+        from pathlib import Path
+        import re
+
+        win_path_re = re.compile(
+            r"([A-Za-z]:[\\/][^\n\r\"<>|:*?]+?\.(?:png|jpg|jpeg|gif|webp|bmp))",
+            re.IGNORECASE,
+        )
+        posix_path_re = re.compile(
+            r"(/[^ \n\r\t\"'<>]+?\.(?:png|jpg|jpeg|gif|webp|bmp))",
+            re.IGNORECASE,
+        )
+
+        def _extract_candidates(text: str) -> list[str]:
+            out: list[str] = []
+            if not text:
+                return out
+            out.extend(m.group(1).strip() for m in win_path_re.finditer(text))
+            out.extend(m.group(1).strip() for m in posix_path_re.finditer(text))
+            return out
+
+        found: list[str] = []
+        seen: set[str] = set()
+        msgs = getattr(session, "messages", []) or []
+        for msg in msgs[max(0, int(start_index or 0)):]:
+            role_obj = getattr(msg, "role", None)
+            role = str(getattr(role_obj, "value", role_obj or "")).strip().lower()
+            if role != "assistant":
+                continue
+            tool_calls = getattr(msg, "tool_calls", None) or []
+            if not isinstance(tool_calls, list):
+                continue
+
+            for tc in tool_calls:
+                name = str(getattr(tc, "name", "") or "").strip()
+                args = getattr(tc, "arguments", {}) or {}
+                if not isinstance(args, dict):
+                    continue
+                candidates: list[str] = []
+                if name == "shell_execute":
+                    command = str(args.get("command", "") or "")
+                    candidates.extend(_extract_candidates(command))
+                else:
+                    for key in ("path", "output", "file", "filename", "image_path"):
+                        value = args.get(key)
+                        if isinstance(value, str):
+                            candidates.extend(_extract_candidates(value))
+
+                for candidate in candidates:
+                    cleaned = candidate.strip().strip("`'\"")
+                    key = cleaned.lower()
+                    if key in seen:
+                        continue
+                    p = Path(cleaned)
+                    if not p.is_file():
+                        continue
+                    seen.add(key)
+                    found.append(str(p))
+                    if len(found) >= max(1, int(limit)):
+                        return found
+
+        return found
 
     async def _capture_post_action_screenshot(
         self,
