@@ -89,6 +89,8 @@ def _detect_scale() -> float:
                         logical=f"{logical_w}x{logical_h}",
                     )
                 return scale
+    except SystemExit as e:
+        logger.debug("dpi_detect_mss_failed", error=str(e))
     except Exception as e:
         logger.debug("dpi_detect_mss_failed", error=str(e))
 

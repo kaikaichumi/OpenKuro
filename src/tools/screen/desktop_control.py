@@ -22,9 +22,29 @@ _MIN_ACTION_INTERVAL = 0.2
 _last_action_time: float = 0
 
 
+def _dependency_help_message(raw_error: str) -> str:
+    """Return actionable dependency help for common desktop-control failures."""
+    detail = (raw_error or "").strip()
+    lowered = detail.lower()
+    if "tkinter" in lowered or "mouseinfo" in lowered:
+        return (
+            "Desktop control dependencies are missing on Linux. "
+            "Install: sudo apt-get install python3-tk python3-dev"
+        )
+    if "pyautogui" in lowered:
+        return "pyautogui not installed. Install with: pip install pyautogui"
+    return f"Desktop control unavailable: {detail}" if detail else "Desktop control unavailable."
+
+
 def _setup_pyautogui():
     """Import and configure pyautogui with safety settings."""
-    import pyautogui
+    try:
+        import pyautogui
+    except SystemExit as e:
+        # mouseinfo may call sys.exit() when tkinter is missing on Linux.
+        raise ImportError(_dependency_help_message(str(e))) from None
+    except Exception as e:
+        raise ImportError(_dependency_help_message(str(e))) from None
 
     pyautogui.FAILSAFE = True  # Move mouse to top-left to abort
     pyautogui.PAUSE = 0.1  # Small pause between actions
@@ -105,10 +125,8 @@ class MouseActionTool(BaseTool):
 
         try:
             pyautogui = _setup_pyautogui()
-        except ImportError:
-            return ToolResult.fail(
-                "pyautogui not installed. Install with: pip install pyautogui"
-            )
+        except ImportError as e:
+            return ToolResult.fail(str(e))
 
         # Validate coordinates
         err = _validate_coordinates(x, y, pyautogui)
@@ -257,10 +275,8 @@ class KeyboardActionTool(BaseTool):
 
         try:
             pyautogui = _setup_pyautogui()
-        except ImportError:
-            return ToolResult.fail(
-                "pyautogui not installed. Install with: pip install pyautogui"
-            )
+        except ImportError as e:
+            return ToolResult.fail(str(e))
 
         await _rate_limit()
 
@@ -320,10 +336,8 @@ class ScreenInfoTool(BaseTool):
     async def execute(self, params: dict[str, Any], context: ToolContext) -> ToolResult:
         try:
             pyautogui = _setup_pyautogui()
-        except ImportError:
-            return ToolResult.fail(
-                "pyautogui not installed. Install with: pip install pyautogui"
-            )
+        except ImportError as e:
+            return ToolResult.fail(str(e))
 
         try:
             screen_w, screen_h = pyautogui.size()

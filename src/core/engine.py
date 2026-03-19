@@ -29,6 +29,7 @@ from src.core.model_router import (
 from src.core.security.approval import ApprovalPolicy
 from src.core.security.audit import AuditLog
 from src.core.security.egress import EgressBroker
+from src.core.security.install_guard import is_fix_mode_session, is_install_command
 from src.core.security.sandbox import Sandbox
 from src.core.security.sanitizer import Sanitizer
 from src.core.security.tool_policy import ToolPolicyCore
@@ -2271,6 +2272,11 @@ class Engine:
                 return await _deny(
                     "Command blocked by sandbox policy",
                     result_summary="Blocked by sandbox",
+                )
+            if is_install_command(command) and not is_fix_mode_session(session):
+                force_explicit_approval = True
+                forced_approval_reasons.append(
+                    "Dependency installation requires explicit approval (or run !fix install)."
                 )
 
         if (not full_access_mode) and (tool_call.name in ("file_read", "file_write", "file_search")):

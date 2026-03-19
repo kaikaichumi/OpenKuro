@@ -23,6 +23,7 @@ from src.core.model_router import ContextOverflowError, ModelRouter
 from src.core.security.approval import ApprovalPolicy
 from src.core.security.audit import AuditLog
 from src.core.security.egress import EgressBroker
+from src.core.security.install_guard import is_fix_mode_session, is_install_command
 from src.core.security.sandbox import Sandbox
 from src.core.security.sanitizer import Sanitizer
 from src.core.security.tool_policy import ToolPolicyCore
@@ -709,6 +710,15 @@ class AgentRunner:
             command = tool_call.arguments.get("command", "")
             if not self.sandbox.is_command_allowed(command):
                 return ToolResult.denied("Command blocked by sandbox policy")
+            install_check_session = self._parent_session or self.session
+            if (
+                is_install_command(command)
+                and not is_fix_mode_session(install_check_session)
+            ):
+                force_explicit_approval = True
+                forced_approval_reasons.append(
+                    "Dependency installation requires explicit approval (or run !fix install)."
+                )
 
         if (not full_access_mode) and (
             tool_call.name in ("file_read", "file_write", "file_search")

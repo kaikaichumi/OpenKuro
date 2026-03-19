@@ -24,6 +24,7 @@ from src.adapters.base import BaseAdapter
 from src.config import KuroConfig
 from src.core.agents import AgentRunner
 from src.core.engine import ApprovalCallback, Engine
+from src.core.security.install_guard import is_dependency_error_text
 from src.core.security.approval import ApprovalPolicy
 from src.core.types import AgentDefinition, Session
 from src.openai_catalog import (
@@ -37,7 +38,7 @@ from src.tools.base import RiskLevel, ToolContext
 
 logger = structlog.get_logger()
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_FIX_SCOPES = {"full", "errors", "performance", "config"}
+_FIX_SCOPES = {"full", "errors", "performance", "config", "install"}
 _COMPUTER_OPERATION_TOOL_NAMES = {
     "computer_use",
     "mouse_action",
@@ -698,6 +699,11 @@ class DiscordAdapter(BaseAdapter):
             "After fixing, validate with concrete checks/tests and report exact changes.",
             "Final report must include: root cause, actions taken, verification results, and remaining risks.",
         ]
+        if scope == "install":
+            lines.append(
+                "Focus on dependency and environment setup first: detect missing packages, "
+                "install only what is necessary, and verify each installed dependency."
+            )
         detail_text = detail.strip()
         if detail_text:
             lines.append(f"User-provided repair request: {detail_text}")
@@ -746,6 +752,8 @@ class DiscordAdapter(BaseAdapter):
             has_detail=bool(detail.strip()),
         )
 
+        previous_fix_mode = bool(session.metadata.get("_kuro_fix_mode", False))
+        session.metadata["_kuro_fix_mode"] = True
         try:
             runner = AgentRunner(
                 definition=defn,
@@ -775,6 +783,11 @@ class DiscordAdapter(BaseAdapter):
                 error=str(e),
             )
             return f"\u274c Fix agent failed: {str(e)[:300]}"
+        finally:
+            if previous_fix_mode:
+                session.metadata["_kuro_fix_mode"] = True
+            else:
+                session.metadata.pop("_kuro_fix_mode", None)
 
     async def _maybe_auto_repair(
         self,
@@ -890,11 +903,13 @@ class DiscordAdapter(BaseAdapter):
                 f"`{prefix}costs` — Token usage & cost breakdown\n"
                 f"`{prefix}security` — Security report\n"
                 f"`{prefix}fix [scope] [issue/goal]` - Run dedicated fix agent (temporary full access)\n"
+                f"`{prefix}fix install <dependency/issue>` - Install missing dependencies via fix flow\n"
                 f"`{prefix}clear` — Clear conversation history\n"
                 f"`{prefix}trust` — Show/set trust level\n\n"
                 f"**Usage:**\n"
                 f"- In DMs: just type your message\n"
-                f"- In servers: mention me or use commands"
+                f"- In servers: mention me or use commands\n"
+                f"- Install commands always ask approval unless using `{prefix}fix`"
             )
 
         elif cmd == "model":
@@ -1511,6 +1526,10 @@ class DiscordAdapter(BaseAdapter):
                     session,
                     start_index=message_count_before,
                 )
+                dependency_issues = self._collect_recent_dependency_issues(
+                    session,
+                    start_index=message_count_before,
+                )
                 used_visual_tools = any(
                     (name in _COMPUTER_OPERATION_TOOL_NAMES) or (name in _WEB_OPERATION_TOOL_NAMES)
                     for name in recent_tool_names
@@ -1560,6 +1579,23 @@ class DiscordAdapter(BaseAdapter):
 
                 # Send generated images as attachments
                 await self._send_images(message.channel, new_images)
+
+                if dependency_issues:
+                    issue_lines = "\n".join(f"- {item}" for item in dependency_issues)
+                    await self._send_chunked_message(
+                        message.channel,
+                        (
+                            "\u26a0\ufe0f \u5075\u6e2c\u5230\u7f3a\u5c11\u4f9d\u8cf4\u5957\u4ef6\uff1a\n"
+                            f"{issue_lines}\n\n"
+                            "\u4f60\u53ef\u4ee5\u9078\u64c7\uff1a\n"
+                            "1. \u4f7f\u7528 `!fix install <\u554f\u984c/\u4f9d\u8cf4>` \u7531\u4fee\u5fa9\u4ee3\u7406\u5b89\u88dd\n"
+                            "2. \u76f4\u63a5\u8981\u6c42\u6211\u5b89\u88dd\uff0c\u6211\u6703\u5148\u8df3\u51fa Allow/Deny \u6b0a\u9650\u78ba\u8a8d"
+                        ),
+                        fallback=(
+                            "\u26a0\ufe0f \u5075\u6e2c\u5230\u4f9d\u8cf4\u7f3a\u5931\uff0c"
+                            "\u8acb\u7528 !fix install \u6216\u5728\u5b89\u88dd\u6b0a\u9650\u8996\u7a97\u9078\u64c7 Allow\u3002"
+                        ),
+                    )
 
             except Exception as e:
                 session.metadata["_discord_error_streak"] = int(
@@ -1732,6 +1768,56 @@ class DiscordAdapter(BaseAdapter):
             if name:
                 names.append(name)
         return names
+
+    @staticmethod
+    def _extract_tool_message_text(content: Any) -> str:
+        """Extract plain text from a tool message content payload."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            chunks: list[str] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") != "text":
+                    continue
+                text = str(part.get("text", "") or "").strip()
+                if text:
+                    chunks.append(text)
+            return "\n".join(chunks).strip()
+        return ""
+
+    def _collect_recent_dependency_issues(
+        self,
+        session: Any,
+        *,
+        start_index: int,
+        limit: int = 3,
+    ) -> list[str]:
+        """Collect recent dependency-install hints from tool error messages."""
+        issues: list[str] = []
+        seen: set[str] = set()
+        msgs = getattr(session, "messages", []) or []
+        for msg in msgs[max(0, int(start_index or 0)):]:
+            role_obj = getattr(msg, "role", None)
+            role = str(getattr(role_obj, "value", role_obj or "")).strip().lower()
+            if role != "tool":
+                continue
+            text = self._extract_tool_message_text(getattr(msg, "content", ""))
+            if not is_dependency_error_text(text):
+                continue
+            tool_name = str(getattr(msg, "name", "") or "tool").strip() or "tool"
+            first_line = text.splitlines()[0].strip() if text else ""
+            preview = first_line[:160] + ("..." if len(first_line) > 160 else "")
+            item = f"`{tool_name}`: {preview}" if preview else f"`{tool_name}`: dependency missing"
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            issues.append(item)
+            if len(issues) >= max(1, int(limit)):
+                break
+        return issues
 
     async def _capture_post_action_screenshot(
         self,
