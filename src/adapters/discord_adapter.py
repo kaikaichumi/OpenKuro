@@ -690,6 +690,39 @@ class DiscordAdapter(BaseAdapter):
             default_model = default_model.split(":", 1)[1].strip()
         return default_model or "gemini/gemini-3-flash-preview"
 
+    def _resolve_fix_agent_auth_mode(self, session: Session, fix_model: str) -> str:
+        """Resolve auth mode for fix agent model (oauth/api)."""
+        model_name = str(fix_model or "").strip()
+        if not model_name.startswith("openai/"):
+            return "api"
+
+        diag = getattr(self.config, "diagnostics", None)
+        repair_model_raw = str(getattr(diag, "repair_model", "main") or "main").strip().lower()
+        if repair_model_raw.startswith("oauth:"):
+            return "oauth"
+        if repair_model_raw.startswith("api:"):
+            return "api"
+
+        default_raw = str(self.config.models.default or "").strip().lower()
+        if default_raw.startswith("oauth:"):
+            return "oauth"
+        if default_raw.startswith("api:"):
+            return "api"
+
+        session_mode = str(session.metadata.get("model_auth_mode", "api")).strip().lower()
+        if session_mode in {"oauth", "api"}:
+            return session_mode
+        return "api"
+
+    @staticmethod
+    def _resolve_fix_agent_temperature(model_name: str) -> float:
+        """Resolve a provider-safe temperature for the fix agent model."""
+        model_lower = str(model_name or "").strip().lower()
+        # OpenAI GPT-5 family currently accepts only temperature=1.
+        if "gpt-5" in model_lower:
+            return 1.0
+        return 0.2
+
     @staticmethod
     def _build_fix_agent_task(scope: str, detail: str) -> str:
         lines = [
@@ -719,6 +752,8 @@ class DiscordAdapter(BaseAdapter):
         """Run a dedicated high-privilege fix agent for manual !fix command."""
         target_engine = self.effective_engine
         fix_model = self._resolve_fix_agent_model()
+        fix_auth_mode = self._resolve_fix_agent_auth_mode(session, fix_model)
+        fix_temperature = self._resolve_fix_agent_temperature(fix_model)
         task = self._build_fix_agent_task(scope, detail)
 
         # Isolated security override for this run only.
@@ -737,7 +772,7 @@ class DiscordAdapter(BaseAdapter):
                 "make concrete fixes instead of only giving advice."
             ),
             max_tool_rounds=8,
-            temperature=0.2,
+            temperature=fix_temperature,
             complexity_tier="expert",
             created_by="runtime",
             inherit_context=True,
@@ -748,6 +783,8 @@ class DiscordAdapter(BaseAdapter):
             "discord_fix_agent_start",
             session_id=session.id,
             model=fix_model,
+            auth_mode=fix_auth_mode,
+            temperature=fix_temperature,
             scope=scope,
             has_detail=bool(detail.strip()),
         )
@@ -755,6 +792,37 @@ class DiscordAdapter(BaseAdapter):
         previous_fix_mode = bool(session.metadata.get("_kuro_fix_mode", False))
         session.metadata["_kuro_fix_mode"] = True
         try:
+            model_ctx = contextlib.nullcontext()
+            if fix_auth_mode == "oauth" and isinstance(fix_model, str) and fix_model.startswith("openai/"):
+                if not is_codex_oauth_model_supported(fix_model):
+                    return f"\u274c OAuth model not supported for fix agent: `{fix_model}`"
+                if not self._oauth:
+                    return "\u274c OpenAI OAuth support is unavailable in this runtime."
+                auth_context = await self._get_oauth_auth_context()
+                if not auth_context or not auth_context.get("access_token"):
+                    return "\u274c OpenAI OAuth token missing. Run `codex login` first."
+                provider_ctx = {
+                    "mode": "codex_oauth",
+                    "access_token": auth_context.get("access_token", ""),
+                    "account_id": auth_context.get("account_id", ""),
+                    "plan_type": auth_context.get("plan_type", ""),
+                    "email": auth_context.get("email", ""),
+                    "originator": "codex_cli_rs",
+                }
+                session.metadata["_openai_oauth_provider_ctx"] = provider_ctx
+                if hasattr(target_engine.model, "provider_auth_override"):
+                    model_ctx = target_engine.model.provider_auth_override("openai", provider_ctx)
+                elif hasattr(target_engine.model, "provider_api_key_override"):
+                    model_ctx = target_engine.model.provider_api_key_override(
+                        "openai",
+                        str(auth_context.get("access_token", "")),
+                    )
+                logger.info(
+                    "discord_fix_agent_oauth_model_request",
+                    session_id=session.id,
+                    model=fix_model,
+                )
+
             runner = AgentRunner(
                 definition=defn,
                 model_router=target_engine.model,
@@ -768,7 +836,8 @@ class DiscordAdapter(BaseAdapter):
                 depth=0,
                 agent_manager=getattr(target_engine, "agent_manager", None),
             )
-            result = await runner.run(task)
+            with model_ctx:
+                result = await runner.run(task)
             text = result if isinstance(result, str) else str(result)
             clean = (text or "").strip()
             if clean:
