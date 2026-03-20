@@ -506,7 +506,9 @@
         "messages": "訊息",
         "delegations": "委派",
         "eventTimeline": "事件時間線",
-        "noEvents": "尚無事件"
+        "noEvents": "尚無事件",
+        "viewCommand": "查看指令",
+        "hideCommand": "隱藏指令"
     },
     "common": {
         "loading": "載入中...",

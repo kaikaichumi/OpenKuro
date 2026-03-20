@@ -7,6 +7,11 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 <img width="850" height="300" alt="Screenshot 2026-03-10 145048" src="https://github.com/user-attachments/assets/d1dc88a4-0462-43d2-8358-7164ccac6696" />
 
+## Architecture Docs
+
+- 系統架構說明請參考 => `docs/SYSTEM_ARCHITECTURE.md`
+- 記憶架構說明請參考 => `docs/MEMORY_ARCHITECTURE.md`
+
 
 ---
 

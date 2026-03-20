@@ -761,6 +761,33 @@ class Engine:
             except Exception:
                 pass
 
+    def _build_tool_event_metadata(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Build dashboard-safe metadata for tool events."""
+        meta: dict[str, Any] = {"tool_name": tool_name}
+        args = arguments if isinstance(arguments, dict) else {}
+
+        # Surface shell command details in dashboard timeline so users can inspect
+        # what was executed, while still passing through sanitizer redaction.
+        if tool_name == "shell_execute":
+            raw_cmd = args.get("command")
+            if isinstance(raw_cmd, str):
+                cmd = raw_cmd.strip()
+                if cmd:
+                    safe_cmd = self.sanitizer.sanitize_tool_output(cmd)
+                    if len(safe_cmd) > 2000:
+                        safe_cmd = safe_cmd[:2000] + "..."
+                    meta["command"] = safe_cmd
+
+            raw_workdir = args.get("working_directory")
+            if isinstance(raw_workdir, str) and raw_workdir.strip():
+                meta["working_directory"] = raw_workdir.strip()[:512]
+
+        return meta
+
     async def _check_budget_stop_guard(self, model: str, session: Session) -> str | None:
         """Return a user-facing block message when a hard budget limit is exceeded."""
         manager = getattr(self, "budget_manager", None)
@@ -1409,11 +1436,15 @@ class Engine:
                 context_messages.append(assistant_msg)
 
                 for tc in response.tool_calls:
+                    tool_event_meta = self._build_tool_event_metadata(
+                        tc.name,
+                        tc.arguments if isinstance(tc.arguments, dict) else None,
+                    )
                     self._emit(
                         "tool_call",
                         agent_id=event_agent_id,
                         content=f"Tool: {tc.name}",
-                        metadata={"tool_name": tc.name},
+                        metadata=tool_event_meta,
                     )
                     result = await self._handle_tool_call(
                         tc,

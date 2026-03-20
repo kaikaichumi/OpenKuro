@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1120" viewBox="0 0 1680 1120">
+  <defs>
+    <style>
+      .title { font: 700 34px 'Segoe UI', Arial, sans-serif; fill: #111827; }
+      .subtitle { font: 500 18px 'Segoe UI', Arial, sans-serif; fill: #374151; }
+      .box { fill: #f8fafc; stroke: #2563eb; stroke-width: 2; rx: 12; ry: 12; }
+      .core { fill: #eff6ff; stroke: #1d4ed8; stroke-width: 2.4; rx: 12; ry: 12; }
+      .maint { fill: #ecfeff; stroke: #0891b2; stroke-width: 2; rx: 12; ry: 12; }
+      .mode { fill: #f5f3ff; stroke: #7c3aed; stroke-width: 2; rx: 12; ry: 12; }
+      .txt { font: 600 16px 'Segoe UI', Arial, sans-serif; fill: #111827; }
+      .small { font: 500 14px 'Segoe UI', Arial, sans-serif; fill: #374151; }
+      .edge { stroke: #4b5563; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 z" fill="#4b5563"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1680" height="1120" fill="#ffffff"/>
+  <text x="40" y="52" class="title">OpenKuro Memory Architecture (Current)</text>
+  <text x="40" y="82" class="subtitle">Session context, persistent memory, lifecycle, and learning pipeline</text>
+
+  <!-- Top flow -->
+  <rect class="box" x="40" y="130" width="260" height="78"/>
+  <text class="txt" x="68" y="162">User</text>
+  <text class="small" x="68" y="186">Discord / Web / CLI</text>
+
+  <rect class="box" x="340" y="130" width="300" height="78"/>
+  <text class="txt" x="364" y="162">Adapter Session Map</text>
+  <text class="small" x="364" y="186">in-memory Session</text>
+
+  <rect class="core" x="680" y="130" width="300" height="78"/>
+  <text class="txt" x="708" y="162">Engine.process_message</text>
+  <text class="small" x="708" y="186">LLM + tool orchestration</text>
+
+  <path class="edge" d="M300 169 H340"/>
+  <path class="edge" d="M640 169 H680"/>
+
+  <!-- Engine outputs -->
+  <rect class="box" x="1040" y="72" width="290" height="76"/>
+  <text class="txt" x="1064" y="103">ConversationHistory</text>
+  <text class="small" x="1064" y="126">history.db (SQLite)</text>
+
+  <rect class="box" x="1040" y="168" width="290" height="76"/>
+  <text class="txt" x="1064" y="199">ActionLogger</text>
+  <text class="small" x="1064" y="222">action_logs/actions-*.jsonl</text>
+
+  <path class="edge" d="M980 150 C1005 130,1010 118,1040 110"/>
+  <path class="edge" d="M980 188 C1005 200,1010 206,1040 206"/>
+
+  <!-- MemoryManager -->
+  <rect class="core" x="680" y="300" width="340" height="88"/>
+  <text class="txt" x="705" y="334">MemoryManager.build_context</text>
+  <text class="small" x="705" y="358">system + memory + recent conversation</text>
+
+  <path class="edge" d="M830 208 V300"/>
+
+  <!-- Context components -->
+  <rect class="box" x="70" y="470" width="250" height="86"/>
+  <text class="txt" x="94" y="502">System Layer</text>
+  <text class="small" x="94" y="525">core/system prompt, skills,</text>
+  <text class="small" x="94" y="545">personality, current time</text>
+
+  <rect class="box" x="350" y="470" width="250" height="86"/>
+  <text class="txt" x="372" y="502">WorkingMemory</text>
+  <text class="small" x="372" y="525">sliding window trim</text>
+
+  <rect class="box" x="630" y="470" width="290" height="86"/>
+  <text class="txt" x="654" y="502">LongTermMemory</text>
+  <text class="small" x="654" y="525">Chroma vector_store +</text>
+  <text class="small" x="654" y="545">MEMORY.md + semantic search</text>
+
+  <rect class="box" x="950" y="470" width="250" height="86"/>
+  <text class="txt" x="974" y="502">Lessons Injection</text>
+  <text class="small" x="974" y="525">memory/lessons.json</text>
+
+  <rect class="box" x="1230" y="470" width="250" height="86"/>
+  <text class="txt" x="1254" y="502">ContextCompressor</text>
+  <text class="small" x="1254" y="525">summarize old turns</text>
+
+  <path class="edge" d="M850 388 V430 H775 V470"/>
+  <path class="edge" d="M850 388 V430 H195 V470"/>
+  <path class="edge" d="M850 388 V430 H475 V470"/>
+  <path class="edge" d="M850 388 V430 H1075 V470"/>
+  <path class="edge" d="M850 388 V430 H1355 V470"/>
+  <path class="edge" d="M1355 556 V620 H775 V556"/>
+
+  <!-- Scheduler / maintenance -->
+  <rect class="maint" x="70" y="700" width="290" height="84"/>
+  <text class="txt" x="96" y="732">Scheduler (internal tasks)</text>
+  <text class="small" x="96" y="756">_kuro_lifecycle_daily / weekly</text>
+
+  <rect class="maint" x="430" y="700" width="280" height="84"/>
+  <text class="txt" x="456" y="732">MemoryLifecycle</text>
+  <text class="small" x="456" y="756">decay / prune / consolidate</text>
+
+  <rect class="maint" x="770" y="700" width="280" height="84"/>
+  <text class="txt" x="796" y="732">LearningEngine.daily_analysis</text>
+  <text class="small" x="796" y="756">pattern learning from logs</text>
+
+  <path class="edge" d="M360 742 H430"/>
+  <path class="edge" d="M360 772 V810 H740 V742 H770"/>
+  <path class="edge" d="M570 700 V620 H760 V556"/>
+  <path class="edge" d="M910 700 V620 H1060 V556"/>
+  <path class="edge" d="M1050 742 H1080 V820 H1520 V206 H1330"/>
+
+  <!-- Tools -->
+  <rect class="box" x="1120" y="700" width="360" height="84"/>
+  <text class="txt" x="1148" y="732">Memory Tools</text>
+  <text class="small" x="1148" y="756">memory_store / memory_search</text>
+  <path class="edge" d="M1300 700 V640 H880 V556"/>
+
+  <!-- Agent instances -->
+  <rect class="mode" x="70" y="900" width="350" height="90"/>
+  <text class="txt" x="96" y="934">AgentInstanceManager</text>
+  <text class="small" x="96" y="958">per-instance engine + memory mode</text>
+
+  <rect class="mode" x="470" y="860" width="220" height="70"/>
+  <text class="txt" x="496" y="902">shared</text>
+
+  <rect class="mode" x="470" y="940" width="220" height="70"/>
+  <text class="txt" x="496" y="982">independent</text>
+  <text class="small" x="496" y="1002">own history.db + memory/</text>
+
+  <rect class="mode" x="730" y="900" width="220" height="70"/>
+  <text class="txt" x="756" y="942">linked</text>
+  <text class="small" x="756" y="962">own history + shared longterm</text>
+
+  <path class="edge" d="M420 925 H445 V895 H470"/>
+  <path class="edge" d="M420 955 H470"/>
+  <path class="edge" d="M420 980 V1030 H730 V935"/>
+</svg>

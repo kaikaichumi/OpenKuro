@@ -234,13 +234,48 @@ function appendTimelineEntry(evt, prepend = true) {
     const agent = evt.source_agent || "main";
     const target = evt.target_agent ? " -> " + escapeHtml(evt.target_agent) : "";
 
+    const shellCommand = getShellCommandForEvent(evt);
+    const detailId = shellCommand ? `timeline-cmd-${Math.random().toString(36).slice(2, 10)}` : "";
+    if (shellCommand) {
+        div.classList.add("has-detail");
+    }
+
     div.innerHTML = `
         <span class="timeline-icon">${icon}</span>
         <span class="timeline-time">${ts}</span>
         <span class="timeline-agent">${escapeHtml(agent)}${target}</span>
         <span class="timeline-type badge">${evt.event_type || "?"}</span>
         <span class="timeline-content">${escapeHtml(evt.content || "")}</span>
+        ${shellCommand ? `
+        <button
+            type="button"
+            class="timeline-detail-toggle"
+            data-toggle="shell-command"
+            aria-expanded="false"
+            aria-controls="${detailId}"
+        >${escapeHtml(t("dashboard.viewCommand") || "查看指令")}</button>
+        <pre id="${detailId}" class="timeline-detail" hidden>${escapeHtml(shellCommand)}</pre>
+        ` : ""}
     `;
+
+    if (shellCommand) {
+        const toggleBtn = div.querySelector('[data-toggle="shell-command"]');
+        const detailEl = div.querySelector(".timeline-detail");
+        if (toggleBtn && detailEl) {
+            toggleBtn.addEventListener("click", () => {
+                const isHidden = detailEl.hasAttribute("hidden");
+                if (isHidden) {
+                    detailEl.removeAttribute("hidden");
+                    toggleBtn.setAttribute("aria-expanded", "true");
+                    toggleBtn.textContent = t("dashboard.hideCommand") || "隱藏指令";
+                } else {
+                    detailEl.setAttribute("hidden", "");
+                    toggleBtn.setAttribute("aria-expanded", "false");
+                    toggleBtn.textContent = t("dashboard.viewCommand") || "查看指令";
+                }
+            });
+        }
+    }
 
     if (prepend && eventTimeline.firstChild) {
         eventTimeline.insertBefore(div, eventTimeline.firstChild);
@@ -250,6 +285,13 @@ function appendTimelineEntry(evt, prepend = true) {
     } else {
         eventTimeline.appendChild(div);
     }
+}
+
+function getShellCommandForEvent(evt) {
+    if (!evt || evt.event_type !== "tool_call") return "";
+    const meta = evt.metadata && typeof evt.metadata === "object" ? evt.metadata : {};
+    if (meta.tool_name !== "shell_execute") return "";
+    return typeof meta.command === "string" ? meta.command : "";
 }
 
 const EVENT_ICONS = {

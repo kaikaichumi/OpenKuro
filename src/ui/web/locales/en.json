@@ -564,7 +564,9 @@
         "messages": "Messages",
         "delegations": "Delegations",
         "eventTimeline": "Event Timeline",
-        "noEvents": "No events yet"
+        "noEvents": "No events yet",
+        "viewCommand": "View command",
+        "hideCommand": "Hide command"
     },
     "common": {
         "loading": "Loading...",
