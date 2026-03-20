@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -182,15 +182,22 @@ class LearningEngine:
         return {"status": "ok", **stats}
 
     def _read_today_logs(self) -> list[dict[str, Any]]:
-        """Read action log entries from today."""
+        """Read today's action log entries (UTC day, tool_call records only)."""
         log_dir = get_kuro_home() / "action_logs"
         if not log_dir.exists():
             return []
 
-        today = datetime.now().strftime("%Y-%m-%d")
+        today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         logs: list[dict[str, Any]] = []
+        today_files = sorted(log_dir.glob(f"actions-{today_utc}*.jsonl"))
+        # Fallback: if today file does not exist yet, inspect recent logs
+        # and rely on entry timestamp filtering below.
+        candidate_files = today_files or sorted(
+            log_dir.glob("actions-*.jsonl"),
+            reverse=True,
+        )[:2]
 
-        for log_file in log_dir.glob("*.jsonl"):
+        for log_file in candidate_files:
             try:
                 with open(log_file, encoding="utf-8") as f:
                     for line in f:
@@ -199,9 +206,17 @@ class LearningEngine:
                             continue
                         try:
                             entry = json.loads(line)
-                            ts = entry.get("timestamp", "")
-                            if ts.startswith(today):
-                                logs.append(entry)
+                            if entry.get("type") not in (None, "tool_call"):
+                                continue
+                            ts = str(entry.get("ts") or entry.get("timestamp") or "").strip()
+                            if ts:
+                                if ts.startswith(today_utc):
+                                    logs.append(entry)
+                            else:
+                                # Backward compatibility: if timestamp is missing,
+                                # trust today's rotated file name.
+                                if log_file.stem.startswith(f"actions-{today_utc}"):
+                                    logs.append(entry)
                         except json.JSONDecodeError:
                             continue
             except Exception:
@@ -218,7 +233,7 @@ class LearningEngine:
 
         for entry in logs:
             if entry.get("status") == "error" or entry.get("error"):
-                tool = entry.get("tool_name", "unknown")
+                tool = entry.get("tool_name") or entry.get("tool") or "unknown"
                 error_msg = entry.get("error", "unknown error")
                 # Normalize error message (remove specific values)
                 normalized = f"{tool}: {error_msg[:100]}"
@@ -236,7 +251,7 @@ class LearningEngine:
         durations: defaultdict[str, list[int]] = defaultdict(list)
 
         for entry in logs:
-            tool = entry.get("tool_name")
+            tool = entry.get("tool_name") or entry.get("tool")
             duration = entry.get("duration_ms")
             if tool and duration and entry.get("status") == "ok":
                 durations[tool].append(duration)
