@@ -139,6 +139,27 @@ class ToolSystem:
         if tool is None:
             return ToolResult.fail(f"Unknown tool: {tool_name}")
 
+        guard = getattr(context, "capability_guard", None)
+        if guard is not None and bool(getattr(guard, "enabled", False)):
+            session_obj = getattr(context, "session", None)
+            adapter = str(getattr(session_obj, "adapter", "") or "")
+            ok, reason, _claims = guard.validate(
+                token=getattr(context, "capability_token", None),
+                tool_name=tool_name,
+                arguments=params,
+                session_id=str(getattr(context, "session_id", "") or ""),
+                adapter=adapter,
+                active_model=str(getattr(context, "active_model", "") or ""),
+            )
+            if not ok:
+                logger.warning(
+                    "capability_token_denied",
+                    tool=tool_name,
+                    reason=reason,
+                    session_id=str(getattr(context, "session_id", "") or ""),
+                )
+                return ToolResult.denied(f"Capability token invalid: {reason}")
+
         try:
             logger.info(
                 "tool_execute",

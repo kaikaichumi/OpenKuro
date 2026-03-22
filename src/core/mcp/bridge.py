@@ -9,6 +9,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 import structlog
 
@@ -21,6 +22,116 @@ from src.tools.mcp.proxy import MCPProxyTool
 logger = structlog.get_logger()
 
 _SAFE_ID_RE = re.compile(r"[^a-zA-Z0-9_]+")
+_PROXY_ENV_KEYS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+)
+
+
+def _local_no_proxy_defaults() -> list[str]:
+    """Default NO_PROXY patterns used when private network bypass is enabled."""
+    return [
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "*.local",
+        "10.*",
+        "192.168.*",
+        "172.16.*",
+        "172.17.*",
+        "172.18.*",
+        "172.19.*",
+        "172.20.*",
+        "172.21.*",
+        "172.22.*",
+        "172.23.*",
+        "172.24.*",
+        "172.25.*",
+        "172.26.*",
+        "172.27.*",
+        "172.28.*",
+        "172.29.*",
+        "172.30.*",
+        "172.31.*",
+    ]
+
+
+def _mask_proxy_url(proxy_url: str) -> str:
+    raw = str(proxy_url or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.hostname:
+        return raw[:120]
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme}://{parsed.hostname}{port}"
+
+
+def build_gateway_proxy_env_for_subprocess(
+    egress_broker: Any | None,
+    *,
+    inherited_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Build proxy env overrides for subprocesses under Lite Gateway policy.
+
+    Returns an empty dict when gateway routing should not be enforced.
+    """
+    if egress_broker is None:
+        return {}
+
+    if not bool(getattr(egress_broker, "gateway_enabled", False)):
+        return {}
+
+    mode = str(getattr(egress_broker, "gateway_mode", "enforce") or "enforce")
+    mode = mode.strip().lower()
+    if mode != "enforce":
+        return {}
+
+    proxy_url = str(getattr(egress_broker, "gateway_proxy_url", "") or "").strip()
+    if not proxy_url:
+        return {}
+
+    no_proxy_values: list[str] = []
+    bypass = getattr(egress_broker, "gateway_bypass_domains", []) or []
+    for item in bypass:
+        val = str(item or "").strip()
+        if val:
+            no_proxy_values.append(val)
+
+    include_private = bool(
+        getattr(egress_broker, "gateway_include_private_network", False)
+    )
+    if not include_private:
+        no_proxy_values.extend(_local_no_proxy_defaults())
+
+    inherited = inherited_env or {}
+    existing = str(
+        inherited.get("NO_PROXY")
+        or inherited.get("no_proxy")
+        or ""
+    ).strip()
+    if existing:
+        no_proxy_values.extend([v.strip() for v in existing.split(",") if v.strip()])
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for raw in no_proxy_values:
+        key = raw.lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(raw)
+
+    updates = {k: proxy_url for k in _PROXY_ENV_KEYS}
+    if deduped:
+        joined = ",".join(deduped)
+        updates["NO_PROXY"] = joined
+        updates["no_proxy"] = joined
+    return updates
 
 
 def _safe_slug(value: str) -> str:
@@ -133,8 +244,14 @@ class _ServerRuntime:
 class _StdioMCPClient:
     """Minimal stdio JSON-RPC client for MCP tools."""
 
-    def __init__(self, config: MCPServerConfig) -> None:
+    def __init__(
+        self,
+        config: MCPServerConfig,
+        *,
+        egress_broker: Any | None = None,
+    ) -> None:
         self.config = config
+        self._egress_broker = egress_broker
         self._proc: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task | None = None
         self._stderr_task: asyncio.Task | None = None
@@ -153,6 +270,17 @@ class _StdioMCPClient:
 
         env = os.environ.copy()
         env.update({str(k): str(v) for k, v in self.config.env.items()})
+        gateway_env = build_gateway_proxy_env_for_subprocess(
+            self._egress_broker,
+            inherited_env=env,
+        )
+        if gateway_env:
+            env.update(gateway_env)
+            logger.info(
+                "mcp_gateway_proxy_applied",
+                server=self.config.name,
+                proxy=_mask_proxy_url(gateway_env.get("HTTPS_PROXY", "")),
+            )
         self._proc = await asyncio.create_subprocess_exec(
             self.config.command,
             *self.config.args,
@@ -375,8 +503,14 @@ class _StdioMCPClient:
 class MCPBridgeManager:
     """Manage MCP connections and register proxy tools into ToolRegistry."""
 
-    def __init__(self, config: MCPConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: MCPConfig | None = None,
+        *,
+        egress_broker: Any | None = None,
+    ) -> None:
         self._config = config or MCPConfig()
+        self._egress_broker = egress_broker
         self._servers: dict[str, _ServerRuntime] = {}
         self._bindings: dict[str, _ToolBinding] = {}
         self._registered_tool_names: list[str] = []
@@ -386,8 +520,19 @@ class MCPBridgeManager:
         self._initialized = False
         self._init_lock = asyncio.Lock()
 
-    def update_config(self, config: MCPConfig) -> None:
+    def update_config(
+        self,
+        config: MCPConfig,
+        *,
+        egress_broker: Any | None = None,
+    ) -> None:
         self._config = config
+        if egress_broker is not None:
+            self._egress_broker = egress_broker
+        self._reload_requested = True
+
+    def set_egress_broker(self, egress_broker: Any | None) -> None:
+        self._egress_broker = egress_broker
         self._reload_requested = True
 
     async def ensure_initialized(self, registry: ToolRegistry) -> None:
@@ -430,7 +575,10 @@ class MCPBridgeManager:
                     self._servers[server.name] = runtime
                     continue
 
-                client = _StdioMCPClient(server)
+                client = _StdioMCPClient(
+                    server,
+                    egress_broker=self._egress_broker,
+                )
                 try:
                     await client.start()
                     tools = await client.list_tools()
@@ -574,9 +722,13 @@ class MCPBridgeManager:
         self._servers.clear()
 
 
-async def discover_mcp_tools(server_cfg: MCPServerConfig) -> list[dict[str, Any]]:
+async def discover_mcp_tools(
+    server_cfg: MCPServerConfig,
+    *,
+    egress_broker: Any | None = None,
+) -> list[dict[str, Any]]:
     """One-shot MCP tool discovery for UI testing/debug."""
-    client = _StdioMCPClient(server_cfg)
+    client = _StdioMCPClient(server_cfg, egress_broker=egress_broker)
     try:
         await client.start()
         return await client.list_tools()

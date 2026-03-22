@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import ipaddress
+import threading
+from collections import deque
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -69,6 +73,10 @@ def _host_matches_rule(host: str, rule: str) -> bool:
 class EgressBroker:
     """Evaluate outbound URLs against global and tool-specific policy."""
 
+    _GLOBAL_GATEWAY_LOGS: deque[dict[str, Any]] = deque(maxlen=2000)
+    _GLOBAL_LOCK = threading.Lock()
+    _GATEWAY_AUDIT_CALLBACK: Any = None
+
     def __init__(self, config: Any | None = None) -> None:
         self._config = config
 
@@ -82,6 +90,39 @@ class EgressBroker:
             return max(0, int(getattr(self._config, "max_response_bytes", 0) or 0))
         except Exception:
             return 0
+
+    @property
+    def gateway_enabled(self) -> bool:
+        return bool(getattr(self._config, "gateway_enabled", False))
+
+    @property
+    def gateway_mode(self) -> str:
+        mode = str(getattr(self._config, "gateway_mode", "enforce") or "enforce")
+        mode = mode.strip().lower()
+        return mode if mode in {"enforce", "shadow"} else "enforce"
+
+    @property
+    def gateway_proxy_url(self) -> str:
+        return str(getattr(self._config, "gateway_proxy_url", "") or "").strip()
+
+    @property
+    def gateway_bypass_domains(self) -> list[str]:
+        return self._rule_list("gateway_bypass_domains")
+
+    @property
+    def gateway_include_private_network(self) -> bool:
+        return bool(getattr(self._config, "gateway_include_private_network", False))
+
+    @property
+    def gateway_rollout_percent(self) -> int:
+        try:
+            return max(0, min(100, int(getattr(self._config, "gateway_rollout_percent", 100) or 0)))
+        except Exception:
+            return 100
+
+    @property
+    def gateway_rollout_seed(self) -> str:
+        return str(getattr(self._config, "gateway_rollout_seed", "kuro-gateway-rollout") or "kuro-gateway-rollout")
 
     @staticmethod
     def _normalize_rules(values: list[str] | None) -> list[str]:
@@ -204,3 +245,205 @@ class EgressBroker:
                 raise ValueError(f"Response exceeded max_response_bytes={limit}")
         return bytes(buf)
 
+    def resolve_proxy(self, url: str, *, tool_name: str = "") -> str | None:
+        """Return gateway proxy URL when request should be routed via Lite Gateway.
+
+        Rules:
+        - Disabled when gateway_enabled is false or gateway_proxy_url is empty.
+        - Respect gateway_bypass_domains.
+        - Private-network hosts are bypassed unless gateway_include_private_network=true.
+        """
+        proxy_url = self.gateway_proxy_url
+        mode = self.gateway_mode
+        if not self.gateway_enabled:
+            return None
+
+        raw = str(url or "").strip()
+        if not proxy_url:
+            self._record_gateway_decision(
+                tool_name=tool_name,
+                target_url=raw,
+                host="",
+                route="direct",
+                reason="missing_proxy_url",
+            )
+            return None
+
+        if not raw:
+            self._record_gateway_decision(
+                tool_name=tool_name,
+                target_url=raw,
+                host="",
+                route="direct",
+                reason="invalid_url",
+            )
+            return None
+        parsed = urlparse(raw)
+        host = str(parsed.hostname or "").lower().strip(".")
+        if not host:
+            self._record_gateway_decision(
+                tool_name=tool_name,
+                target_url=raw,
+                host="",
+                route="direct",
+                reason="missing_host",
+            )
+            return None
+
+        bypass_rules = self.gateway_bypass_domains
+        if self._matches_any(host, bypass_rules):
+            self._record_gateway_decision(
+                tool_name=tool_name,
+                target_url=raw,
+                host=host,
+                route="direct",
+                reason="bypass_domain",
+                proxy_url=proxy_url,
+            )
+            return None
+
+        if not self.gateway_include_private_network and _is_private_host(host):
+            self._record_gateway_decision(
+                tool_name=tool_name,
+                target_url=raw,
+                host=host,
+                route="direct",
+                reason="private_network_bypass",
+                proxy_url=proxy_url,
+            )
+            return None
+
+        if mode == "shadow":
+            self._record_gateway_decision(
+                tool_name=tool_name,
+                target_url=raw,
+                host=host,
+                route="shadow",
+                reason="shadow_mode_candidate",
+                proxy_url=proxy_url,
+            )
+            return None
+
+        if not self._rollout_selected(
+            tool_name=tool_name,
+            target_url=raw,
+            host=host,
+        ):
+            self._record_gateway_decision(
+                tool_name=tool_name,
+                target_url=raw,
+                host=host,
+                route="direct",
+                reason="rollout_not_selected",
+                proxy_url=proxy_url,
+            )
+            return None
+
+        self._record_gateway_decision(
+            tool_name=tool_name,
+            target_url=raw,
+            host=host,
+            route="gateway",
+            reason="routed_via_gateway",
+            proxy_url=proxy_url,
+        )
+        return proxy_url
+
+    @staticmethod
+    def _sanitize_target_url(url: str) -> str:
+        """Return a safe, compact target URL for UI logs (without query/fragment)."""
+        raw = str(url or "").strip()
+        if not raw:
+            return ""
+        parsed = urlparse(raw)
+        scheme = str(parsed.scheme or "").lower()
+        host = str(parsed.hostname or "").strip()
+        if not host:
+            return raw[:220]
+        port = f":{parsed.port}" if parsed.port else ""
+        path = str(parsed.path or "/")
+        compact = f"{scheme}://{host}{port}{path}"
+        if len(compact) > 220:
+            return compact[:217] + "..."
+        return compact
+
+    @staticmethod
+    def _sanitize_proxy_url(proxy_url: str | None) -> str:
+        """Mask proxy URL to avoid leaking credentials."""
+        raw = str(proxy_url or "").strip()
+        if not raw:
+            return ""
+        parsed = urlparse(raw)
+        if not parsed.scheme or not parsed.hostname:
+            return raw[:120]
+        port = f":{parsed.port}" if parsed.port else ""
+        return f"{parsed.scheme}://{parsed.hostname}{port}"
+
+    def _rollout_selected(
+        self,
+        *,
+        tool_name: str,
+        target_url: str,
+        host: str,
+    ) -> bool:
+        """Deterministic rollout bucket selection for enforce-mode routing."""
+        percent = self.gateway_rollout_percent
+        if percent >= 100:
+            return True
+        if percent <= 0:
+            return False
+        seed = self.gateway_rollout_seed
+        key = (
+            f"{seed}|{str(tool_name or '').strip().lower()}|"
+            f"{str(host or '').strip().lower()}|{str(target_url or '').strip()}"
+        )
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        bucket = int(digest[:8], 16) % 100
+        return bucket < percent
+
+    @classmethod
+    def set_gateway_audit_callback(cls, callback: Any | None) -> None:
+        """Set a callback invoked for each gateway routing decision entry."""
+        cls._GATEWAY_AUDIT_CALLBACK = callback
+
+    def _record_gateway_decision(
+        self,
+        *,
+        tool_name: str,
+        target_url: str,
+        host: str,
+        route: str,
+        reason: str,
+        proxy_url: str | None = None,
+    ) -> None:
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "tool_name": str(tool_name or "").strip() or "unknown",
+            "host": str(host or "").strip().lower(),
+            "target": self._sanitize_target_url(target_url),
+            "route": (
+                "gateway"
+                if str(route).strip().lower() == "gateway"
+                else ("shadow" if str(route).strip().lower() == "shadow" else "direct")
+            ),
+            "reason": str(reason or "").strip().lower() or "unknown",
+            "proxy": self._sanitize_proxy_url(proxy_url),
+        }
+        with self._GLOBAL_LOCK:
+            self._GLOBAL_GATEWAY_LOGS.append(entry)
+        cb = self._GATEWAY_AUDIT_CALLBACK
+        if callable(cb):
+            try:
+                cb(dict(entry))
+            except Exception:
+                # Gateway routing must never fail because audit callback fails.
+                pass
+
+    def get_recent_gateway_logs(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Return recent gateway routing decisions (newest first)."""
+        max_items = max(1, int(limit or 100))
+        with self._GLOBAL_LOCK:
+            data = list(self._GLOBAL_GATEWAY_LOGS)
+        if not data:
+            return []
+        return data[-max_items:][::-1]

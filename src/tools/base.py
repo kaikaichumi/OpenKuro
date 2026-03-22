@@ -77,6 +77,12 @@ class ToolContext:
     agent_instance_id: str | None = None  # Current Primary Agent instance ID
     instance_manager: Any = None  # AgentInstanceManager | None
     memory_manager: Any = None  # MemoryManager | None (instance-aware memory tools)
+    capability_token: str | None = None  # Phase 2 capability token (single-use, short-lived)
+    capability_claims: dict[str, Any] = field(default_factory=dict)
+    capability_guard: Any = None  # CapabilityTokenManager | None
+    isolation_tier: str = "standard"  # Phase 4 isolation tier: standard | restricted | sealed
+    isolated_env: dict[str, str] | None = None  # Optional restricted env for subprocess-style tools
+    isolation_notes: list[str] = field(default_factory=list)
 
 
 class BaseTool(ABC):

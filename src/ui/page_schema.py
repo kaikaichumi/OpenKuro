@@ -571,6 +571,20 @@ def build_security_page_schema() -> dict[str, Any]:
                 "order": 40,
             },
             {
+                "id": "security-capability",
+                "category": "analysis",
+                "label": "Capability Token Denials",
+                "label_i18n": "panel.security.capability",
+                "order": 45,
+            },
+            {
+                "id": "security-secret-broker",
+                "category": "analysis",
+                "label": "Secret Broker",
+                "label_i18n": "panel.security.secretBroker",
+                "order": 47,
+            },
+            {
                 "id": "security-hourly",
                 "category": "analysis",
                 "label": "Hourly Activity",

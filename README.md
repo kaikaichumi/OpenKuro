@@ -11,6 +11,10 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 
 - 系統架構說明請參考 => `docs/SYSTEM_ARCHITECTURE.md`
 - 記憶架構說明請參考 => `docs/MEMORY_ARCHITECTURE.md`
+- Gateway 安全升級計劃請參考 => `GATEWAY_ROADMAP.md`
+- Gateway Phase 1 驗證清單請參考 => `docs/GATEWAY_PHASE1_VALIDATION.md`
+- Gateway Phase 7 演練手冊請參考 => `docs/GATEWAY_PHASE7_DRILL.md`
+- Gateway 快速回滾腳本 => `scripts/gateway_rollback.py`（支援 `--dry-run`）
 
 
 ---
@@ -22,6 +26,13 @@ A privacy-first personal AI assistant with multi-agent architecture, multi-model
 - **MCP Tool Bridge** - Connect external MCP servers (stdio) and expose their tools as native Kuro tools with approval/audit support
 - **Split-Screen Chat** - Multi-panel web UI (1–6 panels) with per-panel agent binding and WebSocket multiplexing
 - **Real-Time Dashboard** - Live agent state visualization, event timeline, and aggregated statistics via WebSocket push
+- **Security Dashboard** - Includes Lite Gateway route logs and Phase 1 health checks (shadow sample size / deny rate / false-block / p95 delta / token growth / enforce readiness)
+- **Capability Tokens (Phase 2)** - Per-tool short-lived, single-use execution token with nonce replay persistence + Security dashboard denial analytics
+- **Secret Broker (Phase 3)** - Ephemeral provider-secret leases for model requests, with runtime revoke/rotate controls and Security dashboard visibility
+- **Isolated Runner (Phase 4)** - Optional stricter runtime profile for high-risk tools (reduced env, tighter timeout, locked working directory, hard-mode command restrictions, optional external sandbox prefix)
+- **Data Firewall (Phase 5)** - Sanitizes untrusted web/MCP tool output before model-context injection (prompt-injection lines, command-like lines, oversized base64 blobs)
+- **Tamper-Evident Audit (Phase 6)** - Audit log entries now include hash-chain linkage (`prev_chain_hash` -> `chain_hash`) in addition to per-entry HMAC verification
+- **Gateway Rollout + Drill Suite (Phase 7)** - Percentage-based enforce routing plus regression/load/incident drill checks (`scripts/gateway_phase7_drill.py`, `/api/security/gateway/drill`)
 - **Task Complexity Estimation** - ML-based complexity scoring with adaptive model routing; routes simple tasks to fast/cheap models, complex tasks to frontier models
 - **Task Scheduler + Proactive Notifications** - Cron-like scheduling with auto-push results to Discord/Telegram
 - **Multi-model support** - Anthropic Claude, OpenAI GPT, Google Gemini, Ollama local models, and Llama OpenAI-compatible endpoints via LiteLLM
@@ -479,6 +490,7 @@ mcp:
 ```
 
 Web UI path: `Settings (/config)` -> `Integrations` -> `MCP Integration`.
+When Lite Gateway is enabled in `egress_policy` (enforce mode), MCP stdio server subprocesses inherit the same gateway proxy routing.
 
 ### Delegation Flow
 
@@ -884,6 +896,59 @@ egress_policy:
   allowed_domains: []                    # optional global allowlist
   blocked_domains: []                    # optional global blocklist
   max_response_bytes: 5000000            # 0 = unlimited
+  gateway_enabled: false                 # Lite Gateway (phase 1)
+  gateway_mode: "enforce"                # enforce | shadow
+  gateway_proxy_url: ""                  # e.g. http://127.0.0.1:8080
+  gateway_bypass_domains: ["localhost"]
+  gateway_include_private_network: false
+  gateway_rollout_percent: 100           # 0..100 gradual enforce rollout
+  gateway_rollout_seed: "kuro-gateway-rollout"
+
+capability_tokens:
+  enabled: true
+  ttl_seconds: 120
+  max_clock_skew_seconds: 5
+  bind_adapter: true
+  bind_active_model: true
+  enforce_single_use: true
+  persist_nonce_cache: true
+  nonce_cache_file: ""                  # empty = ~/.kuro/security/capability_nonces.json
+  max_nonce_cache_entries: 50000
+  secret_env: "KURO_CAPABILITY_TOKEN_SECRET"
+
+secret_broker:
+  enabled: true
+  lease_ttl_seconds: 120
+  max_lease_ttl_seconds: 900
+  export_provider_env: false            # compatibility mode for env-only SDKs
+  revoke_on_rotate: true
+  max_active_leases: 10000
+
+isolated_runner:
+  enabled: false
+  tools: ["shell_execute", "computer_use", "mouse_action", "keyboard_action"]
+  enforce_tiers: ["restricted", "sealed"]
+  max_execution_time_seconds: 20
+  clear_environment: true
+  disallow_working_directory_override: true
+  hard_mode: false
+  hard_block_network_commands: true
+  hard_block_write_commands: true
+  hard_block_process_spawn: true
+  hard_block_shell_redirects: true
+  hard_restrict_to_allowed_directories: true
+  hard_allow_command_prefixes: []
+  hard_external_sandbox_required: false
+  hard_external_sandbox_prefix: []       # e.g. ["firejail", "--quiet", "--net=none"]
+
+data_firewall:
+  enabled: true
+  tool_name_patterns: ["web_*", "mcp_*"]
+  neutralize_prompt_injection: true
+  remove_command_like_lines: true
+  max_base64_chunk_chars: 2048
+  max_context_chars: 16000
+  annotation_prefix: "[Data Firewall]"
 
 budget_fuse:
   enabled: true

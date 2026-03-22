@@ -641,6 +641,14 @@ class EgressPolicyConfig(BaseModel):
     allowed_domains: list[str] = Field(default_factory=list)
     blocked_domains: list[str] = Field(default_factory=list)
     max_response_bytes: int = 5_000_000  # 0 = unlimited
+    # Lite Gateway (phase 1): optional centralized outbound proxy route
+    gateway_enabled: bool = False
+    gateway_mode: str = "enforce"  # enforce | shadow
+    gateway_proxy_url: str = ""  # e.g. http://127.0.0.1:8080
+    gateway_bypass_domains: list[str] = Field(default_factory=list)
+    gateway_include_private_network: bool = False
+    gateway_rollout_percent: int = 100  # 0..100 (Phase 7 gradual rollout)
+    gateway_rollout_seed: str = "kuro-gateway-rollout"
 
     @model_validator(mode="after")
     def _normalize(self) -> "EgressPolicyConfig":
@@ -648,7 +656,161 @@ class EgressPolicyConfig(BaseModel):
         self.default_action = action if action in {"allow", "deny"} else "allow"
         self.allowed_domains = [str(v).strip().lower() for v in (self.allowed_domains or []) if str(v).strip()]
         self.blocked_domains = [str(v).strip().lower() for v in (self.blocked_domains or []) if str(v).strip()]
+        self.gateway_proxy_url = str(self.gateway_proxy_url or "").strip()
+        mode = str(self.gateway_mode or "enforce").strip().lower()
+        self.gateway_mode = mode if mode in {"enforce", "shadow"} else "enforce"
+        self.gateway_bypass_domains = [
+            str(v).strip().lower()
+            for v in (self.gateway_bypass_domains or [])
+            if str(v).strip()
+        ]
+        self.gateway_rollout_percent = max(0, min(100, int(self.gateway_rollout_percent or 0)))
+        self.gateway_rollout_seed = str(self.gateway_rollout_seed or "kuro-gateway-rollout").strip() or "kuro-gateway-rollout"
         self.max_response_bytes = max(0, int(self.max_response_bytes or 0))
+        return self
+
+
+class CapabilityTokenConfig(BaseModel):
+    """Short-lived scoped token settings for tool execution."""
+
+    enabled: bool = True
+    ttl_seconds: int = 120
+    max_clock_skew_seconds: int = 5
+    bind_adapter: bool = True
+    bind_active_model: bool = True
+    enforce_single_use: bool = True
+    persist_nonce_cache: bool = True
+    nonce_cache_file: str = ""  # Empty = ~/.kuro/security/capability_nonces.json
+    max_nonce_cache_entries: int = 50_000
+    secret_env: str = "KURO_CAPABILITY_TOKEN_SECRET"
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "CapabilityTokenConfig":
+        self.ttl_seconds = max(5, int(self.ttl_seconds or 120))
+        self.max_clock_skew_seconds = max(0, int(self.max_clock_skew_seconds or 0))
+        self.max_nonce_cache_entries = max(100, int(self.max_nonce_cache_entries or 50_000))
+        self.nonce_cache_file = str(self.nonce_cache_file or "").strip()
+        self.secret_env = str(self.secret_env or "KURO_CAPABILITY_TOKEN_SECRET").strip() or "KURO_CAPABILITY_TOKEN_SECRET"
+        return self
+
+
+class SecretBrokerConfig(BaseModel):
+    """Ephemeral provider-secret broker settings (Phase 3)."""
+
+    enabled: bool = True
+    lease_ttl_seconds: int = 120
+    max_lease_ttl_seconds: int = 900
+    export_provider_env: bool = False
+    revoke_on_rotate: bool = True
+    max_active_leases: int = 10_000
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "SecretBrokerConfig":
+        self.lease_ttl_seconds = max(5, int(self.lease_ttl_seconds or 120))
+        self.max_lease_ttl_seconds = max(
+            self.lease_ttl_seconds,
+            int(self.max_lease_ttl_seconds or self.lease_ttl_seconds),
+        )
+        self.max_active_leases = max(100, int(self.max_active_leases or 10_000))
+        return self
+
+
+class IsolatedRunnerConfig(BaseModel):
+    """Phase 4: isolated execution profile for high-risk tools."""
+
+    enabled: bool = False
+    tools: list[str] = Field(default_factory=lambda: [
+        "shell_execute",
+        "computer_use",
+        "mouse_action",
+        "keyboard_action",
+    ])
+    enforce_tiers: list[str] = Field(default_factory=lambda: ["restricted", "sealed"])
+    max_execution_time_seconds: int = 20
+    clear_environment: bool = True
+    disallow_working_directory_override: bool = True
+    hard_mode: bool = False
+    hard_block_network_commands: bool = True
+    hard_block_write_commands: bool = True
+    hard_block_process_spawn: bool = True
+    hard_block_shell_redirects: bool = True
+    hard_allow_command_prefixes: list[str] = Field(default_factory=list)
+    hard_restrict_to_allowed_directories: bool = True
+    hard_external_sandbox_prefix: list[str] = Field(default_factory=list)
+    hard_external_sandbox_required: bool = False
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "IsolatedRunnerConfig":
+        self.tools = [
+            str(v).strip()
+            for v in (self.tools or [])
+            if str(v).strip()
+        ]
+        normalized_tiers: list[str] = []
+        for tier in (self.enforce_tiers or []):
+            value = str(tier or "").strip().lower()
+            if value in {"standard", "restricted", "sealed"} and value not in normalized_tiers:
+                normalized_tiers.append(value)
+        self.enforce_tiers = normalized_tiers or ["restricted", "sealed"]
+        prefixes: list[str] = []
+        seen_prefixes: set[str] = set()
+        for item in (self.hard_allow_command_prefixes or []):
+            value = str(item or "").strip()
+            if not value:
+                continue
+            key = value.lower()
+            if key in seen_prefixes:
+                continue
+            seen_prefixes.add(key)
+            prefixes.append(value)
+        self.hard_allow_command_prefixes = prefixes
+        sandbox_prefix: list[str] = []
+        seen_sandbox_prefix: set[str] = set()
+        for item in (self.hard_external_sandbox_prefix or []):
+            value = str(item or "").strip()
+            if not value:
+                continue
+            key = value.lower()
+            if key in seen_sandbox_prefix:
+                continue
+            seen_sandbox_prefix.add(key)
+            sandbox_prefix.append(value)
+        self.hard_external_sandbox_prefix = sandbox_prefix
+        self.max_execution_time_seconds = max(5, int(self.max_execution_time_seconds or 20))
+        return self
+
+
+class DataFirewallConfig(BaseModel):
+    """Phase 5: sanitize untrusted tool output before model-context injection."""
+
+    enabled: bool = True
+    tool_name_patterns: list[str] = Field(default_factory=lambda: [
+        "web_*",
+        "mcp_*",
+    ])
+    neutralize_prompt_injection: bool = True
+    remove_command_like_lines: bool = True
+    max_base64_chunk_chars: int = 2048
+    max_context_chars: int = 16000
+    annotation_prefix: str = "[Data Firewall]"
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "DataFirewallConfig":
+        patterns: list[str] = []
+        seen: set[str] = set()
+        for item in (self.tool_name_patterns or []):
+            value = str(item or "").strip()
+            if not value:
+                continue
+            lower = value.lower()
+            if lower in seen:
+                continue
+            seen.add(lower)
+            patterns.append(value)
+        self.tool_name_patterns = patterns or ["web_*", "mcp_*"]
+        self.max_base64_chunk_chars = max(256, int(self.max_base64_chunk_chars or 2048))
+        self.max_context_chars = max(1000, int(self.max_context_chars or 16000))
+        self.annotation_prefix = str(self.annotation_prefix or "[Data Firewall]").strip() or "[Data Firewall]"
         return self
 
 
@@ -916,6 +1078,10 @@ class KuroConfig(BaseModel):
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     tool_policy: ToolPolicyCoreConfig = Field(default_factory=ToolPolicyCoreConfig)
     egress_policy: EgressPolicyConfig = Field(default_factory=EgressPolicyConfig)
+    capability_tokens: CapabilityTokenConfig = Field(default_factory=CapabilityTokenConfig)
+    secret_broker: SecretBrokerConfig = Field(default_factory=SecretBrokerConfig)
+    isolated_runner: IsolatedRunnerConfig = Field(default_factory=IsolatedRunnerConfig)
+    data_firewall: DataFirewallConfig = Field(default_factory=DataFirewallConfig)
     budget_fuse: BudgetFuseConfig = Field(default_factory=BudgetFuseConfig)
     execution_guard: ExecutionGuardConfig = Field(default_factory=ExecutionGuardConfig)
     action_log: ActionLogConfig = Field(default_factory=ActionLogConfig)

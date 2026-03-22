@@ -79,7 +79,8 @@ async def _api_get(
     tool_name: str = "comfyui_api",
 ) -> dict:
     _assert_egress_allowed(broker, url, tool_name=tool_name)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    proxy = broker.resolve_proxy(url, tool_name=tool_name) if broker else None
+    async with httpx.AsyncClient(timeout=timeout, proxy=proxy or None) as client:
         resp = await client.get(url)
         resp.raise_for_status()
         return resp.json()
@@ -94,7 +95,8 @@ async def _api_post(
     tool_name: str = "comfyui_api",
 ) -> dict:
     _assert_egress_allowed(broker, url, tool_name=tool_name)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    proxy = broker.resolve_proxy(url, tool_name=tool_name) if broker else None
+    async with httpx.AsyncClient(timeout=timeout, proxy=proxy or None) as client:
         resp = await client.post(url, json=data)
         resp.raise_for_status()
         return resp.json()
@@ -108,8 +110,10 @@ async def _download_image(
     tool_name: str = "comfyui_download",
 ) -> bytes:
     _assert_egress_allowed(broker, url, tool_name=tool_name)
+    proxy = broker.resolve_proxy(url, tool_name=tool_name) if broker else None
     async with httpx.AsyncClient(
         timeout=timeout,
+        proxy=proxy or None,
         follow_redirects=True,
         headers={"User-Agent": "OpenKuro/ComfyUI"},
     ) as client:
@@ -253,7 +257,8 @@ async def _upload_image_to_comfyui(
 
     upload_url = f"{api_url}/upload/image"
     _assert_egress_allowed(broker, upload_url, tool_name=tool_name)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    proxy = broker.resolve_proxy(upload_url, tool_name=tool_name) if broker else None
+    async with httpx.AsyncClient(timeout=timeout, proxy=proxy or None) as client:
         resp = await client.post(
             upload_url,
             files={"image": (path.name, path.read_bytes(), content_type)},

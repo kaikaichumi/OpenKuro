@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -28,6 +30,8 @@ from src.core.model_router import (
 )
 from src.core.security.approval import ApprovalPolicy
 from src.core.security.audit import AuditLog
+from src.core.security.capability_tokens import CapabilityTokenManager
+from src.core.security.data_firewall import DataFirewall
 from src.core.security.egress import EgressBroker
 from src.core.security.install_guard import is_fix_mode_session, is_install_command
 from src.core.security.sandbox import Sandbox
@@ -183,13 +187,18 @@ class Engine:
         self.approval_policy = ApprovalPolicy(config.security)
         self.sandbox = Sandbox(config.sandbox)
         self.egress_broker = EgressBroker(getattr(config, "egress_policy", None))
+        self.capability_tokens = CapabilityTokenManager(
+            getattr(config, "capability_tokens", None),
+        )
         self.tool_policy = ToolPolicyCore(
             getattr(config, "tool_policy", None),
             self.egress_broker,
         )
         self.sanitizer = Sanitizer()
+        self.data_firewall = DataFirewall(getattr(config, "data_firewall", None))
         self.audit = audit_log or AuditLog()
         self.budget_manager = get_budget_manager()
+        self._install_gateway_audit_hook()
 
         # Task complexity estimator (set externally after construction)
         self.complexity_estimator: ComplexityEstimator | None = None
@@ -214,12 +223,87 @@ class Engine:
             self._session_locks[session_id] = asyncio.Lock()
         return self._session_locks[session_id]
 
+    def _install_gateway_audit_hook(self) -> None:
+        """Bind EgressBroker gateway-route events to persistent audit logging."""
+
+        def _hook(entry: dict[str, Any]) -> None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            try:
+                loop.create_task(self._persist_gateway_route_log(entry))
+            except Exception:
+                pass
+
+        EgressBroker.set_gateway_audit_callback(_hook)
+
+    async def _persist_gateway_route_log(self, entry: dict[str, Any]) -> None:
+        """Persist one gateway routing decision into audit.db."""
+        try:
+            tool_name = str(entry.get("tool_name", "") or "").strip()
+            route = str(entry.get("route", "") or "").strip().lower()
+            reason = str(entry.get("reason", "") or "").strip().lower()
+            host = str(entry.get("host", "") or "").strip()
+            target = str(entry.get("target", "") or "").strip()
+            proxy = str(entry.get("proxy", "") or "").strip()
+
+            await self.audit.log(
+                event_type="security:gateway_route",
+                source="egress",
+                tool_name=tool_name,
+                parameters={
+                    "tool": tool_name,
+                    "route": route,
+                    "reason": reason,
+                    "host": host,
+                    "target": target,
+                    "proxy": proxy,
+                },
+                result_summary=f"route={route}; reason={reason}; host={host}",
+                risk_level="low",
+            )
+        except Exception as e:
+            logger.debug("gateway_audit_log_failed", error=str(e))
+
+    def refresh_egress_runtime(
+        self,
+        egress_cfg: Any,
+        tool_policy_cfg: Any,
+        *,
+        refresh_mcp: bool = False,
+    ) -> None:
+        """Reload egress/tool policy runtime objects and rebind hooks."""
+        self.egress_broker = EgressBroker(egress_cfg)
+        self.tool_policy = ToolPolicyCore(tool_policy_cfg, self.egress_broker)
+        self._install_gateway_audit_hook()
+        bridge = getattr(self, "mcp_bridge", None)
+        if bridge is not None and hasattr(bridge, "set_egress_broker"):
+            with contextlib.suppress(Exception):
+                bridge.set_egress_broker(self.egress_broker)
+            if refresh_mcp and hasattr(bridge, "refresh_now"):
+                with contextlib.suppress(Exception):
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(bridge.refresh_now())
+
     async def execute_tool(self, tool_name: str, params: dict[str, Any]) -> str:
         """Execute a tool directly (used by scheduler/workflow).
 
         Creates a minimal ToolContext and returns the output string.
         """
         await self._ensure_mcp_tools_loaded()
+        scheduler_session = Session(adapter="scheduler")
+        capability_token: str | None = None
+        capability_claims: dict[str, Any] = {}
+        capability_guard = getattr(self, "capability_tokens", None)
+        if capability_guard is not None and bool(getattr(capability_guard, "enabled", False)):
+            capability_token, capability_claims = capability_guard.issue(
+                tool_name=tool_name,
+                arguments=params,
+                session_id="scheduler",
+                adapter="scheduler",
+                active_model=self.model.default_model,
+            )
         context = ToolContext(
             session_id="scheduler",
             config=self.config,
@@ -232,10 +316,14 @@ class Engine:
             max_execution_time=self.config.sandbox.max_execution_time,
             max_output_size=self.config.sandbox.max_output_size,
             agent_manager=self.agent_manager,
+            session=scheduler_session,
             team_manager=self.team_manager,
             instance_manager=self.instance_manager,
             memory_manager=self.memory,
             agent_instance_id=getattr(self, "agent_instance_id", None),
+            capability_token=capability_token,
+            capability_claims=capability_claims,
+            capability_guard=capability_guard,
         )
         result = await self.tools.execute(tool_name, params, context)
         if result.success:
@@ -934,6 +1022,34 @@ class Engine:
                 pass
         return max(0, total)
 
+    @staticmethod
+    def _build_isolated_env() -> dict[str, str]:
+        """Build a minimized subprocess environment for isolated tool execution."""
+        keep_keys_common = ["PATH", "HOME", "USERPROFILE", "TMP", "TEMP", "TMPDIR"]
+        keep_keys_windows = ["SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"]
+        keep_keys_unix = ["SHELL", "LANG", "LC_ALL", "TERM"]
+
+        env: dict[str, str] = {}
+        for key in keep_keys_common:
+            value = str(os.environ.get(key, "") or "").strip()
+            if value:
+                env[key] = value
+        if os.name == "nt":
+            for key in keep_keys_windows:
+                value = str(os.environ.get(key, "") or "").strip()
+                if value:
+                    env[key] = value
+        else:
+            for key in keep_keys_unix:
+                value = str(os.environ.get(key, "") or "").strip()
+                if value:
+                    env[key] = value
+
+        # Ensure PATH exists to avoid immediate shell resolution failures.
+        if "PATH" not in env:
+            env["PATH"] = str(os.environ.get("PATH", "") or "")
+        return env
+
     def _get_budget_fuse_state(self, session: Session) -> dict[str, Any]:
         """Get mutable session budget-fuse counters."""
         raw = session.metadata.get("_budget_fuse", {})
@@ -1488,6 +1604,30 @@ class Engine:
                     output = result.output if result.success else (result.error or "Error")
                     output = self.sanitizer.sanitize_tool_output(output)
 
+                    # Phase 5 Data Firewall: sanitize untrusted web/MCP content
+                    # before injecting tool output back into model context.
+                    firewall_report: dict[str, Any] | None = None
+                    if self.data_firewall and self.data_firewall.should_filter_tool(tc.name):
+                        output, firewall_report = self.data_firewall.sanitize_output(
+                            output,
+                            tool_name=tc.name,
+                        )
+                        if firewall_report and bool(firewall_report.get("changed", False)):
+                            with contextlib.suppress(Exception):
+                                await self.audit.log(
+                                    event_type="security:data_firewall_sanitized",
+                                    session_id=session.id,
+                                    source=session.adapter,
+                                    tool_name=tc.name,
+                                    parameters=firewall_report,
+                                    result_summary=(
+                                        "Data Firewall sanitized untrusted output "
+                                        f"(tool={tc.name})"
+                                    ),
+                                    approval_status="approved",
+                                    risk_level=tool.risk_level.value,
+                                )
+
                     # Check for injection in tool output
                     is_suspicious, matched = self.sanitizer.check_injection(output)
                     if is_suspicious:
@@ -1996,6 +2136,8 @@ class Engine:
         policy_decision: Any = None
         force_explicit_approval = False
         forced_approval_reasons: list[str] = []
+        effective_isolation_tier = "standard"
+        isolation_notes: list[str] = []
 
         async def _deny(
             reason: str,
@@ -2200,6 +2342,7 @@ class Engine:
                     isolation_tier = str(
                         getattr(policy_decision, "isolation_tier", "standard") or "standard"
                     ).strip().lower()
+                    effective_isolation_tier = isolation_tier or "standard"
                     if isolation_tier in {"restricted", "sealed"}:
                         force_explicit_approval = True
                         forced_approval_reasons.append(
@@ -2309,6 +2452,18 @@ class Engine:
                 forced_approval_reasons.append(
                     "Dependency installation requires explicit approval (or run !fix install)."
                 )
+            isolated_cfg = getattr(self.config, "isolated_runner", None)
+            if (
+                isolated_cfg is not None
+                and bool(getattr(isolated_cfg, "enabled", False))
+                and bool(getattr(isolated_cfg, "disallow_working_directory_override", True))
+                and str(tool_call.arguments.get("working_directory", "")).strip()
+            ):
+                return await _deny(
+                    "working_directory override is disabled in isolated runner mode",
+                    policy_denied=True,
+                    result_summary="Isolated runner blocked working_directory override",
+                )
 
         if (not full_access_mode) and (tool_call.name in ("file_read", "file_write", "file_search")):
             path = tool_call.arguments.get("path", tool_call.arguments.get("directory", ""))
@@ -2365,6 +2520,59 @@ class Engine:
                 )
                 return await _deny("User denied the action")
 
+        capability_token: str | None = None
+        capability_claims: dict[str, Any] = {}
+        capability_guard = getattr(self, "capability_tokens", None)
+        if (
+            not full_access_mode
+            and capability_guard is not None
+            and bool(getattr(capability_guard, "enabled", False))
+        ):
+            capability_token, capability_claims = capability_guard.issue(
+                tool_name=tool_call.name,
+                arguments=tool_call.arguments,
+                session_id=session.id,
+                adapter=session.adapter,
+                active_model=active_model,
+            )
+
+        # === Security Layer 2.5: Isolated runner profile (Phase 4) ===
+        isolated_env: dict[str, str] | None = None
+        execution_time_limit = self.config.sandbox.max_execution_time
+        isolated_cfg = getattr(self.config, "isolated_runner", None)
+        if (
+            not full_access_mode
+            and isolated_cfg is not None
+            and bool(getattr(isolated_cfg, "enabled", False))
+        ):
+            isolated_tools = {
+                str(v).strip()
+                for v in (getattr(isolated_cfg, "tools", []) or [])
+                if str(v).strip()
+            }
+            enforce_tiers = {
+                str(v).strip().lower()
+                for v in (getattr(isolated_cfg, "enforce_tiers", []) or [])
+                if str(v).strip()
+            }
+            should_isolate = (
+                tool_call.name in isolated_tools
+                or effective_isolation_tier in enforce_tiers
+            )
+            if should_isolate:
+                tier_label = effective_isolation_tier or "standard"
+                max_iso_time = max(
+                    5,
+                    self._safe_int(getattr(isolated_cfg, "max_execution_time_seconds", 20), 20),
+                )
+                execution_time_limit = min(execution_time_limit, max_iso_time)
+                isolation_notes.append(
+                    f"isolated runner active (tier={tier_label}, timeout={execution_time_limit}s)"
+                )
+                if bool(getattr(isolated_cfg, "clear_environment", True)):
+                    isolated_env = self._build_isolated_env()
+                    isolation_notes.append("subprocess env minimized")
+
         # === Execute with timing ===
         context = ToolContext(
             session_id=session.id,
@@ -2372,7 +2580,7 @@ class Engine:
             model_router=self.model,
             active_model=active_model,
             allowed_directories=[str(p) for p in self.config.sandbox.allowed_directories],
-            max_execution_time=self.config.sandbox.max_execution_time,
+            max_execution_time=execution_time_limit,
             max_output_size=self.config.sandbox.max_output_size,
             agent_manager=self.agent_manager,
             session=session,
@@ -2380,11 +2588,45 @@ class Engine:
             instance_manager=self.instance_manager,
             memory_manager=self.memory,
             agent_instance_id=getattr(self, "agent_instance_id", None),
+            capability_token=capability_token,
+            capability_claims=capability_claims,
+            capability_guard=capability_guard,
+            isolation_tier=effective_isolation_tier,
+            isolated_env=isolated_env,
+            isolation_notes=isolation_notes,
         )
 
         start = time.monotonic()
         result = await self.tools.execute(tool_call.name, tool_call.arguments, context)
         duration_ms = int((time.monotonic() - start) * 1000)
+        raw_error = str(result.error or "")
+        if raw_error.lower().startswith("denied: capability token"):
+            deny_reason = raw_error[8:].strip() if raw_error.startswith("Denied: ") else raw_error
+            reason_detail = str(deny_reason or "").strip()
+            marker = "Capability token invalid:"
+            if reason_detail.lower().startswith(marker.lower()):
+                reason_detail = reason_detail[len(marker):].strip()
+            with contextlib.suppress(Exception):
+                await self.audit.log(
+                    event_type="security:capability_token_denied",
+                    session_id=session.id,
+                    source=session.adapter,
+                    tool_name=tool_call.name,
+                    parameters={
+                        "reason": reason_detail or "unknown",
+                        "active_model": active_model,
+                        "adapter": session.adapter,
+                    },
+                    result_summary=deny_reason or "Capability token denied",
+                    approval_status="denied",
+                    risk_level=tool.risk_level.value,
+                )
+            return await _deny(
+                deny_reason or "Capability token denied",
+                policy_denied=True,
+                result_summary="Capability token denied",
+                extra_data={"capability_token_denied": True},
+            )
 
         if result.success and policy_decision is not None:
             taint_labels = list(getattr(policy_decision, "taint_on_success", []) or [])

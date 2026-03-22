@@ -383,28 +383,51 @@ class WebCrawlBatchTool(BaseTool):
         *,
         broker: EgressBroker,
         proxy: str | None = None,
-    ) -> tuple[int, str, str, str, str | None]:
-        """Fetch a page over HTTP and return status, final URL, content-type, html, error."""
+    ) -> tuple[int, str, str, str, str | None, str | None]:
+        """Fetch a page over HTTP.
+
+        Returns:
+            (status, final_url, content_type, html, error, used_proxy)
+        """
         allowed, reason = broker.check_url(url, tool_name=self.name)
         if not allowed:
-            return 0, url, "", "", f"egress_blocked: {reason}"
+            return 0, url, "", "", f"egress_blocked: {reason}", None
+        effective_proxy = proxy or broker.resolve_proxy(url, tool_name=self.name)
         try:
-            async with session.get(url, allow_redirects=True, proxy=proxy or None) as resp:
+            async with session.get(
+                url,
+                allow_redirects=True,
+                proxy=effective_proxy or None,
+            ) as resp:
                 status = int(resp.status)
                 final_url = str(resp.url)
                 allowed_final, reason_final = broker.check_url(final_url, tool_name=self.name)
                 if not allowed_final:
-                    return status, final_url, "", "", f"egress_blocked_redirect: {reason_final}"
+                    return (
+                        status,
+                        final_url,
+                        "",
+                        "",
+                        f"egress_blocked_redirect: {reason_final}",
+                        effective_proxy,
+                    )
                 content_type = (resp.headers.get("content-type") or "").lower()
                 if "text/html" not in content_type:
-                    return status, final_url, content_type, "", f"non-html content-type: {content_type}"
+                    return (
+                        status,
+                        final_url,
+                        content_type,
+                        "",
+                        f"non-html content-type: {content_type}",
+                        effective_proxy,
+                    )
                 body = await broker.read_limited_bytes(resp)
                 html = body.decode("utf-8", errors="ignore")
-                return status, final_url, content_type, html, None
+                return status, final_url, content_type, html, None, effective_proxy
         except ValueError as e:
-            return 0, url, "", "", str(e)
+            return 0, url, "", "", str(e), effective_proxy
         except Exception as e:
-            return 0, url, "", "", str(e)
+            return 0, url, "", "", str(e), effective_proxy
 
     async def _fetch_dynamic(
         self,
@@ -446,13 +469,13 @@ class WebCrawlBatchTool(BaseTool):
         started = time.perf_counter()
         await runtime.wait_domain_slot(item.url)
         proxy = await runtime.pick_proxy()
-        masked_proxy = _mask_proxy(proxy)
-        status, final_url, content_type, html, error = await self._fetch_http(
+        status, final_url, content_type, html, error, used_proxy = await self._fetch_http(
             session,
             item.url,
             broker=broker,
             proxy=proxy,
         )
+        masked_proxy = _mask_proxy(used_proxy)
         source = "http"
         title = ""
 

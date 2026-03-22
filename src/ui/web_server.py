@@ -898,7 +898,10 @@ class WebServer:
                 server_cfg = MCPServerConfig(**(raw_server or {}))
                 from src.core.mcp import discover_mcp_tools
 
-                tools = await discover_mcp_tools(server_cfg)
+                tools = await discover_mcp_tools(
+                    server_cfg,
+                    egress_broker=getattr(self.engine, "egress_broker", None),
+                )
                 return {
                     "status": "ok",
                     "tools": tools,
@@ -1092,10 +1095,119 @@ class WebServer:
             stats = await self.engine.audit.get_daily_stats(date)
             blocked = await self.engine.audit.get_blocked_count(7)
             score = await self.engine.audit.get_security_score()
+            gateway_logs: list[dict[str, Any]]
+            gateway_validation: dict[str, Any]
+            gateway_drill: dict[str, Any]
+            capability_denials: dict[str, Any]
+            secret_broker_status: dict[str, Any]
+            data_firewall_summary: dict[str, Any]
+            integrity_summary: dict[str, Any]
+            try:
+                gateway_logs = await self.engine.audit.query_gateway_logs(120)
+            except Exception:
+                gateway_logs = []
+                broker = getattr(self.engine, "egress_broker", None)
+                if broker and hasattr(broker, "get_recent_gateway_logs"):
+                    try:
+                        gateway_logs = broker.get_recent_gateway_logs(120)
+                    except Exception:
+                        gateway_logs = []
+            try:
+                from src.core.security.gateway_validation import (
+                    run_gateway_phase1_validation,
+                )
+                from src.config import get_kuro_home
+
+                audit_db_path = str(
+                    getattr(self.engine.audit, "_db_path", "")
+                    or (get_kuro_home() / "audit.db")
+                )
+                gateway_validation = await asyncio.to_thread(
+                    run_gateway_phase1_validation,
+                    audit_db_path,
+                    days=7,
+                    config=self.config,
+                )
+            except Exception:
+                gateway_validation = {"error": "validation_unavailable", "checks": []}
+            try:
+                from src.core.security.gateway_drill import run_gateway_phase7_drill_suite
+                from src.config import get_kuro_home
+
+                audit_db_path = str(
+                    getattr(self.engine.audit, "_db_path", "")
+                    or (get_kuro_home() / "audit.db")
+                )
+                gateway_drill = await asyncio.to_thread(
+                    run_gateway_phase7_drill_suite,
+                    db_path=audit_db_path,
+                    days=7,
+                    require_enforce_mode=False,
+                    config=self.config,
+                )
+            except Exception:
+                gateway_drill = {"status": "error", "error": "drill_unavailable", "sections": []}
+            try:
+                capability_denials = await self.engine.audit.query_capability_token_denials(
+                    days=7,
+                    limit=300,
+                )
+            except Exception:
+                capability_denials = {
+                    "days": 7,
+                    "total_denied": 0,
+                    "unique_reasons": 0,
+                    "unique_tools": 0,
+                    "top_reasons": [],
+                    "top_tools": [],
+                    "daily_counts": [],
+                    "recent": [],
+                }
+            try:
+                model_router = getattr(self.engine, "model", None)
+                if model_router and hasattr(model_router, "secret_broker_status"):
+                    secret_broker_status = model_router.secret_broker_status()
+                else:
+                    secret_broker_status = {"enabled": False, "reason": "unavailable"}
+            except Exception:
+                secret_broker_status = {"enabled": False, "reason": "status_failed"}
+            try:
+                data_firewall_summary = await self.engine.audit.query_data_firewall_events(
+                    days=7,
+                    limit=300,
+                )
+            except Exception:
+                data_firewall_summary = {
+                    "days": 7,
+                    "total_events": 0,
+                    "top_tools": [],
+                    "daily_counts": [],
+                    "removed_prompt_injection_lines": 0,
+                    "removed_command_like_lines": 0,
+                    "removed_base64_chunks": 0,
+                    "truncated_events": 0,
+                    "recent": [],
+                }
+            try:
+                integrity_total, integrity_tampered = await self.engine.audit.verify_integrity(200)
+                integrity_summary = {
+                    "total_checked": integrity_total,
+                    "tampered": integrity_tampered,
+                    "integrity": "ok" if integrity_tampered == 0 else "compromised",
+                }
+            except Exception:
+                integrity_summary = {"total_checked": 0, "tampered": 0, "integrity": "unknown"}
             return {
                 "daily_stats": stats,
                 "blocked_history": blocked,
                 "security_score": score,
+                "gateway_logs": gateway_logs,
+                "gateway_validation": gateway_validation,
+                "gateway_drill": gateway_drill,
+                "capability_token_denials": capability_denials,
+                "secret_broker": secret_broker_status,
+                "data_firewall": data_firewall_summary,
+                "integrity": integrity_summary,
             }
 
         @app.get("/api/security/stats")
@@ -1128,6 +1240,152 @@ class WebServer:
                 "tampered": tampered,
                 "integrity": "ok" if tampered == 0 else "compromised",
             }
+
+        @app.get("/api/security/gateway")
+        async def get_security_gateway_logs(
+            limit: int = Query(120, ge=1, le=1000),
+        ):
+            """Get recent Lite Gateway routing decision logs."""
+            try:
+                return {"gateway_logs": await self.engine.audit.query_gateway_logs(limit)}
+            except Exception:
+                broker = getattr(self.engine, "egress_broker", None)
+                if broker and hasattr(broker, "get_recent_gateway_logs"):
+                    try:
+                        return {"gateway_logs": broker.get_recent_gateway_logs(limit)}
+                    except Exception:
+                        return {"gateway_logs": []}
+                return {"gateway_logs": []}
+
+        @app.get("/api/security/capability-denials")
+        async def get_security_capability_denials(
+            days: int = Query(7, ge=1, le=90),
+            limit: int = Query(200, ge=1, le=5000),
+        ):
+            """Get capability-token denial analytics."""
+            return await self.engine.audit.query_capability_token_denials(
+                days=days,
+                limit=limit,
+            )
+
+        @app.get("/api/security/data-firewall")
+        async def get_security_data_firewall_summary(
+            days: int = Query(7, ge=1, le=90),
+            limit: int = Query(500, ge=1, le=5000),
+        ):
+            """Get Data Firewall sanitization analytics."""
+            return await self.engine.audit.query_data_firewall_events(
+                days=days,
+                limit=limit,
+            )
+
+        @app.get("/api/security/secret-broker")
+        async def get_security_secret_broker_status():
+            """Get Secret Broker runtime status."""
+            model_router = getattr(self.engine, "model", None)
+            if model_router is None or not hasattr(model_router, "secret_broker_status"):
+                return {"enabled": False, "reason": "unavailable"}
+            return model_router.secret_broker_status()
+
+        @app.post("/api/security/secret-broker/revoke")
+        async def post_security_secret_broker_revoke(request: Request):
+            """Revoke all active leases for one provider."""
+            payload = await request.json()
+            provider = str((payload or {}).get("provider", "")).strip()
+            model_router = getattr(self.engine, "model", None)
+            if model_router is None or not hasattr(model_router, "revoke_provider_secret"):
+                return JSONResponse(
+                    {"status": "error", "reason": "unavailable"},
+                    status_code=503,
+                )
+            result = model_router.revoke_provider_secret(provider)
+            status = str(result.get("status", "error"))
+            return JSONResponse(result, status_code=200 if status == "ok" else 400)
+
+        @app.post("/api/security/secret-broker/rotate")
+        async def post_security_secret_broker_rotate(request: Request):
+            """Rotate provider secret override and revoke old leases."""
+            payload = await request.json()
+            provider = str((payload or {}).get("provider", "")).strip()
+            new_secret_raw = (payload or {}).get("new_secret")
+            new_secret = str(new_secret_raw).strip() if new_secret_raw is not None else None
+            model_router = getattr(self.engine, "model", None)
+            if model_router is None or not hasattr(model_router, "rotate_provider_secret"):
+                return JSONResponse(
+                    {"status": "error", "reason": "unavailable"},
+                    status_code=503,
+                )
+            result = model_router.rotate_provider_secret(provider, new_secret)
+            status = str(result.get("status", "error"))
+            return JSONResponse(result, status_code=200 if status == "ok" else 400)
+
+        @app.get("/api/security/gateway/validation")
+        async def get_security_gateway_validation(
+            days: int = Query(7, ge=1, le=90),
+            min_shadow_samples: int = Query(50, ge=1, le=100000),
+            max_network_deny_rate: float = Query(0.02, ge=0.0, le=1.0),
+            max_false_block_rate: float = Query(0.05, ge=0.0, le=1.0),
+            max_latency_p95_delta: float = Query(0.15, ge=0.0, le=5.0),
+            max_token_growth_rate: float = Query(0.30, ge=0.0, le=5.0),
+            false_block_lookahead_minutes: int = Query(60, ge=1, le=1440),
+        ):
+            """Get Lite Gateway Phase 1 health/validation summary."""
+            from src.core.security.gateway_validation import run_gateway_phase1_validation
+            from src.config import get_kuro_home
+
+            audit_db_path = str(
+                getattr(self.engine.audit, "_db_path", "")
+                or (get_kuro_home() / "audit.db")
+            )
+            summary = await asyncio.to_thread(
+                run_gateway_phase1_validation,
+                audit_db_path,
+                days=days,
+                min_shadow_samples=min_shadow_samples,
+                max_network_deny_rate=max_network_deny_rate,
+                max_false_block_rate=max_false_block_rate,
+                max_latency_p95_delta=max_latency_p95_delta,
+                max_token_growth_rate=max_token_growth_rate,
+                false_block_lookahead_minutes=false_block_lookahead_minutes,
+                config=self.config,
+            )
+            return {"validation": summary}
+
+        @app.get("/api/security/gateway/drill")
+        async def get_security_gateway_drill(
+            days: int = Query(7, ge=1, le=90),
+            require_enforce_mode: bool = Query(False),
+            min_rollout_percent: int = Query(100, ge=0, le=100),
+            min_peak_hour_calls: int = Query(20, ge=1, le=100000),
+            max_peak_hour_deny_rate: float = Query(0.10, ge=0.0, le=1.0),
+            max_missing_proxy_route_events: int = Query(0, ge=0, le=100000),
+            max_invalid_route_events: int = Query(0, ge=0, le=100000),
+            max_direct_ratio_when_full_rollout: float = Query(0.20, ge=0.0, le=1.0),
+            incident_deny_rate_threshold: float = Query(0.10, ge=0.0, le=1.0),
+        ):
+            """Get Gateway Phase 7 drill suite summary."""
+            from src.config import get_kuro_home
+            from src.core.security.gateway_drill import run_gateway_phase7_drill_suite
+
+            audit_db_path = str(
+                getattr(self.engine.audit, "_db_path", "")
+                or (get_kuro_home() / "audit.db")
+            )
+            summary = await asyncio.to_thread(
+                run_gateway_phase7_drill_suite,
+                db_path=audit_db_path,
+                days=days,
+                require_enforce_mode=require_enforce_mode,
+                min_rollout_percent=min_rollout_percent,
+                min_peak_hour_calls=min_peak_hour_calls,
+                max_peak_hour_deny_rate=max_peak_hour_deny_rate,
+                max_missing_proxy_route_events=max_missing_proxy_route_events,
+                max_invalid_route_events=max_invalid_route_events,
+                max_direct_ratio_when_full_rollout=max_direct_ratio_when_full_rollout,
+                incident_deny_rate_threshold=incident_deny_rate_threshold,
+                config=self.config,
+            )
+            return {"drill": summary}
 
         # === Analytics API ===
 
@@ -2229,6 +2487,18 @@ class WebServer:
                     self.engine.instance_manager._config = new_config
             applied.append("security")
 
+        # Capability token settings (phase 2)
+        if getattr(new_config, "capability_tokens", None) != getattr(old, "capability_tokens", None):
+            try:
+                from src.core.security.capability_tokens import CapabilityTokenManager
+
+                self.engine.capability_tokens = CapabilityTokenManager(
+                    new_config.capability_tokens,
+                )
+                applied.append("capability_tokens")
+            except Exception:
+                pass
+
         # Model settings (default model, temperature, etc.)
         if new_config.models.default != old.models.default:
             self.engine.model.config.models.default = new_config.models.default
@@ -2242,21 +2512,57 @@ class WebServer:
             self.engine.model.config.models.max_tokens = new_config.models.max_tokens
             applied.append("max_tokens")
 
+        # Secret broker runtime (Phase 3)
+        if getattr(new_config, "secret_broker", None) != getattr(old, "secret_broker", None):
+            self.engine.model.config.secret_broker = new_config.secret_broker
+            if hasattr(self.engine.model, "refresh_secret_runtime"):
+                with contextlib.suppress(Exception):
+                    self.engine.model.refresh_secret_runtime()
+            applied.append("secret_broker")
+
+        # Isolated runner profile (Phase 4)
+        if getattr(new_config, "isolated_runner", None) != getattr(old, "isolated_runner", None):
+            applied.append("isolated_runner")
+
+        # Data Firewall runtime (Phase 5)
+        if getattr(new_config, "data_firewall", None) != getattr(old, "data_firewall", None):
+            try:
+                from src.core.security.data_firewall import DataFirewall
+
+                self.engine.data_firewall = DataFirewall(new_config.data_firewall)
+                applied.append("data_firewall")
+            except Exception:
+                pass
+
         # Sandbox settings
         if new_config.sandbox != old.sandbox:
             self.engine.sandbox = self.engine.sandbox.__class__(new_config.sandbox)
             applied.append("sandbox")
 
         # Tool policy + egress policy
-        if (new_config.tool_policy != old.tool_policy) or (new_config.egress_policy != old.egress_policy):
-            from src.core.security.egress import EgressBroker
-            from src.core.security.tool_policy import ToolPolicyCore
+        tool_policy_changed = new_config.tool_policy != old.tool_policy
+        egress_changed = new_config.egress_policy != old.egress_policy
+        if tool_policy_changed or egress_changed:
+            if hasattr(self.engine, "refresh_egress_runtime"):
+                self.engine.refresh_egress_runtime(
+                    new_config.egress_policy,
+                    new_config.tool_policy,
+                    refresh_mcp=egress_changed,
+                )
+            else:
+                from src.core.security.egress import EgressBroker
+                from src.core.security.tool_policy import ToolPolicyCore
 
-            self.engine.egress_broker = EgressBroker(new_config.egress_policy)
-            self.engine.tool_policy = ToolPolicyCore(
-                new_config.tool_policy,
-                self.engine.egress_broker,
-            )
+                self.engine.egress_broker = EgressBroker(new_config.egress_policy)
+                self.engine.tool_policy = ToolPolicyCore(
+                    new_config.tool_policy,
+                    self.engine.egress_broker,
+                )
+            if hasattr(self.engine, "model") and hasattr(self.engine.model, "refresh_network_runtime"):
+                try:
+                    self.engine.model.refresh_network_runtime()
+                except Exception:
+                    pass
             applied.append("tool_policy")
 
         # Budget fuse (session-level circuit breaker)
@@ -2315,7 +2621,10 @@ class WebServer:
         if new_config.mcp != old.mcp:
             bridge = getattr(self.engine, "mcp_bridge", None)
             if bridge is not None:
-                bridge.update_config(new_config.mcp)
+                bridge.update_config(
+                    new_config.mcp,
+                    egress_broker=getattr(self.engine, "egress_broker", None),
+                )
                 with contextlib.suppress(Exception):
                     loop = asyncio.get_running_loop()
                     loop.create_task(bridge.refresh_now())

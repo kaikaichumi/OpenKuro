@@ -37,6 +37,15 @@ class BrowserManager:
         self._page = None
         self._lock = asyncio.Lock()
         self._headless: bool | None = None  # Track current mode
+        self._proxy_key: str = ""
+
+    @staticmethod
+    def _proxy_signature(proxy: dict[str, Any] | None) -> str:
+        if not proxy:
+            return ""
+        server = str(proxy.get("server", "") or "").strip()
+        bypass = str(proxy.get("bypass", "") or "").strip()
+        return f"{server}|{bypass}"
 
     @classmethod
     def get_instance(cls) -> BrowserManager:
@@ -44,19 +53,26 @@ class BrowserManager:
             cls._instance = cls()
         return cls._instance
 
-    async def ensure_page(self, headless: bool = False):
+    async def ensure_page(
+        self,
+        headless: bool = False,
+        proxy: dict[str, Any] | None = None,
+    ):
         """Ensure browser and page are initialized. Returns the page.
 
         Args:
             headless: If True, run browser without a visible window.
                       Use True for scheduled/background tasks.
+            proxy: Optional Playwright proxy config.
         """
+        proxy_key = self._proxy_signature(proxy)
         async with self._lock:
             # If browser is alive but in a different mode, close it first
             if (
                 self._page is not None
                 and not self._page.is_closed()
                 and self._headless == headless
+                and self._proxy_key == proxy_key
             ):
                 return self._page
 
@@ -69,14 +85,18 @@ class BrowserManager:
 
                 self._playwright = await async_playwright().start()
                 self._headless = headless
-                self._browser = await self._playwright.chromium.launch(
-                    headless=headless,
-                    args=[
+                launch_kwargs: dict[str, Any] = {
+                    "headless": headless,
+                    "args": [
                         "--disable-blink-features=AutomationControlled",
                         "--no-first-run",
                         "--no-default-browser-check",
                     ],
-                )
+                }
+                if proxy:
+                    launch_kwargs["proxy"] = proxy
+                self._browser = await self._playwright.chromium.launch(**launch_kwargs)
+                self._proxy_key = proxy_key
                 context = await self._browser.new_context(
                     viewport={"width": 1280, "height": 720},
                     user_agent=(
@@ -87,7 +107,11 @@ class BrowserManager:
                 )
                 self._page = await context.new_page()
 
-                logger.info("browser_started", headless=headless)
+                logger.info(
+                    "browser_started",
+                    headless=headless,
+                    via_gateway_proxy=bool(proxy),
+                )
                 return self._page
 
             except Exception as e:
@@ -106,6 +130,7 @@ class BrowserManager:
         self._browser = None
         self._playwright = None
         self._headless = None
+        self._proxy_key = ""
 
     async def close(self) -> None:
         """Close the browser and cleanup resources."""
@@ -145,6 +170,58 @@ def _get_egress_broker(context: ToolContext) -> EgressBroker:
     cfg = getattr(context, "config", None)
     egress_cfg = getattr(cfg, "egress_policy", None) if cfg is not None else None
     return EgressBroker(egress_cfg)
+
+
+def _playwright_gateway_proxy(context: ToolContext) -> dict[str, Any] | None:
+    """Build Playwright proxy settings from egress Lite Gateway config."""
+    broker = _get_egress_broker(context)
+    if not broker.gateway_enabled or broker.gateway_mode != "enforce":
+        return None
+    server = broker.gateway_proxy_url
+    if not server:
+        return None
+
+    egress_cfg = getattr(getattr(context, "config", None), "egress_policy", None)
+    raw_bypass = list(getattr(egress_cfg, "gateway_bypass_domains", []) or [])
+    bypass: list[str] = []
+    for item in raw_bypass:
+        val = str(item or "").strip()
+        if val:
+            bypass.append(val)
+
+    include_private = bool(getattr(egress_cfg, "gateway_include_private_network", False))
+    if not include_private:
+        bypass.extend(
+            [
+                "localhost",
+                "127.0.0.1",
+                "::1",
+                "*.local",
+                "10.*",
+                "192.168.*",
+                "172.16.*",
+                "172.17.*",
+                "172.18.*",
+                "172.19.*",
+                "172.2*.*",
+                "172.30.*",
+                "172.31.*",
+            ]
+        )
+
+    dedup: list[str] = []
+    seen: set[str] = set()
+    for raw in bypass:
+        k = raw.lower()
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        dedup.append(raw)
+
+    proxy_cfg: dict[str, Any] = {"server": server}
+    if dedup:
+        proxy_cfg["bypass"] = ",".join(dedup)
+    return proxy_cfg
 
 
 class WebNavigateTool(BaseTool):
@@ -192,7 +269,11 @@ class WebNavigateTool(BaseTool):
 
         try:
             manager = BrowserManager.get_instance()
-            page = await manager.ensure_page(headless=_should_headless(context))
+            broker.resolve_proxy(url, tool_name=self.name)
+            page = await manager.ensure_page(
+                headless=_should_headless(context),
+                proxy=_playwright_gateway_proxy(context),
+            )
 
             await page.goto(url, wait_until=wait_for, timeout=30000)
             title = await page.title()
@@ -246,7 +327,10 @@ class WebGetTextTool(BaseTool):
             if not manager.is_active:
                 return ToolResult.fail("No page is currently loaded. Use web_navigate first.")
 
-            page = await manager.ensure_page(headless=_should_headless(context))
+            page = await manager.ensure_page(
+                headless=_should_headless(context),
+                proxy=_playwright_gateway_proxy(context),
+            )
             title = await page.title()
 
             # Try to get text from selector
@@ -316,7 +400,10 @@ class WebClickTool(BaseTool):
             if not manager.is_active:
                 return ToolResult.fail("No page is currently loaded. Use web_navigate first.")
 
-            page = await manager.ensure_page(headless=_should_headless(context))
+            page = await manager.ensure_page(
+                headless=_should_headless(context),
+                proxy=_playwright_gateway_proxy(context),
+            )
 
             if text:
                 # Find by text content
@@ -336,6 +423,7 @@ class WebClickTool(BaseTool):
             allowed, reason = broker.check_url(new_url, tool_name=self.name)
             if not allowed:
                 return ToolResult.fail(f"Click navigated to blocked URL: {reason}")
+            broker.resolve_proxy(new_url, tool_name=self.name)
 
             return ToolResult.ok(
                 f"Clicked: {clicked_desc}\n"
@@ -400,7 +488,10 @@ class WebTypeTool(BaseTool):
             if not manager.is_active:
                 return ToolResult.fail("No page is currently loaded. Use web_navigate first.")
 
-            page = await manager.ensure_page(headless=_should_headless(context))
+            page = await manager.ensure_page(
+                headless=_should_headless(context),
+                proxy=_playwright_gateway_proxy(context),
+            )
 
             if clear_first:
                 await page.fill(selector, text, timeout=10000)
@@ -458,7 +549,10 @@ class WebScreenshotTool(BaseTool):
             if not manager.is_active:
                 return ToolResult.fail("No page is currently loaded. Use web_navigate first.")
 
-            page = await manager.ensure_page(headless=_should_headless(context))
+            page = await manager.ensure_page(
+                headless=_should_headless(context),
+                proxy=_playwright_gateway_proxy(context),
+            )
 
             # Save screenshot
             screenshots_dir = get_kuro_home() / "screenshots"

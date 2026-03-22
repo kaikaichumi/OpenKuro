@@ -301,7 +301,11 @@
         "comfyuiSampler": "預設採樣器",
         "comfyuiSamplerDesc": "預設採樣器（euler、euler_ancestral、dpmpp_2m 等）",
         "comfyuiScheduler": "預設調度器",
-        "comfyuiSchedulerDesc": "預設調度器（normal、karras、exponential 等）"
+        "comfyuiSchedulerDesc": "預設調度器（normal、karras、exponential 等）",
+        "isolatedRunnerHardRequireSandbox": "需要外部沙箱",
+        "isolatedRunnerHardRequireSandboxDesc": "若未設定外部沙箱前綴，硬模式下將直接拒絕 shell 執行。",
+        "isolatedRunnerHardSandboxPrefix": "外部沙箱前綴",
+        "isolatedRunnerHardSandboxPrefixDesc": "外部沙箱命令前綴（例如 firejail,--quiet,--net=none）。"
     },
     "panel": {
         "quickNav": "快捷導覽",
@@ -344,7 +348,21 @@
         "hourlyActivity": "每小時活動（今日）",
         "approvedVsDenied": "核准 vs 拒絕（過去 7 天）",
         "tool": "工具",
-        "calls": "呼叫次數"
+        "calls": "呼叫次數",
+        "gatewayHealthReadyYes": "通過",
+        "gatewayHealthReadyNo": "未通過",
+        "gatewayDrillTitle": "Gateway 第 7 階段演練",
+        "gatewayDrillNoData": "目前尚無演練摘要資料",
+        "gatewayDrillOverall": "整體演練",
+        "gatewayDrillPeakHour": "尖峰時段",
+        "gatewayDrillPeakCalls": "尖峰呼叫",
+        "gatewayDrillPeakDenied": "尖峰拒絕",
+        "gatewayDrillPeakDenyRate": "尖峰拒絕率",
+        "gatewayDrillBaseline": "基線",
+        "gatewayDrillRegression": "回歸",
+        "gatewayDrillLoad": "負載",
+        "gatewayDrillIncident": "事件演練",
+        "gatewayDrillUnknown": "演練"
     },
     "analytics": {
         "title": "分析",

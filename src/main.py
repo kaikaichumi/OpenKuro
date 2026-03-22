@@ -192,6 +192,7 @@ def build_engine(
         skills_manager=skills_manager,
     )
     engine.mcp_bridge = mcp_bridge
+    mcp_bridge.set_egress_broker(engine.egress_broker)
 
     # Attach event bus for live dashboard
     from src.core.agent_events import AgentEventBus

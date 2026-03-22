@@ -1607,11 +1607,11 @@ class DiscordAdapter(BaseAdapter):
                     session,
                     start_index=message_count_before,
                 )
-                used_visual_tools = any(
-                    (name in _COMPUTER_OPERATION_TOOL_NAMES) or (name in _WEB_OPERATION_TOOL_NAMES)
+                used_computer_tools = any(
+                    name in _COMPUTER_OPERATION_TOOL_NAMES
                     for name in recent_tool_names
                 )
-                if used_visual_tools and not new_images:
+                if used_computer_tools and not new_images:
                     auto_capture = await self._capture_post_action_screenshot(
                         session,
                         recent_tool_names=recent_tool_names,
@@ -1736,7 +1736,19 @@ class DiscordAdapter(BaseAdapter):
                                 reason=reason,
                             )
                             continue
-                    async with http.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    proxy = (
+                        egress.resolve_proxy(
+                            url,
+                            tool_name="discord_image_download",
+                        )
+                        if egress is not None
+                        else None
+                    )
+                    async with http.get(
+                        url,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                        proxy=proxy or None,
+                    ) as resp:
                         if resp.status != 200:
                             continue
                         ct = resp.content_type or ""
@@ -2032,7 +2044,7 @@ class DiscordAdapter(BaseAdapter):
         *,
         recent_tool_names: list[str] | None = None,
     ) -> str | None:
-        """Capture a screenshot after computer/web operation tool usage."""
+        """Capture a screenshot after computer-operation tool usage."""
         try:
             disabled = getattr(self.config.security, "disabled_tools", []) or []
             disabled_set = {str(t).strip() for t in disabled if str(t).strip()}

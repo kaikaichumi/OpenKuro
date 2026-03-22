@@ -22,6 +22,7 @@ import litellm
 import structlog
 
 from src.config import KuroConfig
+from src.core.security.secret_broker import SecretBroker
 from src.core.types import ModelResponse, ToolCall
 from src.openai_catalog import (
     OPENAI_OFFICIAL_MODELS,
@@ -171,7 +172,141 @@ class ModelRouter:
         self._provider_auth_ctx: contextvars.ContextVar[dict[str, dict[str, Any]] | None] = (
             contextvars.ContextVar("provider_auth_ctx", default=None)
         )
+        self.secret_broker = SecretBroker(
+            getattr(self.config, "secret_broker", None),
+            self.config.models.providers,
+        )
         self._setup_provider_keys()
+        self._sync_gateway_proxy_env()
+
+    @staticmethod
+    def _local_no_proxy_defaults() -> list[str]:
+        """Default NO_PROXY patterns to keep local/runtime traffic direct."""
+        return [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "*.local",
+            "10.*",
+            "192.168.*",
+            "172.16.*",
+            "172.17.*",
+            "172.18.*",
+            "172.19.*",
+            "172.20.*",
+            "172.21.*",
+            "172.22.*",
+            "172.23.*",
+            "172.24.*",
+            "172.25.*",
+            "172.26.*",
+            "172.27.*",
+            "172.28.*",
+            "172.29.*",
+            "172.30.*",
+            "172.31.*",
+        ]
+
+    def _sync_gateway_proxy_env(self) -> None:
+        """Apply egress gateway proxy settings to process HTTP proxy env vars.
+
+        This allows provider HTTP stacks (including LiteLLM/httpx/aiohttp) to
+        route through the same gateway without invasive per-provider patches.
+        """
+        egress = getattr(self.config, "egress_policy", None)
+        if egress is None:
+            return
+
+        gateway_enabled = bool(getattr(egress, "gateway_enabled", False))
+        gateway_mode = str(getattr(egress, "gateway_mode", "enforce") or "enforce").strip().lower()
+        proxy_url = str(getattr(egress, "gateway_proxy_url", "") or "").strip()
+
+        # In shadow mode we intentionally do not apply proxy env routing.
+        if not gateway_enabled or gateway_mode != "enforce" or not proxy_url:
+            for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+                if os.environ.get(key):
+                    os.environ.pop(key, None)
+            return
+
+        no_proxy_values: list[str] = []
+
+        # Explicit gateway bypass domains from config.
+        bypass = getattr(egress, "gateway_bypass_domains", []) or []
+        for item in bypass:
+            val = str(item or "").strip()
+            if val:
+                no_proxy_values.append(val)
+
+        include_private = bool(getattr(egress, "gateway_include_private_network", False))
+        if not include_private:
+            no_proxy_values.extend(self._local_no_proxy_defaults())
+
+        # Keep explicitly local provider base URLs direct to avoid routing loops.
+        for provider_cfg in self.config.models.providers.values():
+            base = str(getattr(provider_cfg, "base_url", "") or "").strip()
+            if not base:
+                continue
+            try:
+                host = (urlparse(base).hostname or "").strip()
+            except Exception:
+                host = ""
+            if host:
+                no_proxy_values.append(host)
+
+        # Preserve any existing NO_PROXY values.
+        existing = str(os.environ.get("NO_PROXY", "") or "").strip()
+        if existing:
+            no_proxy_values.extend([v.strip() for v in existing.split(",") if v.strip()])
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for raw in no_proxy_values:
+            k = raw.lower()
+            if not k or k in seen:
+                continue
+            seen.add(k)
+            deduped.append(raw)
+
+        os.environ["HTTP_PROXY"] = proxy_url
+        os.environ["HTTPS_PROXY"] = proxy_url
+        os.environ["ALL_PROXY"] = proxy_url
+        os.environ["http_proxy"] = proxy_url
+        os.environ["https_proxy"] = proxy_url
+        os.environ["all_proxy"] = proxy_url
+        if deduped:
+            joined = ",".join(deduped)
+            os.environ["NO_PROXY"] = joined
+            os.environ["no_proxy"] = joined
+
+    def refresh_network_runtime(self) -> None:
+        """Refresh network-related runtime settings after config changes."""
+        self._sync_gateway_proxy_env()
+
+    def refresh_secret_runtime(self) -> None:
+        """Refresh provider secret broker runtime after config changes."""
+        self.secret_broker = SecretBroker(
+            getattr(self.config, "secret_broker", None),
+            self.config.models.providers,
+        )
+        self._setup_provider_keys()
+
+    def revoke_provider_secret(self, provider: str) -> dict[str, Any]:
+        broker = getattr(self, "secret_broker", None)
+        if broker is None or not bool(getattr(broker, "enabled", False)):
+            return {"status": "error", "reason": "secret_broker_disabled"}
+        return broker.revoke_provider(provider)
+
+    def rotate_provider_secret(self, provider: str, new_secret: str | None) -> dict[str, Any]:
+        broker = getattr(self, "secret_broker", None)
+        if broker is None or not bool(getattr(broker, "enabled", False)):
+            return {"status": "error", "reason": "secret_broker_disabled"}
+        return broker.rotate_provider(provider, new_secret)
+
+    def secret_broker_status(self) -> dict[str, Any]:
+        broker = getattr(self, "secret_broker", None)
+        if broker is None:
+            return {"enabled": False, "reason": "not_initialized"}
+        return broker.status()
 
     @contextmanager
     def provider_auth_override(
@@ -221,6 +356,14 @@ class ModelRouter:
             raw = auth.get("api_key")
             if isinstance(raw, str):
                 return raw.strip() or None
+        broker = getattr(self, "secret_broker", None)
+        if broker is not None and bool(getattr(broker, "enabled", False)):
+            leased = broker.acquire_secret(
+                provider,
+                reason="model_request",
+            )
+            if leased:
+                return leased
         return None
 
     def _provider_auth(self, provider: str) -> dict[str, Any] | None:
@@ -232,8 +375,13 @@ class ModelRouter:
 
     def _setup_provider_keys(self) -> None:
         """Set up API keys from config into environment variables."""
+        export_provider_env = True
+        broker = getattr(self, "secret_broker", None)
+        if broker is not None and bool(getattr(broker, "enabled", False)):
+            export_provider_env = bool(getattr(broker, "export_provider_env", False))
+
         for provider_name, provider_cfg in self.config.models.providers.items():
-            if provider_cfg.api_key_env:
+            if provider_cfg.api_key_env and export_provider_env:
                 key = provider_cfg.get_api_key()
                 if key:
                     # LiteLLM reads keys from env vars
@@ -243,7 +391,11 @@ class ModelRouter:
                 os.environ.setdefault("OLLAMA_API_BASE", provider_cfg.base_url)
 
             # LiteLLM reads Gemini key from GEMINI_API_KEY
-            if provider_name == "gemini" and provider_cfg.api_key_env:
+            if (
+                provider_name == "gemini"
+                and provider_cfg.api_key_env
+                and export_provider_env
+            ):
                 key = provider_cfg.get_api_key()
                 if key:
                     os.environ.setdefault("GEMINI_API_KEY", key)
