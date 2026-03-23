@@ -1024,6 +1024,8 @@ web_ui:
   enabled: true
   host: "127.0.0.1"
   port: 7860
+  auto_fallback_port: true
+  fallback_port_search_limit: 20
 
 action_log:
   mode: "tools_only"

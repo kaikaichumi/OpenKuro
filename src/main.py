@@ -553,7 +553,12 @@ async def async_web_main(config: KuroConfig) -> None:
         await _init_instances(engine)
         server = WebServer(engine, config)
         host = config.web_ui.host
-        port = config.web_ui.port
+        requested_port = int(config.web_ui.port)
+        port = int(server.resolve_bind_port())
+        if port != requested_port:
+            print(
+                f"Web UI port {requested_port} is occupied, fallback to {port}."
+            )
         print(f"Kuro Web GUI: http://{host}:{port}")
         print("Press Ctrl+C to stop.")
         await server.run()
@@ -634,10 +639,13 @@ async def async_adapter_main(
     # Start web server in background (dashboard always available)
     web_server = WebServer(engine, config)
     host = config.web_ui.host
-    port = config.web_ui.port
+    requested_port = int(config.web_ui.port)
+    port = int(web_server.resolve_bind_port())
     web_task = asyncio.create_task(web_server.run())
 
     print(f"Kuro adapters running: {', '.join(manager.adapter_names)}")
+    if port != requested_port:
+        print(f"Web UI port {requested_port} is occupied, fallback to {port}.")
     print(f"Kuro Web GUI: http://{host}:{port}")
     print("Press Ctrl+C to stop.")
 

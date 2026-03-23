@@ -11,6 +11,7 @@ import contextlib
 import json
 import os
 import re
+import socket
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -47,6 +48,53 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Path to static web files
 WEB_DIR = Path(__file__).parent / "web"
+
+
+def _is_tcp_port_available(host: str, port: int) -> bool:
+    """Best-effort check whether host:port can be bound now."""
+    bind_host = str(host or "127.0.0.1").strip() or "127.0.0.1"
+    try:
+        bind_port = int(port)
+    except Exception:
+        return False
+    if bind_port < 1 or bind_port > 65535:
+        return False
+
+    family = socket.AF_INET6 if ":" in bind_host else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((bind_host, bind_port))
+    except Exception:
+        return False
+    return True
+
+
+def resolve_web_bind_port(
+    host: str,
+    requested_port: int,
+    *,
+    auto_fallback_port: bool = True,
+    search_limit: int = 20,
+    availability_fn: Any = None,
+) -> int:
+    """Resolve an available web bind port, optionally scanning fallback ports."""
+    checker = availability_fn or _is_tcp_port_available
+    base_port = max(1, min(65535, int(requested_port or 7860)))
+    if not bool(auto_fallback_port):
+        return base_port
+
+    limit = max(0, int(search_limit or 0))
+    for offset in range(limit + 1):
+        candidate = base_port + offset
+        if candidate > 65535:
+            break
+        try:
+            if checker(host, candidate):
+                return candidate
+        except Exception:
+            continue
+    return base_port
 
 
 def _build_openai_oauth_model_defaults() -> list[str]:
@@ -392,6 +440,7 @@ class WebServer:
         self._models_cache_expires_at: float = 0.0
         self._models_cache_ttl: float = max(0.0, cache_ttl)
         self._models_cache_lock = asyncio.Lock()
+        self._resolved_port: int | None = None
 
         # Session cache: keeps sessions alive after WebSocket disconnects
         # so they can be restored on reconnect (e.g., after page navigation).
@@ -400,6 +449,28 @@ class WebServer:
         self._SESSION_CACHE_TTL = 1800  # 30 minutes
 
         self.app = self._create_app()
+
+    def resolve_bind_port(self) -> int:
+        """Resolve and cache the effective bind port for Web UI."""
+        if self._resolved_port is not None:
+            return int(self._resolved_port)
+
+        requested_port = int(getattr(self.config.web_ui, "port", 7860) or 7860)
+        resolved = resolve_web_bind_port(
+            str(getattr(self.config.web_ui, "host", "127.0.0.1") or "127.0.0.1"),
+            requested_port,
+            auto_fallback_port=bool(getattr(self.config.web_ui, "auto_fallback_port", True)),
+            search_limit=int(getattr(self.config.web_ui, "fallback_port_search_limit", 20) or 0),
+        )
+        self._resolved_port = int(resolved)
+        if int(resolved) != requested_port:
+            logger.warning(
+                "web_ui_port_fallback_selected",
+                requested_port=requested_port,
+                selected_port=int(resolved),
+                host=str(getattr(self.config.web_ui, "host", "127.0.0.1") or "127.0.0.1"),
+            )
+        return int(self._resolved_port)
 
     def _invalidate_models_cache(self) -> None:
         self._models_cache_groups = {}
@@ -3177,11 +3248,53 @@ class WebServer:
 
     async def run(self) -> None:
         """Start the uvicorn server."""
-        config = uvicorn.Config(
-            self.app,
-            host=self.config.web_ui.host,
-            port=self.config.web_ui.port,
-            log_level="warning",
+        host = str(getattr(self.config.web_ui, "host", "127.0.0.1") or "127.0.0.1")
+        start_port = self.resolve_bind_port()
+        auto_fallback = bool(getattr(self.config.web_ui, "auto_fallback_port", True))
+        search_limit = max(0, int(getattr(self.config.web_ui, "fallback_port_search_limit", 20) or 0))
+
+        candidates: list[int] = [int(start_port)]
+        if auto_fallback:
+            for offset in range(1, search_limit + 1):
+                candidate = int(start_port) + offset
+                if candidate > 65535:
+                    break
+                candidates.append(candidate)
+
+        last_port = int(start_port)
+        for idx, candidate_port in enumerate(candidates):
+            last_port = int(candidate_port)
+            self._resolved_port = int(candidate_port)
+            config = uvicorn.Config(
+                self.app,
+                host=host,
+                port=int(candidate_port),
+                log_level="warning",
+            )
+            server = uvicorn.Server(config)
+            try:
+                await server.serve()
+            except OSError as e:
+                if idx < len(candidates) - 1 and int(getattr(e, "errno", 0) or 0) in {48, 98, 10048}:
+                    logger.warning(
+                        "web_ui_port_retry",
+                        failed_port=int(candidate_port),
+                        next_port=int(candidates[idx + 1]),
+                        reason="address_in_use",
+                    )
+                    continue
+                raise
+            if bool(getattr(server, "started", False)):
+                return
+            if idx < len(candidates) - 1:
+                logger.warning(
+                    "web_ui_port_retry",
+                    failed_port=int(candidate_port),
+                    next_port=int(candidates[idx + 1]),
+                )
+                continue
+
+        raise RuntimeError(
+            f"Web UI failed to bind host={host}, starting_port={int(start_port)}, "
+            f"last_attempted_port={last_port}"
         )
-        server = uvicorn.Server(config)
-        await server.serve()

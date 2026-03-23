@@ -255,6 +255,18 @@ class WebUIConfig(BaseModel):
     enabled: bool = True
     host: str = "127.0.0.1"
     port: int = 7860
+    auto_fallback_port: bool = True
+    fallback_port_search_limit: int = 20
+
+    @model_validator(mode="after")
+    def _normalize(self) -> "WebUIConfig":
+        self.host = str(self.host or "127.0.0.1").strip() or "127.0.0.1"
+        self.port = max(1, min(65535, int(self.port or 7860)))
+        self.fallback_port_search_limit = max(
+            0,
+            min(1000, int(self.fallback_port_search_limit or 0)),
+        )
+        return self
 
 
 class SkillsConfig(BaseModel):
