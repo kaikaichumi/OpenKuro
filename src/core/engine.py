@@ -1523,6 +1523,15 @@ class Engine:
                 or self.model.default_model
             )
             session.metadata["_active_model"] = resolved_response_model
+            if resolved_response_model != effective_model:
+                logger.info(
+                    "engine_model_resolved",
+                    adapter=session.adapter,
+                    session_id=session.id,
+                    requested_model=model,
+                    attempted_model=effective_model,
+                    actual_model=resolved_response_model,
+                )
 
             # Log token usage
             if response.usage:
@@ -2046,6 +2055,15 @@ class Engine:
             or self.model.default_model
         )
         session.metadata["_active_model"] = resolved_response_model
+        if resolved_response_model != (model or self.model.default_model):
+            logger.info(
+                "engine_stream_model_resolved",
+                adapter=session.adapter,
+                session_id=session.id,
+                requested_model=model,
+                attempted_model=model or self.model.default_model,
+                actual_model=resolved_response_model,
+            )
 
         # Log token usage for stream path
         if response.usage:

@@ -464,6 +464,25 @@ class ModelRouter:
             return normalize_openai_model(model_id)
         return model_name
 
+    def _resolve_response_model(
+        self,
+        requested_model: str,
+        response_model: Any,
+    ) -> str:
+        """Resolve provider-returned model id to normalized `provider/model` form."""
+        requested = str(requested_model or "").strip()
+        raw = str(response_model or "").strip()
+        if not raw:
+            return requested
+
+        provider, _ = self._split_model_name(requested)
+        if provider:
+            normalized = self._with_provider_prefix(provider, raw)
+            if normalized:
+                return normalized
+
+        return raw
+
     def _should_disable_tools_for_model(
         self,
         model_name: str,
@@ -1105,10 +1124,14 @@ class ModelRouter:
         if not tool_calls and event_tool_calls:
             tool_calls = self._dedupe_tool_calls(event_tool_calls)
         usage = self._extract_usage_from_response_obj(final_response)
+        response_model = None
+        if isinstance(final_response, dict):
+            response_model = final_response.get("model")
+        resolved_model = self._resolve_response_model(model_name, response_model)
         return ModelResponse(
             content=content,
             tool_calls=tool_calls or None,
-            model=model_name,
+            model=resolved_model or model_name,
             usage=usage,
             finish_reason="tool_calls" if tool_calls else "stop",
         )
@@ -1226,6 +1249,24 @@ class ModelRouter:
                     )
                     _latency = (_time.monotonic() - _t0) * 1000
 
+                    actual_model = str(parsed.model or model_name)
+                    logger.info(
+                        "model_response",
+                        requested_model=target_model,
+                        attempt_model=model_name,
+                        actual_model=actual_model,
+                        provider=provider,
+                        mode="codex_oauth",
+                    )
+                    if actual_model != model_name:
+                        logger.warning(
+                            "model_alias_mismatch",
+                            requested_model=target_model,
+                            attempt_model=model_name,
+                            actual_model=actual_model,
+                            provider=provider,
+                        )
+
                     try:
                         from src.core.tracing import trace_llm_call
                         trace_llm_call(
@@ -1297,6 +1338,24 @@ class ModelRouter:
 
                 parsed = self._parse_response(response, model_name)
 
+                actual_model = str(parsed.model or model_name)
+                logger.info(
+                    "model_response",
+                    requested_model=target_model,
+                    attempt_model=model_name,
+                    actual_model=actual_model,
+                    provider=provider,
+                    mode="api",
+                )
+                if actual_model != model_name:
+                    logger.warning(
+                        "model_alias_mismatch",
+                        requested_model=target_model,
+                        attempt_model=model_name,
+                        actual_model=actual_model,
+                        provider=provider,
+                    )
+
                 # Trace LLM call to LangSmith (non-blocking, never raises)
                 try:
                     from src.core.tracing import trace_llm_call
@@ -1329,7 +1388,25 @@ class ModelRouter:
                         retry_kwargs["extra_body"] = extra_body
                         logger.warning("retry_disable_thinking", model=model_name)
                         response = await litellm.acompletion(**retry_kwargs)
-                        return self._parse_response(response, model_name)
+                        parsed = self._parse_response(response, model_name)
+                        actual_model = str(parsed.model or model_name)
+                        logger.info(
+                            "model_response",
+                            requested_model=target_model,
+                            attempt_model=model_name,
+                            actual_model=actual_model,
+                            provider=provider,
+                            mode="api",
+                        )
+                        if actual_model != model_name:
+                            logger.warning(
+                                "model_alias_mismatch",
+                                requested_model=target_model,
+                                attempt_model=model_name,
+                                actual_model=actual_model,
+                                provider=provider,
+                            )
+                        return parsed
                     except Exception as retry_err:
                         e = retry_err
                         error_str = str(retry_err)
@@ -1489,10 +1566,13 @@ class ModelRouter:
                 "total_tokens": getattr(response.usage, "total_tokens", 0),
             }
 
+        response_model = getattr(response, "model", None)
+        resolved_model = self._resolve_response_model(model_name, response_model)
+
         return ModelResponse(
             content=message.content,
             tool_calls=tool_calls,
-            model=model_name,
+            model=resolved_model or model_name,
             usage=usage,
             finish_reason=getattr(choice, "finish_reason", ""),
         )
