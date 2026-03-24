@@ -124,6 +124,7 @@ class TaskScheduler:
         self._notification_callback: NotificationCallback | None = None
         self._default_notify_adapter: str | None = None
         self._default_notify_target: str | None = None
+        self._active_task_ids: set[str] = set()
 
         # Load existing tasks
         self._load_tasks()
@@ -399,12 +400,7 @@ class TaskScheduler:
 
                 # Check each task
                 for task in list(self.tasks.values()):
-                    if not task.enabled:
-                        continue
-
-                    if task.next_run and now >= task.next_run:
-                        # Time to run this task
-                        asyncio.create_task(self._execute_task(task))
+                    self._queue_if_due(task, now)
 
                 # Sleep for 30 seconds before next check
                 await asyncio.sleep(30)
@@ -415,8 +411,24 @@ class TaskScheduler:
                 logger.error("scheduler_loop_error", error=str(e))
                 await asyncio.sleep(60)  # Wait a bit before retrying
 
+    def _queue_if_due(self, task: ScheduledTask, now: datetime) -> bool:
+        """Queue a due task once, skipping tasks already in flight."""
+        if not task.enabled:
+            return False
+        if not task.next_run or now < task.next_run:
+            return False
+        if task.id in self._active_task_ids:
+            logger.debug("task_skip_already_running", task_id=task.id)
+            return False
+
+        self._active_task_ids.add(task.id)
+        asyncio.create_task(self._execute_task(task))
+        return True
+
     async def _execute_task(self, task: ScheduledTask) -> None:
         """Execute a scheduled task (tool, agent, or internal)."""
+        # Defensive: ensure direct/manual execution also respects in-flight guard.
+        self._active_task_ids.add(task.id)
         logger.info(
             "task_executing",
             task_id=task.id,
@@ -518,6 +530,8 @@ class TaskScheduler:
             # Even failed one-time tasks should be removed (they won't re-run)
             if task.schedule_type == ScheduleType.ONCE and task.next_run is None:
                 self._remove_completed_once_task(task)
+        finally:
+            self._active_task_ids.discard(task.id)
 
     def _remove_completed_once_task(self, task: ScheduledTask) -> None:
         """Remove a completed one-time task from the scheduler."""
@@ -543,7 +557,15 @@ class TaskScheduler:
             return
 
         try:
-            result_preview = result[:1500] if isinstance(result, str) else str(result)[:1500]
+            raw = result if isinstance(result, str) else str(result)
+            cleaned = str(raw or "").strip()
+            if cleaned:
+                result_preview = cleaned[:1500]
+            else:
+                result_preview = (
+                    "⚠ Task finished, but it returned an empty result. "
+                    "Check agent/tool logs for details."
+                )
             msg = (
                 f"\U0001f4cb Scheduled task completed: **{task.name}**\n\n"
                 f"Result:\n{result_preview}"
