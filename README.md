@@ -2,6 +2,8 @@
 
 > **Kuro** - 在幕後默默運作的守護者。
 
+Language: English | [繁體中文](README.zh-TW.md)
+
 A privacy-first personal AI assistant with multi-agent architecture, multi-model support, computer control, messaging integration, and a browser-based GUI.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
