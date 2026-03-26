@@ -33,6 +33,16 @@ from src.openai_catalog import (
 
 logger = structlog.get_logger()
 
+_OPENAI_COMPATIBLE_PROVIDER_ALIASES: set[str] = {
+    "qwen",
+    "openai-compatible",
+    "llama.cpp",
+    "llamacpp",
+    "vllm",
+    "lmstudio",
+    "local",
+}
+
 # Suppress LiteLLM's verbose logging
 litellm.suppress_debug_info = True
 
@@ -450,18 +460,63 @@ class ModelRouter:
             first, rest = raw.split("/", 1)
             if first == target:
                 return raw
-            if first in {"openai", "ollama", "llama", "anthropic", "gemini"}:
+            if first in {
+                "openai",
+                "ollama",
+                "llama",
+                "anthropic",
+                "gemini",
+                "qwen",
+                "openai-compatible",
+                "llama.cpp",
+                "llamacpp",
+                "vllm",
+                "lmstudio",
+                "local",
+            }:
                 base = rest
 
         if target == "openai":
             return normalize_openai_model(base)
         return f"{target}/{base}"
 
+    @staticmethod
+    def _is_openai_compatible_provider_alias(provider: str) -> bool:
+        return (provider or "").strip().lower() in _OPENAI_COMPATIBLE_PROVIDER_ALIASES
+
+    def _resolve_provider_config(self, provider: str) -> tuple[str, Any | None]:
+        """Resolve provider config, including aliases for local OpenAI-compatible runtimes."""
+        providers = self.config.models.providers
+        direct = providers.get(provider)
+        if direct is not None:
+            return provider, direct
+
+        if not self._is_openai_compatible_provider_alias(provider):
+            return provider, None
+
+        # Backward compatibility: if alias provider (e.g. qwen/...) has no
+        # dedicated config entry, reuse local openai-compatible settings.
+        for fallback_name in ("llama", "openai"):
+            fallback_cfg = providers.get(fallback_name)
+            if fallback_cfg is None:
+                continue
+            base_url = str(getattr(fallback_cfg, "base_url", "") or "").strip()
+            if not base_url:
+                continue
+            if fallback_name == "openai" and not is_openai_compatible_local_base_url(
+                base_url
+            ):
+                continue
+            return fallback_name, fallback_cfg
+
+        return provider, None
+
     def _to_litellm_model(self, model_name: str) -> str:
         """Translate user-facing provider aliases to LiteLLM-compatible model ids."""
         provider, model_id = self._split_model_name(model_name)
-        if provider == "llama":
-            return normalize_openai_model(model_id)
+        if provider == "llama" or self._is_openai_compatible_provider_alias(provider):
+            normalized = self._with_provider_prefix("openai", model_id)
+            return normalized or normalize_openai_model(model_id)
         return model_name
 
     def _resolve_response_model(
@@ -1226,8 +1281,15 @@ class ModelRouter:
 
         for model_name in models_to_try:
             provider = model_name.split("/")[0] if "/" in model_name else ""
-            provider_cfg = self.config.models.providers.get(provider)
+            provider_cfg_name, provider_cfg = self._resolve_provider_config(provider)
             provider_auth = self._provider_auth(provider)
+            if provider_cfg_name != provider and provider_cfg is not None:
+                logger.debug(
+                    "provider_alias_resolved",
+                    provider=provider,
+                    resolved_provider=provider_cfg_name,
+                    model=model_name,
+                )
             try:
                 if self._is_codex_oauth_mode(provider, provider_auth):
                     logger.info(
@@ -1311,6 +1373,8 @@ class ModelRouter:
                 if provider_cfg and provider_cfg.base_url and provider != "ollama":
                     kwargs["api_base"] = provider_cfg.base_url
                 override_key = self._provider_api_key(provider)
+                if not override_key and provider_cfg_name != provider:
+                    override_key = self._provider_api_key(provider_cfg_name)
                 if override_key:
                     kwargs["api_key"] = override_key
 
@@ -1483,6 +1547,7 @@ class ModelRouter:
         }
 
         provider = target_model.split("/")[0] if "/" in target_model else ""
+        provider_cfg_name, provider_cfg = self._resolve_provider_config(provider)
         provider_auth = self._provider_auth(provider)
         if self._is_codex_oauth_mode(provider, provider_auth):
             if tools:
@@ -1513,10 +1578,11 @@ class ModelRouter:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        provider_cfg = self.config.models.providers.get(provider)
         if provider_cfg and provider_cfg.base_url and provider != "ollama":
             kwargs["api_base"] = provider_cfg.base_url
         override_key = self._provider_api_key(provider)
+        if not override_key and provider_cfg_name != provider:
+            override_key = self._provider_api_key(provider_cfg_name)
         if override_key:
             kwargs["api_key"] = override_key
 

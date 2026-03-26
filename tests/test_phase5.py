@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.config import KuroConfig, TelegramConfig
+from src.config import KuroConfig, ProviderConfig, TelegramConfig
 from src.core.engine import ApprovalCallback, Engine
 from src.core.types import Session
 from src.tools.base import RiskLevel
@@ -470,3 +470,86 @@ class TestToolDiscoveryRegression:
         names = ts.registry.get_names()
         for t in expected:
             assert t in names, f"Tool '{t}' missing after Phase 5 changes"
+
+
+class TestModelRouterProviderAlias:
+    """Regression tests for local OpenAI-compatible alias providers."""
+
+    @staticmethod
+    def _fake_litellm_response(returned_model: str):
+        from types import SimpleNamespace
+
+        message = SimpleNamespace(content="ok", tool_calls=None)
+        choice = SimpleNamespace(message=message, finish_reason="stop")
+        usage = SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2)
+        return SimpleNamespace(choices=[choice], usage=usage, model=returned_model)
+
+    def test_to_litellm_model_maps_qwen_alias_to_openai(self):
+        from src.core.model_router import ModelRouter
+
+        router = ModelRouter(KuroConfig())
+        assert (
+            router._to_litellm_model("qwen/Qwen3.5-9B-UD-Q4_K_XL.gguf")
+            == "openai/Qwen3.5-9B-UD-Q4_K_XL.gguf"
+        )
+
+    @pytest.mark.asyncio
+    async def test_complete_uses_qwen_provider_base_url(self, monkeypatch):
+        from src.core.model_router import ModelRouter
+
+        cfg = KuroConfig()
+        cfg.models.providers["qwen"] = ProviderConfig(
+            base_url="http://127.0.0.1:8000/v1",
+            api_key="not-needed",
+        )
+        cfg.models.fallback_chain = []
+        router = ModelRouter(cfg)
+
+        captured: dict[str, object] = {}
+
+        async def _fake_acompletion(**kwargs):
+            captured.update(kwargs)
+            return self._fake_litellm_response("Qwen3.5-9B-UD-Q4_K_XL.gguf")
+
+        monkeypatch.setattr("src.core.model_router.litellm.acompletion", _fake_acompletion)
+
+        response = await router.complete(
+            messages=[{"role": "user", "content": "hi"}],
+            model="qwen/Qwen3.5-9B-UD-Q4_K_XL.gguf",
+        )
+
+        assert captured["model"] == "openai/Qwen3.5-9B-UD-Q4_K_XL.gguf"
+        assert captured["api_base"] == "http://127.0.0.1:8000/v1"
+        assert response.model == "qwen/Qwen3.5-9B-UD-Q4_K_XL.gguf"
+
+    @pytest.mark.asyncio
+    async def test_complete_qwen_alias_falls_back_to_llama_provider_config(
+        self,
+        monkeypatch,
+    ):
+        from src.core.model_router import ModelRouter
+
+        cfg = KuroConfig()
+        cfg.models.providers.pop("qwen", None)
+        cfg.models.providers["llama"] = ProviderConfig(
+            base_url="http://127.0.0.1:8081/v1",
+            api_key="not-needed",
+        )
+        cfg.models.fallback_chain = []
+        router = ModelRouter(cfg)
+
+        captured: dict[str, object] = {}
+
+        async def _fake_acompletion(**kwargs):
+            captured.update(kwargs)
+            return self._fake_litellm_response("Qwen3.5-9B-UD-Q4_K_XL.gguf")
+
+        monkeypatch.setattr("src.core.model_router.litellm.acompletion", _fake_acompletion)
+
+        await router.complete(
+            messages=[{"role": "user", "content": "hi"}],
+            model="qwen/Qwen3.5-9B-UD-Q4_K_XL.gguf",
+        )
+
+        assert captured["model"] == "openai/Qwen3.5-9B-UD-Q4_K_XL.gguf"
+        assert captured["api_base"] == "http://127.0.0.1:8081/v1"
